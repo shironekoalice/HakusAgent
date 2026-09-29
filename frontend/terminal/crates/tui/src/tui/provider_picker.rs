@@ -291,12 +291,10 @@ pub enum ProviderMaturity {
 
 impl ProviderMaturity {
     /// Maturity is seeded from a small table keyed by provider. Only the
-    /// OpenAI Codex bridge is experimental today; everything else is supported.
+    /// All built-in provider integrations are supported.
     fn for_provider(provider: ApiProvider) -> Self {
-        match provider {
-            ApiProvider::OpenaiCodex => Self::Experimental,
-            _ => Self::Supported,
-        }
+        let _ = provider;
+        Self::Supported
     }
 
     /// Compact tag for the picker hint. Returns `None` when the integration is
@@ -918,15 +916,6 @@ impl ProviderReasoningSummary {
         route: &ProviderDefaultRoute,
         config: &Config,
     ) -> Self {
-        if provider == ApiProvider::OpenaiCodex {
-            return Self {
-                support: ProviderReasoningSupport::Supported,
-                controls: codex_reasoning_controls(),
-                stream_visibility: ProviderReasoningStreamVisibility::StructuredThinking,
-                selected_control: selected_reasoning_control(provider, config),
-            };
-        }
-
         // The bare `k3` ID is deliberately not listed as a generic Moonshot
         // model. Kimi Code owns this reasoning contract only at its exact
         // membership-plan endpoint, so surface the capability before key
@@ -1069,22 +1058,6 @@ fn bundled_reasoning_catalog() -> &'static CatalogSnapshot {
     })
 }
 
-fn codex_reasoning_controls() -> Vec<String> {
-    [
-        ReasoningEffort::Low,
-        ReasoningEffort::Medium,
-        ReasoningEffort::High,
-        ReasoningEffort::Max,
-    ]
-    .iter()
-    .map(|effort| {
-        effort
-            .display_label_for_provider(ApiProvider::OpenaiCodex)
-            .to_string()
-    })
-    .collect()
-}
-
 fn reasoning_controls_from_options(options: &[Value]) -> Vec<String> {
     let mut controls = Vec::new();
     for option in options {
@@ -1161,8 +1134,7 @@ fn parse_reasoning_stream_visibility(value: &str) -> Option<ProviderReasoningStr
 
 fn default_reasoning_stream_visibility(provider: ApiProvider) -> ProviderReasoningStreamVisibility {
     match provider {
-        ApiProvider::OpenaiCodex
-        | ApiProvider::Deepseek
+        ApiProvider::Deepseek
         | ApiProvider::DeepseekCN
         | ApiProvider::NvidiaNim
         | ApiProvider::Openrouter
@@ -1236,13 +1208,6 @@ fn auth_status_for(
         && configured.is_some_and(crate::config::provider_config_uses_kimi_imported_token)
     {
         return ProviderAuthStatus::ImportedTokenUnavailable;
-    }
-    if provider == ApiProvider::OpenaiCodex && official_endpoint {
-        return if has_key {
-            ProviderAuthStatus::OAuthReady
-        } else {
-            ProviderAuthStatus::OAuthMissing
-        };
     }
     if provider == ApiProvider::Xai
         && official_endpoint
@@ -1357,7 +1322,6 @@ fn readiness_for(
 fn usage_meter_for(provider: ApiProvider) -> String {
     match provider {
         ApiProvider::Ollama | ApiProvider::Sglang | ApiProvider::Vllm => "cost: local".to_string(),
-        ApiProvider::OpenaiCodex => "usage: Codex OAuth quota".to_string(),
         ApiProvider::XiaomiMimo => "cost: token-plan".to_string(),
         // OpenCode ships two billing tracks off one account; the rows must not
         // both read as generic metering (#4526).
@@ -1435,11 +1399,6 @@ pub(crate) fn external_consent_target_for_provider(
     std::path::PathBuf,
 )> {
     let (consent_provider, source, path) = match provider {
-        ApiProvider::OpenaiCodex => (
-            hakus_config::ProviderKind::OpenaiCodex,
-            hakus_config::ExternalCredentialSource::CodexCli,
-            crate::oauth::auth_file_path(),
-        ),
         ApiProvider::Xai => (
             hakus_config::ProviderKind::Xai,
             hakus_config::ExternalCredentialSource::GrokCli,
@@ -1462,53 +1421,7 @@ pub(crate) fn external_consent_target_is_grantable(provider: ApiProvider) -> boo
     let Some((_, _, path)) = external_consent_target_for_provider(provider) else {
         return false;
     };
-    match provider {
-        ApiProvider::Xai => crate::xai_oauth::external_file_is_fresh(&path),
-        ApiProvider::OpenaiCodex => codex_external_file_is_fresh(&path),
-        _ => false,
-    }
-}
-
-fn codex_external_file_is_fresh(path: &std::path::Path) -> bool {
-    let raw = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let value: Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let token = value
-        .get("tokens")
-        .and_then(|t| t.get("access_token"))
-        .and_then(|v| v.as_str())
-        .filter(|t| !t.trim().is_empty());
-    let Some(token) = token else {
-        return false;
-    };
-    // Reuse the same 60s skew the runtime uses: token with valid JWT exp is fresh.
-    if let Some(exp) = codex_jwt_expiry(token) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        return now + 60 < exp;
-    }
-    // If we cannot parse expiry, fail closed — external Codex credentials are
-    // never refreshed by Hakus, so an opaque token must be treated as stale.
-    false
-}
-
-fn codex_jwt_expiry(token: &str) -> Option<u64> {
-    use base64::Engine as _;
-    let mut parts = token.split('.');
-    let _header = parts.next()?;
-    let payload = parts.next()?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let claims: Value = serde_json::from_slice(&decoded).ok()?;
-    claims.get("exp")?.as_u64()
+    crate::xai_oauth::external_file_is_fresh(&path)
 }
 
 impl ProviderPickerView {
@@ -2858,8 +2771,7 @@ impl ProviderPickerView {
 
     fn render_key_entry(&self, area: Rect, buf: &mut Buffer) {
         let row = &self.rows[self.selected_idx];
-        let codex_oauth = row.provider == ApiProvider::OpenaiCodex;
-        let oauth_provider = codex_oauth;
+        let oauth_provider = false;
         let saved_credential = !oauth_provider && row.has_key;
         let outer = Block::default()
             .title(Line::from(Span::styled(
@@ -2880,16 +2792,7 @@ impl ProviderPickerView {
 
         // The action footer moves into the body so it wraps instead of clipping
         // at narrow widths (#3732); the key-entry fields render above it.
-        let content = if codex_oauth {
-            render_modal_footer(
-                inner,
-                buf,
-                &[
-                    ActionHint::new("Enter", self.tr(MessageId::ProviderExternalActionChoices)),
-                    ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
-                ],
-            )
-        } else if saved_credential && self.api_key_input.trim().is_empty() {
+        let content = if saved_credential && self.api_key_input.trim().is_empty() {
             render_modal_footer(
                 inner,
                 buf,
@@ -2910,9 +2813,7 @@ impl ProviderPickerView {
         };
 
         let masked = mask_key(&self.api_key_input);
-        let display = if codex_oauth {
-            "(run codex login; then explicitly grant read-only access)".to_string()
-        } else if masked.is_empty() && saved_credential {
+        let display = if masked.is_empty() && saved_credential {
             "Saved credential configured".to_string()
         } else if masked.is_empty() {
             "(paste key here)".to_string()
@@ -2936,26 +2837,7 @@ impl ProviderPickerView {
         } else {
             "/provider"
         };
-        let mut hint_lines = if codex_oauth {
-            vec![
-                Line::from(Span::styled(
-                    self.tr(MessageId::ProviderExternalHintCodexReview)
-                        .replace("{login}", "codex login"),
-                    Style::default().fg(palette::TEXT_MUTED),
-                )),
-                Line::from(Span::styled(
-                    format!(
-                        "Or set {} / CODEX_ACCESS_TOKEN and re-open {reopen_command}.",
-                        self.env_var_for_selected_row(),
-                    ),
-                    Style::default().fg(palette::TEXT_MUTED),
-                )),
-                Line::from(Span::styled(
-                    "CLI: hakus auth external-consent --provider openai-codex; no token is stored here.",
-                    Style::default().fg(palette::TEXT_MUTED),
-                )),
-            ]
-        } else if saved_credential && self.api_key_input.trim().is_empty() {
+        let mut hint_lines = if saved_credential && self.api_key_input.trim().is_empty() {
             vec![Line::from(Span::styled(
                 "This terminal can use the stored credential. Type or paste only to replace it; Esc keeps it unchanged.",
                 Style::default().fg(palette::TEXT_MUTED),
@@ -4015,10 +3897,6 @@ impl ModalView for ProviderPickerView {
                     ViewAction::None
                 }
                 KeyCode::Enter => {
-                    if self.selected_provider() == ApiProvider::OpenaiCodex {
-                        self.enter_external_consent_choice();
-                        return ViewAction::None;
-                    }
                     let key = self.api_key_input.trim().to_string();
                     if key.is_empty() {
                         // Stay in key-entry; the user can press Esc to abort.
@@ -4553,45 +4431,6 @@ mod tests {
         assert_ne!(names.first(), Some(&"DeepSeek"));
     }
 
-    #[test]
-    fn default_view_shows_only_configured_providers() {
-        // #3830: with nothing but the active provider set up, the default
-        // list view excludes the unconfigured catalog noise — even though
-        // `rows` (the underlying data) still has every provider, per
-        // `picker_lists_all_providers` above. Doesn't assert an exact count:
-        // `OpenaiCodex` reads a real OAuth file from disk in
-        // `has_api_key_for`, so it's legitimately "configured" on a machine
-        // with a prior Codex login and must not make this test host-dependent.
-        let config = Config::default();
-        let picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
-
-        assert_eq!(picker.view, ProviderListView::Configured);
-        let visible: Vec<ApiProvider> = picker
-            .filtered_rows()
-            .iter()
-            .map(|(_, row)| row.provider)
-            .collect();
-        assert!(visible.contains(&ApiProvider::Deepseek), "{visible:?}");
-        assert!(
-            !visible.contains(&ApiProvider::Custom),
-            "the unused custom-provider placeholder slot isn't \"configured\": {visible:?}"
-        );
-        for unconfigured in [
-            ApiProvider::Zai,
-            ApiProvider::Openrouter,
-            ApiProvider::Novita,
-            ApiProvider::Ollama,
-        ] {
-            assert!(
-                !visible.contains(&unconfigured),
-                "{unconfigured:?} has no credentials and isn't active: {visible:?}"
-            );
-        }
-        assert!(
-            picker.rows.len() > visible.len(),
-            "underlying data keeps every provider"
-        );
-    }
 
     #[test]
     fn explicit_provider_config_marks_provider_configured_without_active_or_key() {
@@ -4927,104 +4766,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn setup_provider_key_entry_matrix_keeps_hosted_codex_and_local_hints_distinct() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let hakus_home = tmp.path().join(".hakus");
-        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path());
-        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", tmp.path());
-        let _hakus_home =
-            crate::test_support::EnvVarGuard::set("HAKUS_HOME", &hakus_home);
-        let _deepseek_key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _deepseek_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let _codex_key = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _codex_legacy_key = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let config = Config::default();
-
-        let hosted = ProviderPickerView::new_for_setup(
-            ApiProvider::Openai,
-            Some(ApiProvider::Deepseek),
-            &config,
-            None,
-        );
-        assert_eq!(hosted.stage, Stage::KeyEntry);
-        assert_eq!(hosted.selected_provider(), ApiProvider::Deepseek);
-        let hosted_text = render_text(&hosted, 120, 20);
-        assert!(hosted_text.contains("DEEPSEEK_API_KEY"), "{hosted_text}");
-        assert!(
-            hosted_text.contains("Credentials: https://platform.deepseek.com/api_keys"),
-            "{hosted_text}"
-        );
-        assert!(!hosted_text.contains("OAuth login"), "{hosted_text}");
-
-        let codex = ProviderPickerView::new_for_setup(
-            ApiProvider::Deepseek,
-            Some(ApiProvider::OpenaiCodex),
-            &config,
-            None,
-        );
-        assert_eq!(codex.stage, Stage::KeyEntry);
-        assert_eq!(codex.selected_provider(), ApiProvider::OpenaiCodex);
-        let codex_text = render_text(&codex, 120, 20);
-        assert!(codex_text.contains("OAuth login"), "{codex_text}");
-        assert!(
-            codex_text.contains("OPENAI_CODEX_ACCESS_TOKEN"),
-            "{codex_text}"
-        );
-        assert!(codex_text.contains("external-consent"), "{codex_text}");
-        assert!(!codex_text.contains("Credentials:"), "{codex_text}");
-        assert!(!codex_text.contains("(paste key here)"), "{codex_text}");
-
-        let local = ProviderPickerView::new_for_setup(
-            ApiProvider::Deepseek,
-            Some(ApiProvider::Ollama),
-            &config,
-            None,
-        );
-        assert_eq!(local.stage, Stage::List);
-        assert_eq!(local.selected_provider(), ApiProvider::Ollama);
-        let local_text = render_text(&local, 120, 20);
-        assert!(!local_text.contains("Credentials:"), "{local_text}");
-
-        let mut custom = std::collections::HashMap::new();
-        custom.insert(
-            "my_thing".to_string(),
-            crate::config::ProviderConfig {
-                kind: Some("openai-compatible".to_string()),
-                base_url: Some("https://api.example.com/v1".to_string()),
-                model: Some("vendor/custom-model-v1".to_string()),
-                api_key_env: Some("EXAMPLE_API_KEY".to_string()),
-                ..Default::default()
-            },
-        );
-        let _custom_key = crate::test_support::EnvVarGuard::remove("EXAMPLE_API_KEY");
-        let custom_config = Config {
-            provider: Some("my_thing".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                custom,
-                ..Default::default()
-            }),
-            ..Config::default()
-        };
-        let custom_picker =
-            ProviderPickerView::new_for_setup(ApiProvider::Custom, None, &custom_config, None);
-        let custom_row = &custom_picker.rows[custom_picker.selected_idx];
-        assert_eq!(custom_row.provider, ApiProvider::Custom);
-        assert_eq!(custom_row.provider_id, "my_thing");
-        assert!(
-            custom_row
-                .messages
-                .iter()
-                .any(|message| message.contains("EXAMPLE_API_KEY")),
-            "custom setup row should name its configured auth env var: {:?}",
-            custom_row.messages
-        );
-        let custom_text = render_text(&custom_picker, 120, 20);
-        assert!(custom_text.contains("my_thing"), "{custom_text}");
-        assert!(custom_text.contains("EXAMPLE_API_KEY"), "{custom_text}");
-        assert!(!custom_text.contains("Credentials:"), "{custom_text}");
-    }
 
     #[test]
     fn provider_dashboard_row_models_local_readiness_without_rendering() {
@@ -5204,23 +4945,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn openai_codex_row_is_experimental_and_tagged_in_hint() {
-        let config = Config::default();
-        let row = ProviderDashboardRow::from_config(
-            ApiProvider::OpenaiCodex,
-            ApiProvider::Deepseek,
-            &config,
-        );
-
-        // #2984: maturity is a separate axis from auth/readiness.
-        assert_eq!(row.maturity, ProviderMaturity::Experimental);
-        assert!(
-            row.compact_hint().contains("experimental"),
-            "experimental maturity must surface in the hint, got {:?}",
-            row.compact_hint()
-        );
-    }
 
     #[test]
     fn mainstream_provider_is_supported_without_experimental_tag() {
@@ -5450,38 +5174,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn provider_dashboard_row_surfaces_codex_reasoning_scale() {
-        let config = Config {
-            reasoning_effort: Some("max".to_string()),
-            ..Config::default()
-        };
-        let row = ProviderDashboardRow::from_config(
-            ApiProvider::OpenaiCodex,
-            ApiProvider::OpenaiCodex,
-            &config,
-        );
-
-        assert_eq!(row.reasoning.support, ProviderReasoningSupport::Supported);
-        assert_eq!(
-            row.reasoning.controls,
-            vec![
-                "low".to_string(),
-                "medium".to_string(),
-                "high".to_string(),
-                "xhigh".to_string(),
-            ]
-        );
-        assert_eq!(
-            row.reasoning.stream_visibility,
-            ProviderReasoningStreamVisibility::StructuredThinking
-        );
-        assert_eq!(row.reasoning.selected_control.as_deref(), Some("xhigh"));
-        assert!(
-            row.compact_hint()
-                .contains("reasoning:low/medium/high/xhigh")
-        );
-    }
 
     #[test]
     fn provider_dashboard_row_surfaces_capability_and_metadata_badges() {
@@ -6886,7 +6578,6 @@ mod tests {
         let _home = EnvVarGuard::set("HOME", home.path().to_string_lossy().as_ref());
         let _hakus_home =
             EnvVarGuard::set("HAKUS_HOME", home.path().to_string_lossy().as_ref());
-        let _codex_home = EnvVarGuard::set("CODEX_HOME", home.path().to_string_lossy().as_ref());
         let _secret_backend = EnvVarGuard::set("HAKUS_SECRET_BACKEND", "file");
         let mut key_envs = ApiProvider::all()
             .iter()
@@ -7719,82 +7410,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn openai_codex_key_entry_is_oauth_only() {
-        let config = Config::default();
-        let mut picker = ProviderPickerView::new_for_missing_auth(
-            ApiProvider::Deepseek,
-            ApiProvider::OpenaiCodex,
-            &config,
-            None,
-        )
-        .expect("OpenAI Codex has a picker row");
-        assert_eq!(picker.stage, Stage::KeyEntry);
 
-        let rendered = render_text(&picker, 96, 20);
-        assert!(rendered.contains("OAuth login"), "{rendered}");
-        assert!(rendered.contains("no token is stored here"), "{rendered}");
-        assert!(!rendered.contains("save & switch"));
-        assert!(!rendered.contains("(paste key here)"));
-        assert!(!rendered.contains("Credentials:"));
-
-        assert!(picker.handle_paste("codex-token"));
-        for c in "codex-token".chars() {
-            picker.handle_key(key(KeyCode::Char(c)));
-        }
-        assert!(picker.api_key_input.is_empty());
-        assert!(matches!(
-            picker.handle_key(key(KeyCode::Enter)),
-            ViewAction::None
-        ));
-        assert_eq!(picker.stage, Stage::ExternalConsentChoice);
-        let choices = render_text(&picker, 100, 20);
-        assert!(choices.contains("Disabled (default)"), "{choices}");
-        assert!(choices.contains("Read-only"), "{choices}");
-        assert!(choices.contains("Managed (unavailable)"), "{choices}");
-
-        picker.handle_key(key(KeyCode::Char('2')));
-        picker.handle_key(key(KeyCode::Enter));
-        assert_eq!(picker.stage, Stage::ExternalConsentConfirm);
-        let confirm = render_text(&picker, 120, 22);
-        assert!(confirm.contains("Owning CLI: Codex CLI"), "{confirm}");
-        assert!(confirm.contains("Exact resolved path:"), "{confirm}");
-        assert!(confirm.contains("no refresh, identity-provider or discovery requests"));
-        assert!(confirm.contains("normal requests to the selected provider"));
-        assert!(confirm.contains("external-revoke --provider openai-codex"));
-        assert!(matches!(
-            picker.handle_key(key(KeyCode::Enter)),
-            ViewAction::EmitAndClose(ViewEvent::ProviderPickerExternalConsentConfirmed {
-                provider: ApiProvider::OpenaiCodex,
-                consent_provider: hakus_config::ProviderKind::OpenaiCodex,
-                source: hakus_config::ExternalCredentialSource::CodexCli,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn external_consent_surface_uses_the_selected_locale() {
-        let config = Config::default();
-        let mut picker = ProviderPickerView::new_for_missing_auth(
-            ApiProvider::Deepseek,
-            ApiProvider::OpenaiCodex,
-            &config,
-            None,
-        )
-        .expect("OpenAI Codex has a picker row")
-        .with_locale(crate::localization::Locale::ZhHans);
-
-        picker.handle_key(key(KeyCode::Enter));
-        let choices = render_text(&picker, 100, 20);
-        let compact = choices
-            .chars()
-            .filter(|ch| !ch.is_whitespace())
-            .collect::<String>();
-        assert!(compact.contains("外部凭据访问"), "{choices}");
-        assert!(compact.contains("禁用（默认）"), "{choices}");
-        assert!(compact.contains("托管（不可用）"), "{choices}");
-    }
 
     #[test]
     fn xai_auth_choice_keeps_api_key_device_oauth_and_external_reuse_distinct() {
@@ -7902,138 +7518,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn inactive_external_consents_are_visible_without_io_and_never_enter_routing_inventory() {
-        let _env = crate::test_support::lock_test_env();
-        let temp = tempfile::tempdir().expect("external consent fixtures");
-        let codex_path = temp.path().join("codex-auth.json");
-        let grok_path = temp.path().join("grok-auth.json");
-        let codex_raw = "codex-external-file-must-not-be-read";
-        let grok_raw = "grok-external-file-must-not-be-read";
-        std::fs::write(&codex_path, codex_raw).expect("write Codex trap");
-        std::fs::write(&grok_path, grok_raw).expect("write Grok trap");
-        let owned_home = temp.path().join("hakus-owned");
-
-        let _hakus_home = crate::test_support::EnvVarGuard::set("HAKUS_HOME", &owned_home);
-        let _codex_path =
-            crate::test_support::EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &codex_path);
-        let _grok_path = crate::test_support::EnvVarGuard::set("GROK_AUTH_PATH", &grok_path);
-        let _codex_access = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _legacy_codex_access = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let _xai_key = crate::test_support::EnvVarGuard::remove("XAI_API_KEY");
-        let _cli_key = crate::test_support::EnvVarGuard::remove("HAKUS_CLI_API_KEY");
-        let _cli_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-
-        let config = Config {
-            provider: Some(ApiProvider::Deepseek.as_str().to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openai_codex: crate::config::ProviderConfig {
-                    auth_mode: Some("oauth".to_string()),
-                    external_credentials: Some(
-                        hakus_config::ExternalCredentialConsentToml::read_only(
-                            hakus_config::ProviderKind::OpenaiCodex,
-                            hakus_config::ExternalCredentialSource::CodexCli,
-                            codex_path.clone(),
-                        ),
-                    ),
-                    ..Default::default()
-                },
-                xai: crate::config::ProviderConfig {
-                    auth_mode: Some("oauth".to_string()),
-                    external_credentials: Some(
-                        hakus_config::ExternalCredentialConsentToml::read_only(
-                            hakus_config::ProviderKind::Xai,
-                            hakus_config::ExternalCredentialSource::GrokCli,
-                            grok_path.clone(),
-                        ),
-                    ),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        crate::external_credentials::reset_side_effect_trap();
-        assert!(!has_api_key_for(&config, ApiProvider::OpenaiCodex));
-        assert!(!has_api_key_for(&config, ApiProvider::Xai));
-
-        let mut picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
-        for provider in [ApiProvider::OpenaiCodex, ApiProvider::Xai] {
-            let index = picker
-                .rows
-                .iter()
-                .position(|row| row.provider == provider)
-                .expect("consented provider row");
-            let row = &picker.rows[index];
-            assert_eq!(row.credential_state, CredentialState::ExternalConsent);
-            assert_eq!(row.auth_status, ProviderAuthStatus::OAuthConsented);
-            let structural = row
-                .external_credential_status
-                .as_ref()
-                .expect("external status");
-            assert_eq!(structural.access.as_str(), "read_only");
-            assert_eq!(structural.route_state, "dormant");
-            assert!(structural.revoke_command.contains(provider.as_str()));
-            assert_eq!(
-                row.readiness,
-                ResolvedProviderReadiness::ExternalConsentPendingSelection
-            );
-            assert!(!row.readiness.can_attempt());
-            picker.selected_idx = index;
-            let visible = render_text(&picker, 140, 32);
-            assert!(visible.contains("External: access=read_only"), "{visible}");
-            assert!(visible.contains("Owner/path:"), "{visible}");
-            assert!(
-                visible.contains("revoke: hakus auth external-revoke"),
-                "{visible}"
-            );
-            assert!(
-                picker.selected_has_key(),
-                "selecting {provider:?} should activate the consented route before checking it"
-            );
-            assert!(matches!(
-                picker.handle_key(key(KeyCode::Enter)),
-                ViewAction::EmitAndClose(ViewEvent::ProviderPickerApplied {
-                    provider: selected,
-                    ..
-                }) if selected == provider
-            ));
-        }
-        assert!(matches!(
-            picker.handle_key(key(KeyCode::Char('x'))),
-            ViewAction::EmitAndClose(ViewEvent::ProviderPickerExternalConsentRevoked {
-                provider: ApiProvider::Xai
-            })
-        ));
-
-        let inventory = crate::model_inventory::ModelInventory::from_config(&config);
-        assert!(
-            inventory.candidates.iter().all(|candidate| !matches!(
-                candidate.provider,
-                ApiProvider::OpenaiCodex | ApiProvider::Xai
-            )),
-            "dormant external-only routes must not reach auto-routing inventory"
-        );
-        assert_eq!(
-            crate::route_billing::for_route(&config, ApiProvider::Xai),
-            crate::route_billing::BillingPresentation::Metered
-        );
-        assert_eq!(
-            crate::external_credentials::side_effect_trap_counts(),
-            (0, 0),
-            "picker, readiness, billing, and model inventory must not inspect inactive external files"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&codex_path).expect("Codex trap unchanged"),
-            codex_raw
-        );
-        assert_eq!(
-            std::fs::read_to_string(&grok_path).expect("Grok trap unchanged"),
-            grok_raw
-        );
-        assert!(!owned_home.join("credentials/xai-auth.json").exists());
-    }
 
     #[test]
     fn kimi_cli_token_is_never_auto_enabled_without_explicit_legacy_auth_mode() {

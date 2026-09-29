@@ -106,7 +106,7 @@ export interface BackendVersionInfo {
  *                 ChatRequest.project_id — agent can be told which
  *                 folder to work in without the user spelling out
  *                 absolute paths every turn.
- *   v8 (0.8.0): + Codex review panel: /api/git/status, /api/git/diff,
+ *   v8 (0.8.0): + review panel: /api/git/status, /api/git/diff,
  *               /api/git/stage + /ws/terminal
  *   v7 (0.7.0): + /api/question/answer + ask_user 工具交互式提问
  *   v6 (0.6.0): + Phase 4 WS 心跳/重连 + Phase 5 /api/metrics 端点
@@ -229,6 +229,13 @@ export interface RuntimeConfigSnapshot {
   memory_enabled: boolean
   search_provider: string
   prompt_suggestion: boolean
+}
+
+export interface WeChatStatus {
+  status: string
+  auto_reply?: boolean
+  account_id?: string | null
+  qrcode_base64?: string | null
 }
 
 export interface ProvidersResponse {
@@ -571,6 +578,7 @@ export type AgentEventType =
   | 'reasoning_delta'
   | 'tool_call_started'
   | 'tool_call_finished'
+  | 'browser_tool_requested'
   | 'orchestrator_phase_changed'
   | 'activity_changed'
   | 'checkpoint_saved'
@@ -671,6 +679,14 @@ export interface ToolCallFinishedEvent extends BaseAgentEvent {
   arguments: Record<string, any>
 }
 
+export interface BrowserToolRequestedEvent extends BaseAgentEvent {
+  event_type: 'browser_tool_requested'
+  thread_id: string
+  turn_id: string
+  call_id: string
+  arguments: Record<string, unknown>
+}
+
 export interface OrchestratorPhaseChangedEvent extends BaseAgentEvent {
   event_type: 'orchestrator_phase_changed'
   from_phase: string
@@ -737,6 +753,7 @@ export type AgentEvent =
   | ReasoningDeltaEvent
   | ToolCallStartedEvent
   | ToolCallFinishedEvent
+  | BrowserToolRequestedEvent
   | OrchestratorPhaseChangedEvent
   | ActivityChangedEvent
   | TokenUsageEvent
@@ -1199,7 +1216,7 @@ export interface McpInvokeResult {
 }
 
 // =====================================================================
-// Git / Workspace — Codex-style review panel
+// Git / Workspace — review panel
 // =====================================================================
 
 export interface GitFileChange {
@@ -1233,7 +1250,7 @@ export interface GitDiffResponse {
 }
 
 // =====================================================================
-// Projects — Codex-style "work on a project" feature
+// Projects — local and remote workspaces
 // =====================================================================
 
 /**
@@ -1255,6 +1272,9 @@ export interface Project {
   last_used_at: number
   /** Android SAF tree URI; absent on desktop projects. */
   source_uri?: string
+  /** Remote projects are managed by the desktop shell and never sent to the local runtime. */
+  kind?: 'local' | 'remote'
+  remote?: RemoteProjectConnection
 }
 
 export interface ProjectsListResponse {
@@ -1273,8 +1293,34 @@ export interface ProjectUpdateBody {
   pinned?: boolean
 }
 
+export type RemoteConnectionType = 'ssh' | 'wsl' | 'docker'
+export type RemoteAuthMethod = 'password' | 'key'
+export type RemoteRuntimeInstallMode = 'localUpload' | 'remoteDownload'
+
+/** Connection details retained with a remote project, excluding secrets. */
+export interface RemoteProjectConnection {
+  id: string
+  type: RemoteConnectionType
+  alias?: string
+  host?: string
+  port?: number
+  username?: string
+  authMethod?: RemoteAuthMethod
+  privateKeyPath?: string
+  installMode?: RemoteRuntimeInstallMode
+  distro?: string
+  container?: string
+}
+
+export interface RemoteProjectCreateBody {
+  name: string
+  path: string
+  pinned?: boolean
+  remote: RemoteProjectConnection
+}
+
 // =====================================================================
-// Codex-aligned feature extensions
+// Feature extensions
 // =====================================================================
 
 /** Session flag: in-memory only — not listed in server history, no memory writes. */

@@ -423,7 +423,7 @@
   "CmdModelsDescription": "Fetch live model IDs from the active API",
   "CmdModelDbDescription": "Browse the bundled model database",
   "CmdNetworkDescription": "Manage network allow and deny rules",
-  "CmdUpdateDescription": "Check for and install a new CodeWhale release",
+  "CmdUpdateDescription": "Check for and install a new HakusCLI release",
   "CmdNoteDescription": "Add, list, edit, or remove workspace notes",
   "CmdThemeDescription": "Switch theme or open the theme picker",
   "CmdProviderDescription": "Switch the active provider and/or model",
@@ -497,7 +497,7 @@
   "TranslationFailed": "Translation failed",
   "CmdTrustDescription": "Manage workspace trust and the per-path allowlist",
   "CmdWorkspaceDescription": "Show or switch the current workspace",
-  "CmdWechatDescription": "Connect to WeChat: QR login, status, send, and message polling",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "Remove last message pair",
   "CmdVerboseDescription": "Toggle full live thinking in the transcript",
   "CmdCacheAdvice": "Hit/miss ratios over ~70% after the third turn indicate a stable cache prefix; \n lower than that on long sessions suggests prefix churn worth investigating (#263).",
@@ -931,7 +931,7 @@
   "ApprovalChooseAction": "Enter selected option, or press y/a/d directly",
   "ApprovalIntentLabel": "Intent: ",
   "ApprovalMoreLines": "  … (+{count} lines)",
-  "ApprovalAutoDeniedSession": "Auto-denied {tool}: a matching request was denied earlier during this CodeWhale run. Restart CodeWhale to reconsider it.",
+  "ApprovalAutoDeniedSession": "Auto-denied {tool}: a matching request was denied earlier during this HakusCLI run. Restart HakusCLI to reconsider it.",
   "ElevationTitleSandboxDenied": "  ⚠, Sandbox Denied ",
   "ElevationTitleRequired": " Sandbox Elevation Required ",
   "ElevationFieldTool": "  Tool: ",
@@ -1278,7 +1278,6 @@
   "ProviderExternalActionRevoke": "revoke external",
   "ProviderExternalActionChoices": "external access choices",
   "ProviderExternalActionReuseGrok": "external Grok reuse",
-  "ProviderExternalHintCodexReview": "After {login}, press Enter to review disabled/read-only/managed access choices.",
   "ProviderExternalHintXaiReview": "Press Enter for HakusCLI-owned device login; press E to review existing Grok CLI reuse.",
   "ProviderExternalHintXaiApiKey": "Or use XAI_API_KEY and re-open this picker.",
   "XaiAuthChoiceTitle": " xAI authentication ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} has no /models endpoint; reachability was not probed.",
   "ProviderTemplateOpened": "Provider template '{id}' opened. Enter an API key only.",
   "ProviderTemplateUnknown": "Unknown provider template '{id}'.",
-  "ProviderTemplateOpenedEnvOnly": "Built-in template '{id}' opened. Enter the API key env var name, then save. Do not paste a raw key.",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "Built-in template '{id}' opened. Enter the API key env var name, then save. Do not paste a raw key."
 }

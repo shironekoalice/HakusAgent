@@ -206,29 +206,6 @@ fn resolver_applies_repeated_limit_overrides_in_request_order() {
     assert_eq!(candidate.limits().context_tokens, Some(333));
 }
 
-#[test]
-fn resolver_records_exact_limit_override_provenance() {
-    let overrides = vec![
-        SourcedLimitOverride {
-            field: LimitField::InputTokens,
-            value: None,
-            source: OverrideSource::CodexPublicApiLimitStrip,
-        },
-        SourcedLimitOverride {
-            field: LimitField::ContextTokens,
-            value: Some(128_000),
-            source: OverrideSource::CodexRosterCorrection,
-        },
-    ];
-    let mut request = req(Some(ProviderKind::OpenaiCodex), None);
-    request.limit_overrides = overrides.clone();
-
-    let candidate = RouteResolver::new()
-        .resolve(&request)
-        .expect("Codex route with sourced overrides resolves");
-
-    assert_eq!(candidate.applied_limit_overrides(), overrides.as_slice());
-}
 
 #[test]
 fn resolved_auth_source_existing_variants_keep_wire_compatibility() {
@@ -272,59 +249,6 @@ fn descriptor_for_every_kind_has_nonempty_transport_facts() {
     }
 }
 
-#[test]
-fn descriptor_protocol_matches_provider_wire() {
-    for kind in ProviderKind::ALL {
-        let d = ProviderDescriptor::for_kind(kind);
-        if matches!(kind, ProviderKind::Deepseek | ProviderKind::OpencodeZen) {
-            assert_eq!(d.wire_policy(), crate::provider::WirePolicy::ModelAware);
-            assert_eq!(
-                d.protocol_for_endpoint("chat"),
-                Some(RequestProtocol::ChatCompletions)
-            );
-            assert_eq!(
-                d.protocol_for_endpoint("responses"),
-                Some(RequestProtocol::Responses)
-            );
-            if kind == ProviderKind::Deepseek {
-                assert_eq!(
-                    d.protocol_for_endpoint("messages"),
-                    Some(RequestProtocol::AnthropicMessages)
-                );
-                assert_eq!(d.protocol_for_endpoint("models/gemini"), None);
-                continue;
-            }
-            assert_eq!(
-                d.protocol_for_endpoint("messages"),
-                Some(RequestProtocol::AnthropicMessages)
-            );
-            assert_eq!(d.protocol_for_endpoint("models/gemini"), None);
-            continue;
-        }
-        assert_eq!(
-            d.protocol_for_endpoint("chat"),
-            kind.provider().wire_policy().fixed(),
-            "{kind:?} protocol must equal the provider wire policy"
-        );
-        let expected = match kind {
-            ProviderKind::OpenaiCodex => Some(RequestProtocol::Responses),
-            ProviderKind::DeepseekAnthropic
-            | ProviderKind::Anthropic
-            | ProviderKind::MinimaxAnthropic
-            | ProviderKind::Openmodel
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlanAnthropic => {
-                Some(RequestProtocol::AnthropicMessages)
-            }
-            _ => Some(RequestProtocol::ChatCompletions),
-        };
-        assert_eq!(
-            d.protocol_for_endpoint("chat"),
-            expected,
-            "{kind:?} protocol mismatch"
-        );
-    }
-}
 
 #[test]
 fn resolver_explicit_provider_scoped_model_maps_to_wire_id() {

@@ -7,7 +7,7 @@
  * previous long stack of unrelated cards and repeated headings.
  */
 
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import {
   Puzzle,
   Info,
@@ -22,8 +22,8 @@ import {
   Timer,
   FolderOpen,
   ArrowLeft,
+  Loader2,
 } from 'lucide-react'
-import { WeChatPanel } from './panels/WeChatPanel'
 import {
   Dialog,
   DialogContent,
@@ -35,23 +35,25 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { GlassSelect } from '@/components/ui/glass-select'
 import { useI18n, type MessageKey } from '@/lib/i18n'
-import { ModelPanel } from './panels/ModelPanel'
-import { CharacterPanel } from './panels/CharacterPanel'
-import { ChatPanel } from './panels/ChatPanel'
-import { TtsPanel } from './panels/TtsPanel'
-import { MemoryPanel } from './panels/MemoryPanel'
-import { ToolsPanel } from './panels/ToolsPanel'
-import { AppearancePanel } from './panels/AppearancePanel'
-import { TrayPanel } from './panels/TrayPanel'
-import { McpPanel } from './panels/McpPanel'
-import { AdvancedPanel } from './panels/AdvancedPanel'
-import { AboutPanel } from './panels/AboutPanel'
-import { ProjectsPanel } from './panels/ProjectsPanel'
-import { SkillsPanel } from './panels/SkillsPanel'
-import { AutomationsPanel } from './panels/AutomationsPanel'
 import { useAppStore, type SettingsCategory } from '@/store/app'
 
 type CategoryId = SettingsCategory
+
+const ModelPanel = lazy(() => import('./panels/ModelPanel').then((module) => ({ default: module.ModelPanel })))
+const CharacterPanel = lazy(() => import('./panels/CharacterPanel').then((module) => ({ default: module.CharacterPanel })))
+const ChatPanel = lazy(() => import('./panels/ChatPanel').then((module) => ({ default: module.ChatPanel })))
+const TtsPanel = lazy(() => import('./panels/TtsPanel').then((module) => ({ default: module.TtsPanel })))
+const MemoryPanel = lazy(() => import('./panels/MemoryPanel').then((module) => ({ default: module.MemoryPanel })))
+const ToolsPanel = lazy(() => import('./panels/ToolsPanel').then((module) => ({ default: module.ToolsPanel })))
+const AppearancePanel = lazy(() => import('./panels/AppearancePanel').then((module) => ({ default: module.AppearancePanel })))
+const TrayPanel = lazy(() => import('./panels/TrayPanel').then((module) => ({ default: module.TrayPanel })))
+const McpPanel = lazy(() => import('./panels/McpPanel').then((module) => ({ default: module.McpPanel })))
+const AdvancedPanel = lazy(() => import('./panels/AdvancedPanel').then((module) => ({ default: module.AdvancedPanel })))
+const AboutPanel = lazy(() => import('./panels/AboutPanel').then((module) => ({ default: module.AboutPanel })))
+const ProjectsPanel = lazy(() => import('./panels/ProjectsPanel').then((module) => ({ default: module.ProjectsPanel })))
+const SkillsPanel = lazy(() => import('./panels/SkillsPanel').then((module) => ({ default: module.SkillsPanel })))
+const AutomationsPanel = lazy(() => import('./panels/AutomationsPanel').then((module) => ({ default: module.AutomationsPanel })))
+const WeChatPanel = lazy(() => import('./panels/WeChatPanel').then((module) => ({ default: module.WeChatPanel })))
 
 interface Category {
   id: CategoryId
@@ -81,15 +83,44 @@ interface SettingsDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
+function SettingsPanelLoading({ locale }: { locale: string }) {
+  return (
+    <div className="flex min-h-[20rem] items-center justify-center" role="status" aria-busy="true">
+      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+      <span className="sr-only">{locale === 'zh-CN' ? '正在加载' : 'Loading'}</span>
+    </div>
+  )
+}
+
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const initialCategory = useAppStore((state) => state.settingsInitialCategory)
   const [active, setActive] = useState<CategoryId>(initialCategory)
   useEffect(() => {
     if (open) setActive(initialCategory)
   }, [initialCategory, open])
-  const activeCat = CATEGORIES.find((c) => c.id === active) || CATEGORIES[0]
-  const ActiveIcon = activeCat.icon
+  const categoryGroups = [
+    {
+      label: { zh: '常用', en: 'General' },
+      ids: ['general', 'appearance'] as CategoryId[],
+    },
+    {
+      label: { zh: '个性化', en: 'Personalization' },
+      ids: ['character', 'voice'] as CategoryId[],
+    },
+    {
+      label: { zh: '工作区', en: 'Workspace' },
+      ids: ['workspace-data', 'models'] as CategoryId[],
+    },
+    {
+      label: { zh: '工具与服务', en: 'Tools & services' },
+      ids: ['tools', 'automations', 'skills', 'mcp', 'wechat'] as CategoryId[],
+    },
+    {
+      label: { zh: '系统', en: 'System' },
+      ids: ['tray', 'about'] as CategoryId[],
+    },
+  ]
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -112,12 +143,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               <ArrowLeft className="h-4 w-4" />
             </button>
             <div className="settings-dialog-heading min-w-0">
-              <span className="settings-dialog-eyebrow">{t('settings')}</span>
-              <DialogTitle className="flex items-center gap-2 text-base">
-                <ActiveIcon className="h-4 w-4 text-primary" />
-                {t(activeCat.labelKey)}
-              </DialogTitle>
-              <DialogDescription className="text-[12px]">{t(activeCat.descKey)}</DialogDescription>
+              <DialogTitle>{t('settings')}</DialogTitle>
+              <DialogDescription>
+                {locale === 'zh-CN' ? '偏好设置与工作区选项' : 'Preferences and workspace options'}
+              </DialogDescription>
             </div>
           </div>
         </DialogHeader>
@@ -142,32 +171,40 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             className="settings-dialog-nav shrink-0 overflow-y-auto border-r border-border/70 bg-muted/35 p-2"
             aria-label={t('settingsCategory')}
           >
-            <ul>
-              {CATEGORIES.map((c) => {
-                const Icon = c.icon
-                const isActive = c.id === active
-                return (
-                  <li key={c.id}>
-                    <button
-                      onClick={() => setActive(c.id)}
-                      className={cn(
-                        'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-150',
-                        isActive ? 'font-medium' : 'text-foreground/80',
-                      )}
-                      aria-current={isActive ? 'page' : undefined}
-                    >
-                      <Icon
-                        className={cn(
-                          'h-4 w-4 shrink-0',
-                          isActive ? 'text-primary' : 'text-muted-foreground',
-                        )}
-                      />
-                      <span className="truncate">{t(c.labelKey)}</span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+            {categoryGroups.map((group) => (
+              <section className="settings-nav-group" key={group.label.en}>
+                <h2 className="settings-nav-group-title">
+                  {locale === 'zh-CN' ? group.label.zh : group.label.en}
+                </h2>
+                <ul>
+                  {group.ids.map((id) => {
+                    const c = CATEGORIES.find((category) => category.id === id)!
+                    const Icon = c.icon
+                    const isActive = c.id === active
+                    return (
+                      <li key={c.id}>
+                        <button
+                          onClick={() => setActive(c.id)}
+                          className={cn(
+                            'settings-nav-item flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-150',
+                            isActive ? 'font-medium' : 'text-foreground/80',
+                          )}
+                          aria-current={isActive ? 'page' : undefined}
+                        >
+                          <Icon
+                            className={cn(
+                              'h-4 w-4 shrink-0',
+                              isActive ? 'text-primary' : 'text-muted-foreground',
+                            )}
+                          />
+                          <span className="truncate">{t(c.labelKey)}</span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </section>
+            ))}
           </nav>
 
           {/* Right: panel — flex-1 + min-h-0 so it shrinks; ScrollArea
@@ -178,21 +215,23 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               active === 'models' && 'settings-dialog-model-panel',
             )}
           >
-            <ScrollArea className="h-full">
+            <ScrollArea type="always" className="settings-content-scroll-area h-full">
               <div className="p-6">
-                {active === 'general' && <div className="settings-page settings-page-single"><ChatPanel /></div>}
-                {active === 'character' && <div className="settings-page settings-page-single"><CharacterPanel /></div>}
-                {active === 'voice' && <div className="settings-page settings-page-single"><TtsPanel /></div>}
-                {active === 'models' && <div className="settings-page settings-page-models"><ModelPanel /></div>}
-                {active === 'workspace-data' && <div className="settings-group-stack"><ProjectsPanel /><MemoryPanel /><AdvancedPanel /></div>}
-                {active === 'tools' && <div className="settings-page settings-page-single"><ToolsPanel /></div>}
-                {active === 'automations' && <div className="settings-page settings-page-single"><AutomationsPanel /></div>}
-                {active === 'skills' && <div className="settings-page settings-page-single"><SkillsPanel /></div>}
-                {active === 'mcp' && <div className="settings-page settings-page-single"><McpPanel /></div>}
-                {active === 'wechat' && <div className="settings-page settings-page-single"><WeChatPanel /></div>}
-                {active === 'appearance' && <div className="settings-page settings-page-single"><AppearancePanel /></div>}
-                {active === 'tray' && <div className="settings-page settings-page-single"><TrayPanel /></div>}
-                {active === 'about' && <div className="settings-page settings-page-single"><AboutPanel /></div>}
+                <Suspense fallback={<SettingsPanelLoading locale={locale} />}>
+                  {active === 'general' && <div className="settings-page settings-page-single"><ChatPanel /></div>}
+                  {active === 'character' && <div className="settings-page settings-page-single"><CharacterPanel /></div>}
+                  {active === 'voice' && <div className="settings-page settings-page-single"><TtsPanel /></div>}
+                  {active === 'models' && <div className="settings-page settings-page-models"><ModelPanel /></div>}
+                  {active === 'workspace-data' && <div className="settings-group-stack"><ProjectsPanel /><MemoryPanel /><AdvancedPanel /></div>}
+                  {active === 'tools' && <div className="settings-page settings-page-single"><ToolsPanel /></div>}
+                  {active === 'automations' && <div className="settings-page settings-page-single"><AutomationsPanel /></div>}
+                  {active === 'skills' && <div className="settings-page settings-page-single"><SkillsPanel /></div>}
+                  {active === 'mcp' && <div className="settings-page settings-page-single"><McpPanel /></div>}
+                  {active === 'wechat' && <div className="settings-page settings-page-single"><WeChatPanel /></div>}
+                  {active === 'appearance' && <div className="settings-page settings-page-single"><AppearancePanel /></div>}
+                  {active === 'tray' && <div className="settings-page settings-page-single"><TrayPanel /></div>}
+                  {active === 'about' && <div className="settings-page settings-page-single"><AboutPanel /></div>}
+                </Suspense>
               </div>
             </ScrollArea>
           </div>

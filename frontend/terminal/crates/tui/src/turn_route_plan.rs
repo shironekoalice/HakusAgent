@@ -280,25 +280,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn auto_model_route_selection_keeps_raw_reasoning_preference() {
-        assert_eq!(
-            reasoning_effort_for_route_selection(
-                true,
-                ApiProvider::OpenaiCodex,
-                ReasoningEffort::Off,
-            ),
-            "off"
-        );
-        assert_eq!(
-            reasoning_effort_for_route_selection(
-                false,
-                ApiProvider::OpenaiCodex,
-                ReasoningEffort::Off,
-            ),
-            "low"
-        );
-    }
 
     #[tokio::test]
     async fn auto_model_route_respects_fixed_reasoning_preference() {

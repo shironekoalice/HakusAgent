@@ -55,6 +55,21 @@ impl LoginHandle {
     }
 }
 
+/// Render `text` as a QR code and return it as base64-encoded PNG.
+/// The desktop frontend embeds the result in `data:image/png;base64,`,
+/// so the payload must be a real PNG — a base64 of the raw URL text
+/// renders as a broken image.
+fn encode_qr_png(text: &str) -> Option<String> {
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let img = code
+        .render::<image::Luma<u8>>()
+        .min_dimensions(256, 256)
+        .build();
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
+}
+
 /// Start a QR login flow on `client`.
 ///
 /// 1. Calls `get_bot_qrcode` to obtain the QR data.
@@ -65,16 +80,14 @@ impl LoginHandle {
 pub async fn start_qr_login(client: &IlLinkClient) -> crate::models::Result<LoginHandle> {
     let qr_resp = client.get_qrcode().await?;
 
-    // The SDK sometimes returns a URL instead of base64 image data.
-    // Convert URL to a base64 PNG using the `qrcode` crate if available,
-    // or just use the raw content as-is.
     let qr_image_b64 = if !qr_resp.qrcode_img_content.is_empty() {
         qr_resp.qrcode_img_content.clone()
     } else if qr_resp.qrcode.starts_with("http") {
-        // No image content, but we have a URL — the TUI command
-        // layer will render a text-based QR from the token instead.
-        base64::engine::general_purpose::STANDARD
-            .encode(qr_resp.qrcode.as_bytes())
+        encode_qr_png(&qr_resp.qrcode).unwrap_or_else(|| {
+            // Last resort: base64 of the URL text (not a valid image,
+            // but keeps the field non-empty for status reporting).
+            base64::engine::general_purpose::STANDARD.encode(qr_resp.qrcode.as_bytes())
+        })
     } else {
         qr_resp.qrcode.clone()
     };
@@ -188,5 +201,21 @@ fn parse_qr_status(resp: QrStatusResponse) -> QrLoginStatus {
             tracing::warn!("WeChat: unknown QR status: {other}");
             QrLoginStatus::Waiting
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qr_png_is_valid_image() {
+        let b64 = encode_qr_png("https://liteapp.weixin.qq.com/q/abc?bot_type=3").expect("png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("base64");
+        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']), "not a PNG");
+        let decoded = image::load_from_memory(&bytes).expect("decodable PNG");
+        assert!(decoded.width() >= 256);
     }
 }

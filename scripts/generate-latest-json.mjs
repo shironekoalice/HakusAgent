@@ -104,6 +104,11 @@ for (const sigFile of sigFiles) {
     unmatched.push(`${bundleName} (empty signature)`)
     continue
   }
+  if (platforms[key]) {
+    throw new Error(
+      `multiple updater bundles matched ${key}: ${platforms[key].url} and ${bundleName}`,
+    )
+  }
   platforms[key] = {
     signature,
     url: `${baseUrl}/${encodeURIComponent(bundleName)}`,

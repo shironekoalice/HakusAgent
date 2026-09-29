@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* `dark:` utilities must follow the app's .dark class (applyTheme), not the
+   OS preference — Tailwind v4 otherwise defaults to prefers-color-scheme,
+   which desyncs from the manual light/dark toggle. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -25,14 +30,19 @@
   --color-sidebar-accent: hsl(var(--sidebar-accent));
   --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
   --color-sidebar-border: hsl(var(--sidebar-border));
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  /* Keep Tailwind radius utilities aligned with the app geometry tokens.
+     The hierarchy is intentional: surfaces 12px, controls 8px, compact
+     rows 6px. Pills remain opt-in through rounded-full. */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 0.75rem;
+  --radius-3xl: 0.75rem;
 }
 
 /**
- * HakusAI — Codex 桌面版视觉风格
+ * HakusAI desktop visual system
  *
  * 设计原则：
  *   1. 冷灰纸质配色：避免纯白/纯黑，使用带色相的灰度
@@ -62,7 +72,7 @@
     --border: 220 14% 84%;
     --input: 220 14% 78%;
     --ring: 211 100% 50%;
-    --radius: 0.625rem;
+    --radius: 0.5rem;
 
     /* 语义色 */
     --success: 152 30% 38%;
@@ -83,7 +93,7 @@
        anchor below THIS value so panels can never cover the window
        controls. */
     --titlebar-total: calc(3.25rem + env(safe-area-inset-top));
-    /* Codex 桌面版侧栏默认宽 275px（解码 TW(): clamp(240, win-240, 520)，默认 275） */
+    /* Desktop sidebar default width: 275px. */
     --sidebar-width: 17.1875rem;
     --sidebar-compact-width: 4.25rem;
     --right-panel-width: 26.25rem;
@@ -109,7 +119,7 @@
      * --thread-content-max-width: 40rem（app-initial CSS 原文）
      * --chat-max-width: 800px / --composer-radius: var(--radius-4xl)=1.5rem
      * --composer-gutter: calc(var(--spacing)*3)=0.75rem
-     * --codex-chat-font-size: 13px；行高 = 字号+8px
+     * --chat-font-size: 13px；行高 = 字号+8px
      */
     --thread-content-max-width: 40rem;
     --chat-max-width: 800px;
@@ -119,12 +129,12 @@
     --chat-inline-padding: 1.5rem;
     --composer-gutter: 0.75rem;
     --composer-radius: 1.5rem;
-    --codex-chat-font-size: 13px;
+    --chat-font-size: 13px;
   }
 
   .dark {
-    /* ===== 暗色（对齐 ChatGPT/Codex 桌面版解码资产） =====
-     * 资产精确值（PUIK [data-theme=dark] + Codex shell xU.dark）：
+    /* ===== 暗色主题 =====
+     * Shared dark-surface tokens:
      *   surface #000000 / surface-secondary #181818 / surface #212121
      *   surface-elevated #303030 / surface-elevated-secondary #414141
      *   text #dcdcdc~#ededed / text-secondary #afafaf / text-tertiary #8f8f8f
@@ -171,7 +181,7 @@
     --chat-inline-padding: 1.5rem;
     --composer-gutter: 0.75rem;
     --composer-radius: 1.5rem;
-    --codex-chat-font-size: 13px;
+    --chat-font-size: 13px;
     --surface-elevated: 0 0% 19%;
     --link-color: 213 100% 74%;
 
@@ -179,6 +189,55 @@
     --shadow-md: 0 6px 14px rgba(0, 0, 0, 0.34), 0 1px 2px rgba(0, 0, 0, 0.22);
     --shadow-lg: 0 14px 32px rgba(0, 0, 0, 0.42);
   }
+}
+
+.text-context-menu {
+  position: fixed;
+  z-index: 10000;
+  width: 236px;
+  max-width: calc(100vw - 16px);
+  max-height: min(70vh, 420px);
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: 8px;
+  background: hsl(var(--popover) / 0.96);
+  color: hsl(var(--popover-foreground));
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.28), 0 2px 8px rgb(0 0 0 / 0.16);
+  backdrop-filter: blur(18px);
+}
+
+.text-context-menu-item {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: default;
+}
+
+.text-context-menu-item:hover:not(:disabled),
+.text-context-menu-item:focus-visible:not(:disabled) {
+  outline: none;
+  background: hsl(var(--accent) / 0.7);
+}
+
+.text-context-menu-item:disabled {
+  opacity: 0.42;
+}
+
+.text-context-menu-separator {
+  height: 1px;
+  margin: 4px 5px;
+  background: hsl(var(--border) / 0.72);
 }
 
 @layer base {
@@ -277,7 +336,7 @@
     @apply rounded-lg border border-border/90 bg-card shadow-md;
   }
 
-  /* Flat card (Codex style) */
+  /* Flat card */
   .card-flat {
     @apply rounded-lg border border-border/80 bg-card/95 transition-colors duration-150;
   }
@@ -592,9 +651,9 @@
     width: 100%;
     padding-top: 0.75rem;
     padding-bottom: 0.75rem;
-    /* Codex 桌面端解码值：正文字号 13px、行高 = 字号 + 8px */
-    font-size: var(--codex-chat-font-size);
-    line-height: calc(var(--codex-chat-font-size) + 8px);
+    /* Desktop body type: 13px with an 8px leading step. */
+    font-size: var(--chat-font-size);
+    line-height: calc(var(--chat-font-size) + 8px);
   }
 
   .chat-message,
@@ -1984,7 +2043,7 @@
 }
 
 .dark {
-  --background: 240 7% 6%;
+  --background: 0 0% 9.4%;
   --foreground: 0 0% 98%;
   --card: 240 6% 12%;
   --card-foreground: 0 0% 98%;
@@ -2005,6 +2064,18 @@
   --ios-separator: hsl(0 0% 100% / 0.16);
   --ios-material: hsl(240 6% 13% / 0.74);
   --ios-grouped: hsl(240 6% 10% / 0.82);
+}
+
+@media (min-width: 768px) {
+  :root {
+    --ios-material: rgb(255 255 255 / 0.62);
+    --ios-sidebar-material: rgb(255 255 255 / 0.88);
+  }
+
+  .dark {
+    --ios-material: rgb(24 24 24 / 0.62);
+    --ios-sidebar-material: rgb(24 24 24 / 0.88);
+  }
 }
 
 html,
@@ -2223,7 +2294,7 @@ select:focus {
   border-radius: 1.25rem !important;
 }
 
-/* 用户消息气泡：参考 ChatGPT 桌面端样式 —— 右对齐半透明中性气泡
+/* 用户消息气泡：右对齐半透明中性气泡
    （rounded-2xl + 前景色 6% 透明度），不再是主色实底气泡。 */
 [data-role="user"] .chat-message-body > .selectable {
   border-color: transparent !important;
@@ -2353,7 +2424,7 @@ select:focus {
 
 /* 正文列宽度上限。必须写在这里而不是组件里的 Tailwind 类：本文件是无层级
    (unlayered) 样式，级联优先级高于 @layer utilities，Tailwind 的
-   max-w-* 会被上面的 max-width:100% 覆盖掉。宽度用 Codex 的正文列 token
+   max-w-* 会被上面的 max-width:100% 覆盖掉。宽度使用正文列 token
    (40rem)，与 composer 共用，保证输入框和正文左右同边。 */
 .chat-timeline {
   min-width: 0;
@@ -2435,7 +2506,7 @@ select:focus {
 }
 
 /* ========================================================================
- * macOS 26 desktop shell
+ * Desktop liquid-glass-inspired shell
  *
  * Liquid Glass belongs to the navigation layer: the titlebar, side panes,
  * status bar, and menus float above a quieter content canvas. Keeping the
@@ -2455,7 +2526,7 @@ select:focus {
        becomes a black ring in undecorated Tauri windows and is especially
        visible during resize or first paint. */
     padding: 0;
-    background: hsl(var(--background));
+    background: transparent;
   }
 
   .app-main {
@@ -2468,7 +2539,7 @@ select:focus {
     overflow: hidden;
     border: 0;
     border-radius: 0;
-    background: hsl(var(--background) / 0.94);
+    background: hsl(var(--background));
     box-shadow: none;
   }
 
@@ -2477,7 +2548,7 @@ select:focus {
     overflow: hidden !important;
     border: 0;
     border-radius: 0;
-    background: var(--ios-material);
+    background: transparent;
     box-shadow: none;
   }
 
@@ -2493,7 +2564,7 @@ select:focus {
     min-height: 0;
     border: 0 !important;
     border-radius: inherit;
-    background: var(--ios-material) !important;
+    background: var(--ios-sidebar-material) !important;
   }
 
   .titlebar {
@@ -2702,6 +2773,35 @@ a:focus-visible,
   backdrop-filter: blur(28px) saturate(160%);
 }
 
+/* GlassSelect is portaled to body so it can escape clipped settings scroll
+ * areas. Keep its visual treatment global; descendant-only settings rules do
+ * not apply once the list leaves the dialog subtree. */
+.glass-list {
+  z-index: 500 !important;
+  border-color: hsl(var(--foreground) / 0.14) !important;
+  border-radius: var(--ui-radius-surface, 0.75rem) !important;
+  background: hsl(var(--popover)) !important;
+  padding: 0.25rem !important;
+  box-shadow: 0 12px 28px hsl(240 20% 2% / 0.18) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.glass-list [role="option"] {
+  min-height: 2rem;
+  border-radius: var(--ui-radius-compact, 0.375rem) !important;
+  padding: 0.45rem 0.6rem !important;
+}
+
+.glass-list [role="option"][aria-selected="true"] {
+  background: hsl(var(--primary) / 0.12) !important;
+  color: hsl(var(--foreground)) !important;
+}
+
+.glass-list [role="option"]:hover {
+  background: hsl(var(--foreground) / 0.06) !important;
+}
+
 /* Dialog close (X) is auto-focused by Radix when a dialog opens — the global
  * focus-visible outline painted a box around the X before any interaction. */
 .dialog-close:focus-visible {
@@ -2758,17 +2858,26 @@ select:focus-visible {
   box-shadow: none !important;
 }
 
+/* Composite search controls show focus on the full icon-and-input row. */
+.search-composite:focus-within {
+  border-color: hsl(var(--ring) / 0.48) !important;
+  box-shadow: 0 0 0 2px hsl(var(--ring) / 0.12) !important;
+}
+
+.search-composite input.search-composite-input,
+.search-composite input.search-composite-input:focus,
+.search-composite input.search-composite-input:focus-visible {
+  border: 0 !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
 @media (min-width: 768px) {
-  /* Provider settings use two independent scroll regions. The right form
-     can grow without moving the provider navigation on the left. */
-  .model-provider-layout,
-  .model-provider-sidebar,
   .model-provider-form {
     min-height: 0;
-  }
-
-  .model-provider-layout {
-    grid-template-rows: minmax(0, 1fr);
   }
 
   .model-provider-form {
@@ -2776,23 +2885,6 @@ select:focus-visible {
     overflow-y: auto;
     scrollbar-gutter: stable;
     padding-right: 0.25rem;
-  }
-
-  .model-provider-sidebar {
-    align-self: start;
-  }
-
-.model-provider-list-scroll {
-    min-height: 0;
-    scrollbar-gutter: stable;
-  }
-
-  /* Provider selection is state, not keyboard focus chrome. Keep the
-     selected surface quiet while retaining focus treatment for every other
-     actionable control in Settings. */
-  .model-provider-row button:focus-visible {
-    outline: none !important;
-    box-shadow: none !important;
   }
 }
 
@@ -2926,28 +3018,30 @@ select:focus-visible {
   overflow: visible !important;
 }
 
-.model-provider-layout {
-  min-height: 100%;
-  height: 100%;
-}
-
-.model-provider-sidebar {
-  min-height: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.model-provider-list-scroll {
-  max-height: none !important;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
 .model-provider-form {
   max-height: none !important;
   min-height: 0;
   overflow-y: auto;
+}
+
+.model-provider-overview-list {
+  overflow: hidden;
+  border: 1px solid hsl(var(--border) / 0.72);
+  border-radius: 0.5rem;
+  background: hsl(var(--card) / 0.48);
+}
+
+.model-provider-overview-row {
+  min-height: 3.75rem;
+  transition: background-color 140ms ease;
+}
+
+.model-provider-overview-row + .model-provider-overview-row {
+  border-top: 1px solid hsl(var(--border) / 0.58);
+}
+
+.model-provider-overview-row:hover {
+  background: hsl(var(--foreground) / 0.025);
 }
 
 /* This block comes after the shared model-surface sizing rules above on
@@ -2967,17 +3061,10 @@ select:focus-visible {
     min-height: auto;
   }
 
-  .settings-dialog-model-panel .model-provider-layout {
-    height: auto !important;
-    flex: 1 1 auto;
-    min-height: 0 !important;
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .settings-dialog-model-panel .model-provider-sidebar,
   .settings-dialog-model-panel .model-provider-form {
     min-height: 0 !important;
   }
+
 }
 
 @media (min-width: 768px) {
@@ -3041,23 +3128,6 @@ select:focus-visible {
     height: auto !important;
     min-height: 100%;
     overflow: visible !important;
-  }
-
-  .settings-dialog-model-panel .model-provider-layout {
-    height: auto !important;
-    min-height: 0 !important;
-    grid-template-rows: auto;
-  }
-
-  .settings-dialog-model-panel .model-provider-sidebar {
-    height: auto !important;
-    display: block;
-  }
-
-  .settings-dialog-model-panel .model-provider-list-scroll {
-    flex: 0 1 auto;
-    max-height: min(42vh, 22rem) !important;
-    overflow-y: auto;
   }
 
   .settings-dialog-model-panel .model-provider-form {
@@ -4274,8 +4344,61 @@ body > [data-radix-popper-content-wrapper] {
 :root.is-rounded-window #root {
   overflow: hidden;
   border-radius: var(--window-radius, 12px);
-  background: hsl(var(--background));
+  background: transparent;
 }
+.window-resize-hit-edges {
+  position: fixed;
+  z-index: 2147483000;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.window-resize-hit-edge {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.window-resize-hit-edge-north,
+.window-resize-hit-edge-south {
+  right: 12px;
+  left: 12px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.window-resize-hit-edge-north { top: 0; }
+.window-resize-hit-edge-south { bottom: 0; }
+
+.window-resize-hit-edge-east,
+.window-resize-hit-edge-west {
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.window-resize-hit-edge-east { right: 0; }
+.window-resize-hit-edge-west { left: 0; }
+
+.window-resize-hit-edge-north-west,
+.window-resize-hit-edge-north-east,
+.window-resize-hit-edge-south-west,
+.window-resize-hit-edge-south-east {
+  width: 12px;
+  height: 12px;
+}
+
+.window-resize-hit-edge-north-west { top: 0; left: 0; cursor: nwse-resize; }
+.window-resize-hit-edge-north-east { top: 0; right: 0; cursor: nesw-resize; }
+.window-resize-hit-edge-south-west { bottom: 0; left: 0; cursor: nesw-resize; }
+.window-resize-hit-edge-south-east { right: 0; bottom: 0; cursor: nwse-resize; }
+
+:root.is-maximized .window-resize-hit-edges {
+  display: none;
+}
+
 :root.is-rounded-window [data-hakus-overlay="dialog-overlay"] {
   border-radius: var(--window-radius, 12px);
 }
@@ -5273,6 +5396,368 @@ body > [data-radix-popper-content-wrapper] {
   font-size: 0.75rem;
 }
 
+/* Settings refinement: use one calm, grouped preferences language across
+ * every panel. The surface stays opaque and layered only where grouping
+ * helps scanning; controls use the compact system geometry of macOS. */
+.settings-dialog-content {
+  --settings-content-width: 60rem;
+  background: hsl(var(--background)) !important;
+  color: hsl(var(--foreground));
+}
+
+.settings-dialog-header {
+  min-height: 4.25rem;
+  padding: 1rem 1.5rem !important;
+  background: hsl(var(--background) / 0.96) !important;
+  border-bottom-color: hsl(var(--foreground) / 0.1) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  backdrop-filter: blur(16px) saturate(120%);
+}
+
+.settings-dialog-heading {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.settings-dialog-heading .settings-dialog-eyebrow {
+  display: none;
+}
+
+.settings-dialog-header [data-radix-dialog-title] {
+  font-size: 1.05rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.settings-dialog-header [data-radix-dialog-description] {
+  margin-top: 0.08rem;
+  color: hsl(var(--muted-foreground) / 0.84);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.settings-dialog-nav {
+  width: 15rem !important;
+  padding: 1.15rem 0.75rem !important;
+  background: hsl(var(--secondary) / 0.34) !important;
+  border-right-color: hsl(var(--foreground) / 0.1) !important;
+}
+
+.settings-nav-group + .settings-nav-group {
+  margin-top: 1.05rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid hsl(var(--foreground) / 0.08);
+}
+
+.settings-nav-group-title {
+  margin: 0 0 0.35rem;
+  padding: 0 0.7rem;
+  color: hsl(var(--muted-foreground) / 0.78);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.settings-dialog-nav ul {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.settings-dialog-nav .settings-nav-item {
+  min-height: 2.2rem;
+  border: 1px solid transparent;
+  border-radius: 0.55rem !important;
+  padding: 0.4rem 0.7rem !important;
+  color: hsl(var(--foreground) / 0.72);
+  font-size: 0.8125rem;
+  font-weight: 450;
+}
+
+.settings-dialog-nav .settings-nav-item:hover {
+  border-color: transparent;
+  background: hsl(var(--foreground) / 0.055) !important;
+  color: hsl(var(--foreground) / 0.92) !important;
+}
+
+.settings-dialog-nav .settings-nav-item[aria-current="page"] {
+  border-color: hsl(var(--primary) / 0.16) !important;
+  background: hsl(var(--primary) / 0.1) !important;
+  color: hsl(var(--foreground)) !important;
+  font-weight: 600;
+  box-shadow: none !important;
+}
+
+.settings-dialog-nav .settings-nav-item[aria-current="page"] svg {
+  color: hsl(var(--primary)) !important;
+}
+
+.settings-dialog-nav {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.settings-dialog-nav::-webkit-scrollbar {
+  width: 8px;
+}
+
+.settings-dialog-nav::-webkit-scrollbar-thumb {
+  background: transparent;
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+.settings-dialog-nav:hover {
+  scrollbar-color: hsl(var(--muted-foreground) / 0.42) transparent;
+}
+
+.settings-dialog-nav:hover::-webkit-scrollbar-thumb,
+.settings-dialog-nav::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.42);
+  background-clip: content-box;
+}
+
+.settings-content-scroll-area [data-orientation="vertical"] {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.settings-content-scroll-area:hover [data-orientation="vertical"],
+.settings-content-scroll-area [data-orientation="vertical"]:focus-visible {
+  opacity: 1;
+}
+
+.settings-dialog-panel {
+  background: hsl(var(--background)) !important;
+}
+
+.settings-dialog-panel > div > div > .p-6 {
+  width: min(100%, var(--settings-content-width));
+  margin: 0 auto;
+  padding: 2rem clamp(1.5rem, 4vw, 3.25rem) 4rem !important;
+}
+
+.settings-section {
+  gap: 1.25rem;
+  padding-bottom: 2rem;
+  border-bottom-color: hsl(var(--foreground) / 0.1);
+}
+
+.settings-section + .settings-section {
+  padding-top: 2rem;
+}
+
+.settings-section-heading h2 {
+  font-size: 1.125rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.settings-section-heading p,
+.settings-field-group-heading p {
+  max-width: 58rem;
+  color: hsl(var(--muted-foreground) / 0.84);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.settings-field-group {
+  gap: 0.8rem;
+}
+
+.settings-field-group + .settings-field-group {
+  padding-top: 0.75rem;
+}
+
+.settings-field-group-heading {
+  gap: 0.25rem;
+}
+
+.settings-field-group-heading h3 {
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.settings-field-grid {
+  gap: 1rem;
+}
+
+.settings-field {
+  gap: 0.4rem;
+}
+
+.settings-field > label,
+.settings-field > [data-slot="label"] {
+  color: hsl(var(--foreground) / 0.84);
+  font-size: 0.8125rem;
+  font-weight: 550;
+}
+
+.settings-field-help {
+  color: hsl(var(--muted-foreground) / 0.82);
+  font-size: 0.75rem;
+}
+
+.settings-dialog-panel input:not([type="range"]),
+.settings-dialog-panel textarea,
+.settings-dialog-panel select,
+.settings-dialog-panel [role="combobox"] {
+  min-height: 2.3rem;
+  border-color: hsl(var(--foreground) / 0.15) !important;
+  border-radius: 0.5rem !important;
+  background: hsl(var(--card) / 0.78) !important;
+  box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035) !important;
+  font-size: 0.8125rem;
+}
+
+.settings-dialog-panel textarea {
+  min-height: 6.5rem;
+}
+
+.settings-dialog-panel input:not([type="range"]):hover,
+.settings-dialog-panel textarea:hover,
+.settings-dialog-panel select:hover,
+.settings-dialog-panel [role="combobox"]:hover {
+  border-color: hsl(var(--foreground) / 0.24) !important;
+}
+
+.settings-dialog-panel input:not([type="range"]):focus,
+.settings-dialog-panel textarea:focus,
+.settings-dialog-panel select:focus,
+.settings-dialog-panel [role="combobox"][aria-expanded="true"] {
+  border-color: hsl(var(--ring) / 0.7) !important;
+  box-shadow: 0 0 0 3px hsl(var(--ring) / 0.12) !important;
+}
+
+.settings-dialog-panel button:not([role="switch"]),
+.settings-dialog-panel [role="combobox"] {
+  border-radius: 0.5rem !important;
+}
+
+.settings-dialog-panel button[role="switch"] {
+  border-radius: 999px !important;
+}
+
+.settings-dialog-panel .settings-option-list {
+  overflow: hidden;
+  border: 1px solid hsl(var(--foreground) / 0.11);
+  border-radius: 0.7rem;
+  background: hsl(var(--card) / 0.62);
+}
+
+.settings-dialog-panel .settings-option-list .settings-option-row {
+  min-height: 3.5rem;
+  padding: 0.8rem 0.95rem;
+  border-bottom-color: hsl(var(--foreground) / 0.09);
+}
+
+.settings-dialog-panel .settings-option-list .settings-option-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-dialog-panel .settings-option-row:hover {
+  background: hsl(var(--foreground) / 0.035);
+}
+
+.settings-project-list {
+  display: grid;
+  gap: 0 !important;
+  overflow: hidden;
+  border: 1px solid hsl(var(--foreground) / 0.11);
+  border-radius: 0.7rem;
+  background: hsl(var(--card) / 0.62);
+}
+
+.settings-project-list > .settings-project-row {
+  border: 0 !important;
+  border-bottom: 1px solid hsl(var(--foreground) / 0.09) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0.85rem 1rem !important;
+  box-shadow: none !important;
+}
+
+.settings-project-list > .settings-project-row:last-child {
+  border-bottom: 0 !important;
+}
+
+.settings-project-list > .settings-project-row:hover {
+  background: hsl(var(--foreground) / 0.035) !important;
+}
+
+.settings-option-title {
+  font-size: 0.8125rem;
+  font-weight: 550;
+}
+
+.settings-option-description {
+  color: hsl(var(--muted-foreground) / 0.82);
+  font-size: 0.75rem;
+}
+
+.settings-subpanel,
+.settings-connection-status {
+  border-color: hsl(var(--foreground) / 0.11);
+  border-radius: 0.7rem;
+  background: hsl(var(--card) / 0.62);
+  box-shadow: none;
+}
+
+.settings-dialog-panel .settings-actions {
+  gap: 0.6rem;
+  padding-top: 0.2rem;
+}
+
+.settings-dialog-panel .settings-actions button {
+  min-height: 2.25rem;
+  font-size: 0.8125rem;
+}
+
+.settings-dialog-content .glass-list {
+  border-color: hsl(var(--foreground) / 0.14) !important;
+  border-radius: 0.6rem !important;
+  background: hsl(var(--popover)) !important;
+  padding: 0.25rem !important;
+  box-shadow: 0 12px 28px hsl(240 20% 2% / 0.18) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.settings-dialog-content .glass-list [role="option"] {
+  min-height: 2rem;
+  border-radius: 0.4rem !important;
+  padding: 0.45rem 0.6rem !important;
+}
+
+.settings-dialog-content .glass-list [role="option"][aria-selected="true"] {
+  background: hsl(var(--primary) / 0.12) !important;
+  color: hsl(var(--foreground)) !important;
+}
+
+.settings-dialog-content .glass-list [role="option"]:hover {
+  background: hsl(var(--foreground) / 0.06) !important;
+}
+
+@media (min-width: 720px) {
+  .settings-dialog-panel .settings-field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 719px) {
+  .settings-dialog-nav {
+    display: none;
+  }
+
+  .settings-dialog-panel > div > div > .p-6 {
+    padding: 1.35rem 1rem max(2.5rem, env(safe-area-inset-bottom)) !important;
+  }
+
+  .settings-section-heading h2 {
+    font-size: 1rem;
+  }
+}
+
 @media (min-width: 768px) {
   .settings-character-section .settings-field-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -5328,9 +5813,9 @@ body > [data-radix-popper-content-wrapper] {
 }
 
 /* ========================================================================
- * Codex / ChatGPT 桌面版 1:1 — 左侧栏 & 顶栏
+ * 左侧栏与顶栏
  *
- * 解码规格来源（ChatGPT_App_decoded/renderer）：
+ * 规格来源：本项目桌面布局与运行时测量。
  *   app-primary-ae4eb3f3f10a.css.pretty.js
  *     _Navigation_1ej6d_2     → flex-direction:column; flex:1; min-height:0;
  *                               --color-text = 背景 85% 透明混合
@@ -5356,18 +5841,21 @@ body > [data-radix-popper-content-wrapper] {
  *     图标钮：sidebar-icon-button / ghostMuted / compact（28px ghost）
  * ====================================================================== */
 :root {
-  /* Codex hover 规范（register-DJzgGkDK tailwind theme 精确值）：
+  /* Hover 规范：
      --color-background-primary-ghost-hover = var(--alpha-08)
        = color-mix(in oklab, var(--alpha-base) 8%, transparent)，light --alpha-base: #0d0d0d
      --color-background-primary-ghost-active = var(--alpha-12) → 12% */
   --cx-ghost-hover: rgba(13, 13, 13, 0.08);
   --cx-ghost-active: rgba(13, 13, 13, 0.12);
-  --cx-sidebar-bg: #f9f9f9;
   --cx-content-bg: #ffffff;
+  --cx-glass-bg: rgb(255 255 255 / 0.72);
+  --cx-toolbar-glass-bg: rgb(255 255 255 / 0.56);
+  --cx-group-glass-bg: rgb(255 255 255 / 0.26);
+  --cx-group-title-color: #555555;
   --cx-elevated: #ececec;
   --cx-text: #0d0d0d;
-  --cx-text-secondary: #8f8f8f;
-  --cx-text-tertiary: #b4b4b4;
+  --cx-text-secondary: #5f5f5f;
+  --cx-text-tertiary: #666666;
   --cx-icon: #5d5d5d;
   --cx-hover: rgba(13, 13, 13, 0.05);
   --cx-active: rgba(13, 13, 13, 0.07);
@@ -5382,16 +5870,19 @@ body > [data-radix-popper-content-wrapper] {
 }
 
 .dark {
-  /* 解码资产暗色精确值：PUIK [data-theme=dark] + Codex shell */
+  /* 暗色主题精确值 */
   /* dark --alpha-base: #fff → ghost hover 8% / active 12% */
   --cx-ghost-hover: rgba(255, 255, 255, 0.08);
   --cx-ghost-active: rgba(255, 255, 255, 0.12);
-  --cx-sidebar-bg: #181818;
-  --cx-content-bg: #212121;
+  --cx-content-bg: #181818;
+  --cx-glass-bg: rgb(24 24 24 / 0.72);
+  --cx-toolbar-glass-bg: rgb(24 24 24 / 0.56);
+  --cx-group-glass-bg: rgb(255 255 255 / 0.1);
+  --cx-group-title-color: #b0b0b0;
   --cx-elevated: #303030;
   --cx-text: #ededed;
   --cx-text-secondary: #afafaf;
-  --cx-text-tertiary: #8f8f8f;
+  --cx-text-tertiary: #a0a0a0;
   --cx-icon: #afafaf;
   --cx-hover: rgba(255, 255, 255, 0.055);
   --cx-active: rgba(255, 255, 255, 0.085);
@@ -5413,12 +5904,47 @@ body > [data-radix-popper-content-wrapper] {
   width: 100%;
   border: 0 !important;
   border-radius: inherit;
-  background: var(--cx-sidebar-bg) !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
+  background: var(--cx-glass-bg) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(145%) !important;
+  backdrop-filter: blur(20px) saturate(145%) !important;
   box-shadow: none !important;
   color: var(--cx-text);
   font-size: 13px;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --cx-glass-bg: rgb(255 255 255 / 0.88);
+  }
+
+  .dark {
+    --cx-glass-bg: rgb(24 24 24 / 0.88);
+  }
+
+  .sidebar.cx-sidebar,
+  .sidebar-wrapper .sidebar.cx-sidebar {
+    -webkit-backdrop-filter: blur(24px) saturate(155%) !important;
+    backdrop-filter: blur(24px) saturate(155%) !important;
+  }
+
+  .panel-resize-handle-left {
+    background: var(--cx-glass-bg) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(155%) !important;
+    backdrop-filter: blur(24px) saturate(155%) !important;
+  }
+
+  .sidebar-wrapper[data-panel-open="true"] + .panel-resize-handle-left {
+    z-index: 40;
+    margin-left: -3px;
+  }
+
+  .panel-resize-handle-right {
+    z-index: 40;
+    margin-right: -3px;
+    background: var(--ios-sidebar-material) !important;
+    -webkit-backdrop-filter: blur(26px) saturate(145%) !important;
+    backdrop-filter: blur(26px) saturate(145%) !important;
+  }
 }
 
 /* ── 侧栏头部工具行：28px ghost 图标钮（ghostMuted/compact 规格） ── */
@@ -5479,7 +6005,7 @@ body > [data-radix-popper-content-wrapper] {
   background: var(--cx-hover);
 }
 
-/* ── 搜索行：Codex 内嵌式（10px 圆角，bg white 5%） ── */
+/* ── 搜索行：内嵌式（10px 圆角，bg white 5%） ── */
 .cx-search {
   display: flex;
   flex: 0 0 auto;
@@ -5603,8 +6129,19 @@ body > [data-radix-popper-content-wrapper] {
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  background: var(--cx-sidebar-bg);
-  border-radius: var(--cx-row-radius) var(--cx-row-radius) 0 0;
+  border: 1px solid var(--cx-ring);
+  border-radius: var(--cx-row-radius);
+  background: var(--cx-group-glass-bg);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  backdrop-filter: blur(16px) saturate(150%);
+}
+
+@media (prefers-contrast: more) {
+  .cx-group-head {
+    border-color: hsl(var(--foreground) / 0.3);
+    box-shadow: none;
+  }
 }
 
 .cx-group-title {
@@ -5615,7 +6152,7 @@ body > [data-radix-popper-content-wrapper] {
   gap: 6px;
   height: 36px;
   padding: 0 4px 0 10px;
-  color: var(--cx-text-tertiary);
+  color: var(--cx-group-title-color);
   font-size: 12px;
   font-weight: 500;
   line-height: 18px;
@@ -5770,7 +6307,7 @@ body > [data-radix-popper-content-wrapper] {
   text-align: center;
 }
 
-/* ── 底部设置入口（Codex footer 行） ── */
+/* ── 底部设置入口 ── */
 .cx-footer {
   flex: 0 0 auto;
   padding: 4px 8px max(8px, env(safe-area-inset-bottom));
@@ -5829,16 +6366,16 @@ body > [data-radix-popper-content-wrapper] {
   background: var(--cx-ghost-active) !important;
 }
 
-/* ── 顶栏（Codex/ChatGPT 桌面：与主内容同底色 + 发丝分隔线） ── */
+/* ── 顶栏：与主内容同底色 + 发丝分隔线 ── */
 .titlebar.cx-titlebar {
   position: relative;
   z-index: 45;
-  background: var(--cx-content-bg) !important;
+  background: var(--cx-toolbar-glass-bg) !important;
   border-bottom: 1px solid var(--cx-hairline) !important;
   border-radius: 0;
   box-shadow: none !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
+  -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
+  backdrop-filter: blur(18px) saturate(150%) !important;
 }
 
 .cx-leading {
@@ -5877,7 +6414,23 @@ body > [data-radix-popper-content-wrapper] {
   color: #fa423e;
 }
 
-/* Work/Code 分段：Codex 胶囊分段（bg 5% / 激活 chip bg 8%+ring） */
+/* The address field is part of the browser chrome, not an active form
+   control. Keep focus quiet so clicking it does not create a bright ring. */
+.browser-address-bar:focus-within {
+  border-color: hsl(var(--border) / 0.7) !important;
+  box-shadow: none !important;
+}
+
+.browser-address-input,
+.browser-address-input:focus,
+.browser-address-input:focus-visible {
+  border-color: transparent !important;
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Work/Code 分段（bg 5% / 激活 chip bg 8%+ring） */
 .cx-segment {
   display: flex;
   align-items: center;
@@ -5928,7 +6481,7 @@ body > [data-radix-popper-content-wrapper] {
   user-select: none;
 }
 
-/* ── 统一 ghost hover 工具类（Codex 规范的 TSX 侧入口） ──
+/* ── 统一 ghost hover 工具类（TSX 侧入口） ──
    hover/焦点/菜单打开 = --cx-ghost-hover（8%），按下 = --cx-ghost-active（12%）； */
 .cx-ghost-hover {
   transition: background-color 150ms ease, color 150ms ease;
@@ -6062,12 +6615,12 @@ button:focus-visible .cx-rail-marker::before {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Right panel design system (Codex workbench chrome)
+   Right panel design system
    Density: compact · Type: 11–13px · Hover: --cx-ghost-hover
    ═══════════════════════════════════════════════════════════════ */
 
 .right-panel {
-  background: var(--ios-material);
+  background: var(--ios-sidebar-material, var(--ios-material));
   border-left: 1px solid var(--ios-separator);
   -webkit-backdrop-filter: blur(26px) saturate(145%);
   backdrop-filter: blur(26px) saturate(145%);
@@ -6103,9 +6656,9 @@ button:focus-visible .cx-rail-marker::before {
 
 .right-panel-tabs > button.border-primary,
 .right-panel-tabs > button[data-active='true'] {
-  background: transparent !important;
+  background: var(--cx-ghost-hover) !important;
   color: var(--cx-text, hsl(var(--foreground))) !important;
-  border-bottom-color: hsl(var(--primary) / 0.85) !important;
+  border-bottom-color: transparent !important;
   font-weight: 600;
 }
 
@@ -8015,4 +8568,264 @@ textarea.flow-field-inline-control {
 
 .flow-empty-cta:hover {
   background: hsl(var(--primary) / 0.2);
+}
+
+/* Shared geometry: surfaces are rounded, controls are compact, and only
+ * status indicators remain pill-shaped. This keeps the UI calm without
+ * making every element look like a floating capsule. */
+:root {
+  --ui-radius-window: 0.75rem;
+  --ui-radius-surface: 0.75rem;
+  --ui-radius-control: 0.5rem;
+  --ui-radius-compact: 0.375rem;
+}
+
+/* Tailwind's named radius utilities are used throughout older panels. Map
+ * them to the same semantic geometry so legacy screens do not reintroduce
+ * visibly different cards, buttons, or menus. rounded-full is deliberately
+ * excluded because switches and status indicators are true pills. */
+.rounded {
+  border-radius: var(--ui-radius-control) !important;
+}
+
+.rounded-sm {
+  border-radius: var(--ui-radius-compact) !important;
+}
+
+.rounded-md,
+.rounded-lg {
+  border-radius: var(--ui-radius-control) !important;
+}
+
+.rounded-xl,
+.rounded-2xl,
+.rounded-3xl {
+  border-radius: var(--ui-radius-surface) !important;
+}
+
+[data-hakus-overlay="dialog-overlay"] {
+  z-index: 200 !important;
+}
+
+[data-hakus-overlay="dialog-content"] {
+  z-index: 210 !important;
+  border-radius: var(--ui-radius-surface) !important;
+}
+
+body > [data-radix-popper-content-wrapper] {
+  z-index: 500 !important;
+}
+
+[data-hakus-overlay="tooltip-content"] {
+  z-index: 550 !important;
+  border-radius: var(--ui-radius-compact) !important;
+}
+
+[data-hakus-overlay="approval-dialog"] {
+  z-index: 520 !important;
+}
+
+.hakus-toast-root {
+  z-index: 560 !important;
+}
+
+.settings-dialog-content {
+  z-index: 210 !important;
+  border-radius: var(--ui-radius-window) !important;
+}
+
+.settings-dialog-panel :is(
+  .rounded-xl.border,
+  .rounded-lg.border,
+  .rounded-md.border,
+  .rounded-sm.border
+) {
+  border-radius: var(--ui-radius-surface) !important;
+}
+
+.settings-dialog-panel input:not([type="range"]),
+.settings-dialog-panel textarea,
+.settings-dialog-panel select,
+.settings-dialog-panel [role="combobox"] {
+  border-radius: var(--ui-radius-control) !important;
+}
+
+.settings-dialog-panel button:not([role="switch"]):not(.settings-dialog-back) {
+  border-radius: var(--ui-radius-control) !important;
+}
+
+.settings-dialog-panel [role="tablist"] {
+  border-radius: var(--ui-radius-control) !important;
+}
+
+.settings-dialog-panel [role="tab"] {
+  border-radius: var(--ui-radius-compact) !important;
+}
+
+.settings-dialog-panel .settings-option-list,
+.settings-dialog-panel .settings-project-list,
+.settings-dialog-panel .settings-subpanel,
+.settings-dialog-panel .settings-connection-status,
+.settings-dialog-panel .model-provider-overview-list {
+  border-radius: var(--ui-radius-surface) !important;
+}
+
+.settings-dialog-panel .settings-option-list .settings-option-row,
+.settings-dialog-panel .settings-project-list .settings-project-row,
+.settings-dialog-panel .model-provider-overview-row {
+  border-radius: 0 !important;
+}
+
+.settings-dialog-content .glass-list {
+  z-index: 500 !important;
+  border-radius: var(--ui-radius-surface) !important;
+}
+
+.settings-dialog-content .glass-list [role="option"] {
+  border-radius: var(--ui-radius-compact) !important;
+}
+
+.browser-tab-strip {
+  background: hsl(var(--background) / 0.88);
+}
+
+.browser-tabs {
+  scrollbar-width: none;
+}
+
+.browser-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.browser-tab {
+  max-width: min(12rem, 48vw);
+  height: 1.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-compact);
+  color: hsl(var(--muted-foreground));
+}
+
+.browser-tab[data-active='true'] {
+  border-color: hsl(var(--border) / 0.8);
+  background: hsl(var(--muted) / 0.55);
+  color: hsl(var(--foreground));
+}
+
+.browser-tab:hover:not([data-active='true']) {
+  background: hsl(var(--foreground) / 0.05);
+  color: hsl(var(--foreground) / 0.88);
+}
+
+.browser-tab-select {
+  min-width: 0;
+  flex: 1;
+  border-radius: var(--ui-radius-compact);
+  text-align: left;
+}
+
+.browser-tab-close {
+  margin-right: 0.2rem;
+  border-radius: 4px;
+  opacity: 0;
+  color: hsl(var(--muted-foreground));
+}
+
+.browser-tab:hover .browser-tab-close,
+.browser-tab[data-active='true'] .browser-tab-close,
+.browser-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.browser-tab-close:hover {
+  background: hsl(var(--foreground) / 0.1);
+  color: hsl(var(--foreground));
+}
+
+.browser-start-page {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.browser-start-mark {
+  border-radius: var(--ui-radius-surface);
+}
+
+.browser-start-search {
+  min-height: 2rem;
+  border: 1px solid hsl(var(--border) / 0.65);
+  border-radius: var(--ui-radius-control);
+  padding: 0.45rem 0.8rem;
+  background: hsl(var(--muted) / 0.28);
+}
+
+.browser-start-search:hover {
+  background: hsl(var(--muted) / 0.55);
+  color: hsl(var(--foreground));
+}
+
+/* Browser chrome stays neutral on pointer and keyboard focus. */
+.browser-address-bar:focus-within {
+  border-color: hsl(var(--border) / 0.9) !important;
+  box-shadow: none !important;
+}
+
+.browser-address-bar:has(.browser-address-input:focus-visible) {
+  outline: 1px solid hsl(var(--foreground) / 0.28) !important;
+  outline-offset: 1px !important;
+}
+
+input.browser-address-input:not(.hidden),
+input.browser-address-input:not(.hidden):focus,
+input.browser-address-input:not(.hidden):focus-visible {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+input.browser-address-input:not(.hidden):focus,
+input.browser-address-input:not(.hidden):focus-visible {
+  border: 0 !important;
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+.browser-panel button:focus-visible {
+  outline: 1px solid hsl(var(--foreground) / 0.42) !important;
+  outline-offset: 1px !important;
+  box-shadow: none !important;
+}
+
+@media (max-width: 767px) {
+  .settings-dialog-content {
+    border-radius: 0 !important;
+  }
+
+  [data-hakus-overlay="dialog-content"]:not(.settings-dialog-content) {
+    border-radius: var(--ui-radius-surface) !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .titlebar.cx-titlebar,
+  .sidebar.cx-sidebar,
+  .right-panel-wrapper .right-panel,
+  .cx-group-head,
+  .sidebar-wrapper .sidebar.cx-sidebar {
+    background: hsl(var(--card)) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .panel-resize-handle-left {
+    background: hsl(var(--card)) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .panel-resize-handle-right {
+    background: hsl(var(--card)) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
 }

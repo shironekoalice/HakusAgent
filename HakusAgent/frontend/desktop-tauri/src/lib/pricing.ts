@@ -1,6 +1,6 @@
 /**
  * Local USD pricing table + cost aggregation for the Usage panel.
- * Codex posts to /wham/usage/thread_usage/query; HakusAgent computes from
+ * The client computes usage from
  * per-message token events using configurable $/1M-token rates.
  */
 
@@ -95,7 +95,7 @@ export function formatTokens(n: number): string {
   return String(n)
 }
 
-/** Aggregate chat messages into a Codex-style usage breakdown. */
+/** Aggregate chat messages into a usage breakdown. */
 export function buildUsageBreakdown(
   messages: ChatMessage[],
   defaultModel?: string,

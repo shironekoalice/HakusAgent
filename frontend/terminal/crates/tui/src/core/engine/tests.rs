@@ -13966,45 +13966,7 @@ fn context_budget_uses_conservative_fallback_for_unknown_models() {
     assert_eq!(budget, expected);
 }
 
-#[test]
-fn context_budget_uses_provider_effective_window_for_openai_codex() {
-    let _lock = lock_test_env();
-    let budget = context_input_budget_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5")
-        .expect("OpenAI Codex should use a conservative fallback without route metadata");
-    let expected = usize::try_from(crate::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
-        .expect("context window fits usize")
-        - crate::config::provider_capability(ApiProvider::OpenaiCodex, "gpt-5.5")
-            .max_output
-            .expect("Codex route publishes a deliberate conservative output cap")
-            as usize
-        - 1_024usize;
-    assert_eq!(budget, expected);
-}
 
-#[test]
-fn route_context_budget_uses_shared_budget_service() {
-    let _lock = lock_test_env();
-    let budget = route_context_budget_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", 380_000)
-        .expect("OpenAI Codex should produce a route budget");
-
-    assert_eq!(
-        budget.window_tokens,
-        u64::from(crate::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
-    );
-    assert_eq!(
-        budget.output_cap_tokens,
-        u64::from(
-            crate::config::provider_capability(ApiProvider::OpenaiCodex, "gpt-5.5")
-                .max_output
-                .expect("Codex route publishes a deliberate conservative output cap")
-        )
-    );
-    assert_eq!(
-        budget.pressure,
-        crate::context_budget::PressureLevel::Critical
-    );
-    assert!(!budget.fits_additional(1));
-}
 
 #[test]
 fn route_context_budget_prefers_resolved_route_limits() {
@@ -14144,24 +14106,6 @@ fn effective_max_output_tokens_for_route_keeps_tiny_window_positive() {
     );
 }
 
-#[test]
-fn codex_route_without_output_metadata_uses_oauth_capability_floor() {
-    let _lock = lock_test_env();
-    let limits = hakus_config::route::RouteLimits {
-        context_tokens: Some(272_000),
-        input_tokens: None,
-        output_tokens: None,
-    };
-
-    assert_eq!(
-        effective_max_output_tokens_for_route(ApiProvider::OpenaiCodex, "gpt-5.5", Some(limits)),
-        4_096
-    );
-    let budget =
-        route_context_budget_for_route(ApiProvider::OpenaiCodex, "gpt-5.5", Some(limits), 0)
-            .expect("Codex route budget");
-    assert_eq!(budget.output_cap_tokens, 4_096);
-}
 
 #[test]
 fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
@@ -14381,27 +14325,6 @@ fn evidence_bounded_preview_is_not_recompacted() {
     assert!(context.contains("full output at /tmp/art_call.txt"));
 }
 
-#[test]
-fn codex_tool_retention_uses_oauth_route_window_not_asmall_contract_model_window() {
-    let content = "route-effective context\n".repeat(900);
-    let output = ToolResult::success(content.clone());
-    let limits = hakus_config::route::RouteLimits {
-        context_tokens: Some(272_000),
-        input_tokens: None,
-        output_tokens: None,
-    };
-
-    let context = compact_tool_result_for_route(
-        ApiProvider::OpenaiCodex,
-        "gpt-5.5",
-        Some(limits),
-        "read_file",
-        &output,
-    );
-
-    assert!(context.contains("output compacted to protect context"));
-    assert!(context.len() < content.len());
-}
 
 #[test]
 fn subagent_results_are_summarized_before_parent_context_insertion() {

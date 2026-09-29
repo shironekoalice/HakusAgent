@@ -18,13 +18,13 @@ pub const CHECKSUM_MANIFEST_ASSET: &str = "hakus-artifacts-sha256.txt";
 
 /// GitHub API URL for the single latest stable release.
 pub const LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/Hmbown/CodeWhale/releases/latest";
+    "https://api.github.com/repos/modemneko/HakusAgent/releases/latest";
 
 /// GitHub API URL listing recent releases (up to 100), used to find beta tags.
 pub const RELEASES_URL: &str =
-    "https://api.github.com/repos/Hmbown/CodeWhale/releases?per_page=100";
+    "https://api.github.com/repos/modemneko/HakusAgent/releases?per_page=100";
 
-/// Base URL of the CodeWhale repository on the CNB mirror platform.
+/// Base URL of the HakusAgent repository on the CNB mirror platform.
 pub const CNB_REPO_URL: &str = "https://cnb.cool/hakus.net/hakus";
 
 /// Environment variable that overrides the base URL for release asset downloads.

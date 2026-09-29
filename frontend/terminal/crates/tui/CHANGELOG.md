@@ -406,7 +406,7 @@ locales grow to 18 and 8.
   renders as `configured` with no marker.
 - Output-ceiling honesty (#5440): an Anthropic-family model the catalog does
   not describe keeps the 64K Messages floor as its clamp and the ChatGPT/
-  Codex OAuth route keeps its 4K policy, but `OutputCeilingSource` gained an
+  external OAuth route keeps its 4K policy, but `OutputCeilingSource` gained an
   `unverified` rung for both, so exec-stream receipts and the model picker
   label them `unverified`/"assumed floor" instead of `documented`. Clamp
   values are unchanged.
@@ -1180,7 +1180,7 @@ runs against Pi 0.8.41 and by dogfooding repeated manual compaction.
 - `/compact` completion, failure, queued, duplicate, and mailbox outcomes are
   durable transcript receipts instead of short-lived toasts. A stray terminal
   event can no longer leave every later compaction stuck as already running.
-- Compaction now follows Codex's simple transcript shape: recent user context
+- Compaction now follows the reference implementation's simple transcript shape: recent user context
   followed by one ordinary history checkpoint. It never appends the summary,
   the To-do list, or volatile shell/worker state to the standing system prompt;
   reloads migrate the persisted carrier back into exactly one history item.
@@ -2129,7 +2129,7 @@ says otherwise.
 - OpenCode Zen is a separate model-aware API-key provider. Its curated catalog
   selects Responses, Anthropic Messages, or Chat Completions per model;
   unsupported Gemini and unknown models fail closed, and missing Zen
-  credentials never fall through to ChatGPT/Codex OAuth guidance. The
+  credentials never fall through to external OAuth guidance. The
   implementation from closed PR #4467 by @snail-vs (snailoniu) is preserved in
   the candidate.
 
@@ -2918,7 +2918,7 @@ largest curated model-and-pricing expansion in the project so far.
   GPT-5.4/5.4 Pro, GPT-5.5 (including dated snapshots), and GPT-5.6
   Sol/Terra/Luna requests above 272K input tokens. Exact tiered accounting
   remains deferred to the generalized pricing schema; smaller 5.4 variants,
-  GPT-5.5 Pro, Codex subscription, and foreign-provider routes are unchanged
+  GPT-5.5 Pro, subscription-backed route, and foreign-provider routes are unchanged
   (#4317).
 - Retire `deepseek-chat` and `deepseek-reasoner` before they reach DeepSeek's
   first-party OpenAI or Anthropic wire APIs, migrating both to the documented
@@ -3244,7 +3244,7 @@ largest curated model-and-pricing expansion in the project so far.
   that recorded unshipped work as done, and describe what remains after
   v0.9.0 in `docs/AGENT_RUNTIME.md`.
 - Add `docs/rfcs/UNIFIED_PROVIDER_LOGIN.md`: one `codewhale auth login`
-  surface for Anthropic, OpenAI Codex, and xAI, with the Anthropic adapter
+  surface for Anthropic, OpenAI route, and xAI, with the Anthropic adapter
   gated on verifying flow permissions before any constants are adopted.
 - Refresh `docs/ACCESSIBILITY.md` for treatment-independent ambient life
   and the completed ASCII tier.
@@ -3699,7 +3699,7 @@ reproductions shaped v0.9.0:
 - Fleet: added per-provider setup cards (Persistence, Constitution, Hotbar,
   Tools/MCP, Remote Runtime) with a unified setup catalog and provider-specific
   credential links. Provider setup progress is persisted transactionally with
-  rollback guards, Codex OAuth is kept out of provider key storage, and a
+  rollback guards, external OAuth is kept out of provider key storage, and a
   headless QA contract verifies setup readiness across providers.
 - Fleet: added Fleet starter profiles with role-aware loadouts (scout→Fast,
   manager→Inherit, etc.), `/fleet setup` profile-authoring wizard, Fleet
@@ -3807,8 +3807,8 @@ reproductions shaped v0.9.0:
 - Raised the streamed model-response idle timeout and matched the TUI stall
   watchdog to the configured stream budget so long reasoning pauses are not
   recovered as stalled turns (#2487, #3998).
-- Fixed Codex OAuth/sub-agent release diagnostics so `auth list` reports an
-  active Codex OAuth file, Responses API child requests encode inherited tool
+- Fixed external OAuth/sub-agent release diagnostics so `auth list` reports an
+  active external OAuth file, Responses API child requests encode inherited tool
   names safely, rate-limited child requests checkpoint as resumable provider
   interruptions, and failure records surface the real Responses API error
   (#3884).

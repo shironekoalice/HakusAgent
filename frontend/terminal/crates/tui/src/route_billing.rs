@@ -132,7 +132,6 @@ impl ChildBillingProvenance {
 #[cfg(test)]
 fn static_subscription_label(label: &str) -> Option<&'static str> {
     Some(match label {
-        "Codex OAuth quota" => "Codex OAuth quota",
         "OpenCode Go quota" => "OpenCode Go quota",
         "Z.ai Coding Plan quota" => "Z.ai Coding Plan quota",
         "MiMo token plan" => "MiMo token plan",
@@ -349,9 +348,6 @@ fn classify(
     ) {
         return BillingPresentation::Local;
     }
-    if provider == ApiProvider::OpenaiCodex {
-        return BillingPresentation::Subscription("Codex OAuth quota");
-    }
     if provider == ApiProvider::OpencodeGo {
         return BillingPresentation::Subscription("OpenCode Go quota");
     }
@@ -490,8 +486,7 @@ pub fn billing_surface_for_dispatch(
                     ApiProvider::Minimax | ApiProvider::MinimaxAnthropic => {
                         crate::pricing::MINIMAX_TOKEN_PLAN_BILLING_SURFACE
                     }
-                    ApiProvider::OpenaiCodex
-                    | ApiProvider::OpencodeGo
+                    ApiProvider::OpencodeGo
                     | ApiProvider::Anthropic
                     | ApiProvider::Xai => crate::pricing::OAUTH_SUBSCRIPTION_BILLING_SURFACE,
                     _ => crate::pricing::billing_surface_for_route(provider, base_url)
@@ -1422,26 +1417,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn codex_oauth_never_claims_api_dollars() {
-        assert_eq!(
-            for_route(&Config::default(), ApiProvider::OpenaiCodex),
-            BillingPresentation::Subscription("Codex OAuth quota")
-        );
-        let chip = usage_chip(
-            BillingPresentation::Subscription("Codex OAuth quota"),
-            ApiProvider::OpenaiCodex,
-            "gpt-5.5",
-            12.34,
-            CostCurrency::Usd,
-            None,
-        );
-        assert_eq!(
-            format_usage_chip(&chip).as_deref(),
-            Some("usage: Codex OAuth quota")
-        );
-        assert!(!format_usage_line(&chip).contains('$'));
-    }
 
     #[test]
     fn xai_api_key_fallback_is_metered_when_external_oauth_is_unavailable() {
@@ -1626,129 +1601,6 @@ mod tests {
         assert_eq!(billing.label(), Some("unknown"));
     }
 
-    /// Child-route billing for each shape a child can take. Without the
-    /// child's own provenance, only a local runtime is exactly non-metered;
-    /// every other cross-provider child fails closed to Unknown, and Unknown
-    /// (unlike a subscription label) keeps the turn inside `/cost`'s money
-    /// coverage denominator instead of excusing it as quota-billed (#4318).
-    #[test]
-    fn child_route_billing_fails_closed_for_every_ambiguous_provider() {
-        use crate::pricing::UnpricedReason;
-
-        let usage = crate::models::Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            ..Default::default()
-        };
-        let now = chrono::Utc::now();
-
-        // Nothing about a provider name — not an aggregator, not a first-party
-        // PAYG API, not an OAuth-only broker — is evidence of what this child
-        // turn billed. Every one of them is Unknown without provenance, and
-        // the cost audit counts them toward money coverage rather than
-        // excusing them.
-        for provider in [
-            ApiProvider::Openrouter,
-            ApiProvider::Openai,
-            ApiProvider::Zai,
-            ApiProvider::Moonshot,
-            ApiProvider::Anthropic,
-            ApiProvider::XiaomiMimo,
-            ApiProvider::Xai,
-            ApiProvider::Minimax,
-            ApiProvider::MinimaxAnthropic,
-            ApiProvider::Stepfun,
-            ApiProvider::Custom,
-            ApiProvider::OpenaiCodex,
-            ApiProvider::OpencodeGo,
-        ] {
-            let billing = for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                provider,
-                None,
-            );
-            assert_eq!(billing, BillingPresentation::Unknown, "{provider:?}");
-            assert!(!billing.shows_money(), "{provider:?}");
-            let audit = crate::pricing::audit_turn_cost_for_route(
-                provider,
-                "some-model",
-                None,
-                &usage,
-                now,
-                billing,
-            );
-            assert_eq!(
-                audit.unpriced_reason,
-                Some(UnpricedReason::UnknownBillingBasis),
-                "{provider:?}"
-            );
-            assert!(
-                audit.counts_toward_money_coverage(),
-                "{provider:?} must stay in the coverage denominator"
-            );
-        }
-
-        // A local runtime has no provider bill under any configuration, so it
-        // is exactly non-metered and is excluded from money coverage.
-        for provider in [ApiProvider::Ollama, ApiProvider::Sglang, ApiProvider::Vllm] {
-            let billing = for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                provider,
-                None,
-            );
-            assert_eq!(billing, BillingPresentation::Local, "{provider:?}");
-            let audit = crate::pricing::audit_turn_cost_for_route(
-                provider,
-                "some-model",
-                None,
-                &usage,
-                now,
-                billing,
-            );
-            assert_eq!(
-                audit.unpriced_reason,
-                Some(UnpricedReason::NotMoneyMetered),
-                "{provider:?}"
-            );
-            assert!(!audit.counts_toward_money_coverage(), "{provider:?}");
-        }
-
-        // A child on the parent's own provider ran the parent's exact route,
-        // so it inherits the parent's frozen billing — the one inheritance
-        // that is a fact rather than a guess.
-        assert_eq!(
-            for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                ApiProvider::Deepseek,
-                None,
-            ),
-            BillingPresentation::Metered
-        );
-
-        // The child's own captured provenance is the only thing that prices
-        // (or excuses) the route.
-        assert_eq!(
-            for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                ApiProvider::Openrouter,
-                Some(BillingPresentation::Metered),
-            ),
-            BillingPresentation::Metered
-        );
-        assert_eq!(
-            for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                ApiProvider::Anthropic,
-                Some(BillingPresentation::Subscription("Claude OAuth quota")),
-            ),
-            BillingPresentation::Subscription("Claude OAuth quota")
-        );
-    }
 
     #[test]
     fn oauth_allowance_percent_is_shown_when_provider_supplies_it() {
@@ -2115,85 +1967,6 @@ mod tests {
         );
     }
 
-    /// Cross-provider dispatch receipts for the other endpoint-shaped routes.
-    #[test]
-    fn dispatched_endpoint_shaped_routes_classify_from_the_receipt() {
-        let config = Config::default();
-        // StepFun: plan endpoint, PAYG endpoint, unrecognized host.
-        assert_eq!(
-            for_dispatched_route(
-                &config,
-                DispatchedRoute {
-                    provider: ApiProvider::Stepfun,
-                    base_url: "https://api.stepfun.ai/step_plan/v1",
-                },
-            ),
-            BillingPresentation::Subscription("StepFun Step Plan quota")
-        );
-        assert_eq!(
-            for_dispatched_route(
-                &config,
-                DispatchedRoute {
-                    provider: ApiProvider::Stepfun,
-                    base_url: crate::config::DEFAULT_STEPFUN_BASE_URL,
-                },
-            ),
-            BillingPresentation::Metered
-        );
-        assert_eq!(
-            for_dispatched_route(
-                &config,
-                DispatchedRoute {
-                    provider: ApiProvider::Stepfun,
-                    base_url: "https://gateway.internal.example/v1",
-                },
-            ),
-            BillingPresentation::Unknown
-        );
-        // Z.ai: the Coding Plan path is quota-billed; a blank receipt is not
-        // an excuse to fall back to the plan default.
-        assert_eq!(
-            for_dispatched_route(
-                &config,
-                DispatchedRoute {
-                    provider: ApiProvider::Zai,
-                    base_url: "https://api.z.ai/api/coding/paas/v4",
-                },
-            ),
-            BillingPresentation::Subscription("Z.ai Coding Plan quota")
-        );
-        assert_eq!(
-            for_dispatched_route(
-                &config,
-                DispatchedRoute {
-                    provider: ApiProvider::Zai,
-                    base_url: "",
-                },
-            ),
-            BillingPresentation::Unknown
-        );
-        // Identity-owned routes are unchanged by the receipt.
-        assert_eq!(
-            for_dispatched_route(
-                &config,
-                DispatchedRoute {
-                    provider: ApiProvider::Ollama,
-                    base_url: "http://localhost:11434/v1",
-                },
-            ),
-            BillingPresentation::Local
-        );
-        assert_eq!(
-            for_dispatched_route(
-                &config,
-                DispatchedRoute {
-                    provider: ApiProvider::OpenaiCodex,
-                    base_url: "https://chatgpt.com/backend-api/codex",
-                },
-            ),
-            BillingPresentation::Subscription("Codex OAuth quota")
-        );
-    }
 
     #[test]
     fn minimax_defaults_to_pay_as_you_go_metered() {

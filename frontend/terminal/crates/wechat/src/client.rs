@@ -281,21 +281,20 @@ impl IlLinkClient {
             .map(|account| account.account_id.clone())
             .unwrap_or_default();
 
-        if text.len() <= MAX_MSG_LENGTH {
-            let req = SendMessageRequest::new(&account_id, to_user, text, &context_token);
+        let chunks = split_text(text, MAX_MSG_LENGTH);
+        if chunks.len() == 1 {
+            let req = SendMessageRequest::new(&account_id, to_user, &chunks[0], &context_token);
             let body = serde_json::to_string(&req)?;
             self.post_json(&format!("{base}/ilink/bot/sendmessage"), &headers, &body)
                 .await?;
         } else {
-            // Chunk the message.
-            for (i, chunk) in text.as_bytes().chunks(MAX_MSG_LENGTH).enumerate() {
-                let chunk_str = String::from_utf8_lossy(chunk);
-                let req = SendMessageRequest::new(&account_id, to_user, &chunk_str, &context_token);
+            for (i, chunk) in chunks.iter().enumerate() {
+                let req = SendMessageRequest::new(&account_id, to_user, chunk, &context_token);
                 let body = serde_json::to_string(&req)?;
                 self.post_json(&format!("{base}/ilink/bot/sendmessage"), &headers, &body)
                     .await?;
                 // Brief pause between chunks to avoid rate-limiting.
-                if i + MAX_MSG_LENGTH < text.len() {
+                if i + 1 < chunks.len() {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
             }
@@ -389,6 +388,33 @@ impl IlLinkClient {
             });
         }
         Ok(())
+    }
+}
+
+fn split_text(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![text.to_string()];
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(max_chars)
+        .map(|chunk| chunk.iter().collect())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_text;
+
+    #[test]
+    fn message_chunks_preserve_utf8_and_character_limit() {
+        let chunks = split_text("你好abc世界🙂", 3);
+        assert_eq!(chunks, ["你好a", "bc世", "界🙂"]);
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 3));
+        assert_eq!(chunks.concat(), "你好abc世界🙂");
     }
 }
 

@@ -115,6 +115,16 @@ describe('HakusAIClient WebSocket reconnect (Phase 4)', () => {
     vi.restoreAllMocks()
   })
 
+  it('keeps an active remote Runtime when the local server URL changes', () => {
+    client.setRemoteRuntime('http://127.0.0.1:41001', 'remote-token')
+    client.setBaseUrl('http://127.0.0.1:48081')
+
+    expect(client.terminalWsUrl()).toBe('ws://127.0.0.1:41001/ws/terminal')
+
+    client.useLocalRuntime()
+    expect(client.terminalWsUrl()).toBe('ws://127.0.0.1:48081/ws/terminal')
+  })
+
   it('wsConnect creates a WebSocket to /ws/chat', async () => {
     const onMessage = vi.fn()
     client.wsConnect(onMessage)

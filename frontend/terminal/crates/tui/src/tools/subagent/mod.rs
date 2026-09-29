@@ -13402,18 +13402,7 @@ fn subagent_reasoning_effort_for_request(
             .map(normalize)
             .map(|effort| effort.as_setting().to_string()),
         SubAgentThinking::Inherit if requested_fast_lane => {
-            // Faster/explore lane: cheaper reasoning by default. The OpenAI Codex
-            // (GPT-5.5) adapter has no true "off" on the wire (it collapses off
-            // to low), so we resolve Low honestly for that provider instead of
-            // emitting an off that is silently rewritten. Explicit thinking
-            // passed by the caller already won via the arms above.
-            let provider = runtime.client.api_provider();
-            let effort = if matches!(provider, crate::config::ApiProvider::OpenaiCodex) {
-                ReasoningEffort::Low
-            } else {
-                ReasoningEffort::Off
-            };
-            Some(normalize(effort).as_setting().to_string())
+            Some(normalize(ReasoningEffort::Off).as_setting().to_string())
         }
         SubAgentThinking::Inherit => fallback_subagent_reasoning_effort(runtime, model, prompt),
     }

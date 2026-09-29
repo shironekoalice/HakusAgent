@@ -19,7 +19,7 @@ import { useI18n } from '@/lib/i18n'
 
 type PermMeta = { title: string; desc: string; tone: string; icon: typeof Shield }
 
-// Codex 五档权限模型: read_only → auto → granular → guardian → full_access
+// Five-level permission model: read_only → auto → granular → guardian → full_access
 const PERMISSION_META: Record<string, PermMeta> = {
   read_only: {
     title: '只读',
@@ -314,7 +314,7 @@ export function ToolsPanel() {
                   <div className="min-w-0">
                     <div className="text-sm font-medium">{copy('审批策略', 'Approval policy')}</div>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">
-                      {copy('Codex 风格：需要时询问，或直接阻断升级操作。', 'Codex-style: ask on request, or block escalations outright.')}
+                      {copy('需要时询问，或直接阻断升级操作。', 'Ask when needed, or block escalations outright.')}
                     </p>
                   </div>
                   <GlassSelect

@@ -1,5 +1,5 @@
 /**
- * Projects Panel — Codex-style project management in Settings.
+ * Projects Panel — local and remote project management in Settings.
  *
  * This is the "full" management surface for the same project registry
  * that the Composer's picker exposes. The picker is for fast switching
@@ -24,6 +24,7 @@ import {
   Loader2,
   AlertCircle,
   Lock,
+  Globe2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,16 +36,22 @@ import { confirmProjectAccess, pickProjectFolder } from '@/api/tauriBridge'
 import { cn, displayPath } from '@/lib/utils'
 import type { Project } from '@/api/types'
 import { useI18n } from '@/lib/i18n'
+import { RemoteProjectWizard } from './RemoteProjectWizard'
+import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
 
 const IS_ANDROID = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
 
 export function ProjectsPanel() {
   const projects = useProjectsStore((s) => s.projects)
+  const remoteProjects = useProjectsStore((s) => s.remoteProjects)
   const loaded = useProjectsStore((s) => s.loaded)
   const load = useProjectsStore((s) => s.load)
   const activeProjectId = useProjectsStore((s) => s.activeProjectId)
   const setActive = useProjectsStore((s) => s.setActive)
   const create = useProjectsStore((s) => s.create)
+  const renameRemote = useProjectsStore((s) => s.renameRemote)
+  const togglePinnedRemote = useProjectsStore((s) => s.togglePinnedRemote)
+  const removeRemote = useProjectsStore((s) => s.removeRemote)
   const rename = useProjectsStore((s) => s.rename)
   const togglePinned = useProjectsStore((s) => s.togglePinned)
   const remove = useProjectsStore((s) => s.remove)
@@ -65,6 +72,10 @@ export function ProjectsPanel() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [projectSourceOpen, setProjectSourceOpen] = useState(false)
+  const [remoteWizardOpen, setRemoteWizardOpen] = useState(false)
+  const [editingRemoteProject, setEditingRemoteProject] = useState<Project | null>(null)
+  const allProjects = projects
 
   // The picker auto-loads on app start, but if the user opens Settings
   // before that finishes (or after a backend restart), we want a fresh
@@ -105,7 +116,9 @@ export function ProjectsPanel() {
       return
     }
     try {
-      await rename(id, trimmed)
+      const remote = remoteProjects.some((project) => project.id === id)
+      if (remote) await renameRemote(id, trimmed)
+      else await rename(id, trimmed)
       setEditingId(null)
       toast.success(copy('已重命名', 'Project renamed'))
     } catch (e) {
@@ -116,7 +129,8 @@ export function ProjectsPanel() {
 
   const handleTogglePin = async (p: Project) => {
     try {
-      await togglePinned(p.id, !p.pinned)
+      if (p.kind === 'remote') await togglePinnedRemote(p.id, !p.pinned)
+      else await togglePinned(p.id, !p.pinned)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       toast.error(copy(`置顶失败：${msg}`, `Could not update pin: ${msg}`))
@@ -125,7 +139,8 @@ export function ProjectsPanel() {
 
   const handleDelete = async (p: Project) => {
     try {
-      await remove(p.id)
+      if (p.kind === 'remote') await removeRemote(p.id)
+      else await remove(p.id)
       setConfirmDeleteId(null)
       toast.success(copy(`已移除项目：${p.name}`, `Project removed: ${p.name}`))
     } catch (e) {
@@ -135,7 +150,7 @@ export function ProjectsPanel() {
   }
 
   return (
-    <div className="space-y-5">
+      <div className="space-y-5">
       {/* Header / description */}
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">{copy('项目管理', 'Project management')}</h3>
@@ -158,32 +173,31 @@ export function ProjectsPanel() {
       {/* Actions */}
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">
-          {copy(`共 ${projects.length} 个项目`, `${projects.length} project${projects.length === 1 ? '' : 's'}`)}
+          {copy(`共 ${allProjects.length} 个项目`, `${allProjects.length} project${allProjects.length === 1 ? '' : 's'}`)}
         </span>
-        <Button
-          size="sm"
-          onClick={handleAdd}
-          disabled={adding}
-          className="h-8 gap-1.5"
-        >
-          {adding ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <FolderPlus className="h-3.5 w-3.5" />
-          )}
-          {copy('添加项目', 'Add project')}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => setProjectSourceOpen(true)} disabled={adding} className="h-8 gap-1.5">
+            {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderPlus className="h-3.5 w-3.5" />}
+            {copy('新建项目', 'New project')}
+          </Button>
+        </div>
       </div>
 
+      {!IS_ANDROID && remoteProjects.length > 0 && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {copy('远程项目会在首次使用时部署隔离的 Runtime，并通过 SSH 隧道执行。', 'Remote projects deploy an isolated Runtime on first use and execute through an SSH tunnel.')}
+        </p>
+      )}
+
       {/* List */}
-      <div className="space-y-2">
+      <div className="settings-project-list space-y-2">
         {!loaded && (
           <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {copy('加载中...', 'Loading...')}
           </div>
         )}
-        {loaded && projects.length === 0 && (
+        {loaded && allProjects.length === 0 && (
           <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 px-4 py-8 text-center">
             <FolderOpen className="mx-auto mb-2 h-6 w-6 text-muted-foreground/60" />
             <p className="text-xs text-muted-foreground">
@@ -191,7 +205,7 @@ export function ProjectsPanel() {
             </p>
           </div>
         )}
-        {loaded && projects.map((p) => {
+        {loaded && allProjects.map((p) => {
           const isActive = activeProjectId === p.id
           const isEditing = editingId === p.id
           const isConfirming = confirmDeleteId === p.id
@@ -199,7 +213,7 @@ export function ProjectsPanel() {
             <div
               key={p.id}
               className={cn(
-                'group rounded-xl border bg-card/40 p-3 transition-colors',
+                'settings-project-row group rounded-xl border bg-card/40 p-3 transition-colors',
                 isActive
                   ? 'border-primary/40 bg-primary/5'
                   : 'border-border hover:border-primary/30 hover:bg-accent/30',
@@ -214,7 +228,7 @@ export function ProjectsPanel() {
                       : 'bg-muted text-muted-foreground',
                   )}
                 >
-                  <FolderOpen className="h-4 w-4" />
+                  {p.kind === 'remote' ? <Globe2 className="h-4 w-4" /> : <FolderOpen className="h-4 w-4" />}
                 </div>
 
                 <div className="min-w-0 flex-1">
@@ -267,10 +281,15 @@ export function ProjectsPanel() {
                           {copy('当前', 'Current')}
                         </span>
                       )}
+                      {p.kind === 'remote' && (
+                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {copy('远程', 'Remote')}
+                        </span>
+                      )}
                     </div>
                   )}
                   <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
-                    {displayPath(p.path)}
+                    {p.kind === 'remote' ? p.path : displayPath(p.path)}
                   </div>
                 </div>
 
@@ -298,7 +317,14 @@ export function ProjectsPanel() {
                         size="sm"
                         variant="ghost"
                         className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-                        onClick={() => handleStartRename(p)}
+                        onClick={() => {
+                          if (p.kind === 'remote') {
+                            setEditingRemoteProject(p)
+                            setRemoteWizardOpen(true)
+                          } else {
+                            handleStartRename(p)
+                          }
+                        }}
                         title={copy('重命名', 'Rename')}
                       >
                         <Pencil className="h-3.5 w-3.5" />
@@ -349,6 +375,7 @@ export function ProjectsPanel() {
                   session already has messages, because the agent's
                   working directory is bound at turn-start. */}
               {!isEditing && !isConfirming && !isActive && (
+                p.kind === 'remote' ? null : (
                 projectLocked ? (
                   <button
                     type="button"
@@ -367,7 +394,7 @@ export function ProjectsPanel() {
                   >
                     {copy('设为当前项目', 'Set as current')}
                   </button>
-                )
+                ))
               )}
             </div>
           )
@@ -383,6 +410,24 @@ export function ProjectsPanel() {
           {IS_ANDROID ? 'Android private workspace/projects.json' : '~/.hakus/projects.json'}
         </code>{copy('，可手动备份或迁移。', '; you can back it up or migrate it manually.')}
       </p>
+      <RemoteProjectWizard
+        open={remoteWizardOpen}
+        onOpenChange={(nextOpen) => {
+          setRemoteWizardOpen(nextOpen)
+          if (!nextOpen) setEditingRemoteProject(null)
+        }}
+        initialProject={editingRemoteProject}
+      />
+      <ProjectSourceDialog
+        open={projectSourceOpen}
+        onOpenChange={setProjectSourceOpen}
+        onLocal={() => void handleAdd()}
+        onRemote={() => {
+          setProjectSourceOpen(false)
+          setEditingRemoteProject(null)
+          setRemoteWizardOpen(true)
+        }}
+      />
     </div>
   )
 }

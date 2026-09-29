@@ -7,6 +7,7 @@ import {
   FileClock,
   FileText,
   FolderTree,
+  Globe,
   GitCompareArrows,
   ScrollText,
   Target,
@@ -20,6 +21,7 @@ import { useAppStore, type RightPanelTab } from '@/store/app'
 import { cn, copyToClipboard } from '@/lib/utils'
 import { DiffReview } from './DiffReview'
 import { TerminalPanel } from './TerminalPanel'
+import { BrowserPanel } from './BrowserPanel'
 import { LogsPanel } from './LogsPanel'
 import { SessionLogTab } from './SessionLogTab'
 import { UsageCostPanel } from './UsageCostPanel'
@@ -30,10 +32,11 @@ import { FlowRunPanel } from '@/components/flow/FlowRunPanel'
 import { RpEmpty, RpHeader, RpIconButton } from './PanelChrome'
 import { useDragScroll } from './useDragScroll'
 import { useI18n } from '@/lib/i18n'
+import { embeddedBrowserAvailable } from '@/lib/agentBrowser'
 
 type TabDef = {
   id: Exclude<RightPanelTab, 'artifact'>
-  labelKey: 'reviewTab' | 'usageTab' | 'goalTab' | 'worktreeTab' | 'filesTab' | 'flowRunTab' | 'trajectoryTab' | 'terminalTab' | 'logsTab'
+  labelKey: 'reviewTab' | 'usageTab' | 'goalTab' | 'worktreeTab' | 'filesTab' | 'flowRunTab' | 'trajectoryTab' | 'terminalTab' | 'browserTab' | 'logsTab'
   icon: typeof GitCompareArrows
 }
 
@@ -46,6 +49,7 @@ const TABS: TabDef[] = [
   { id: 'flow', labelKey: 'flowRunTab', icon: Workflow },
   { id: 'session_log', labelKey: 'trajectoryTab', icon: FileClock },
   { id: 'terminal', labelKey: 'terminalTab', icon: TerminalSquare },
+  { id: 'browser', labelKey: 'browserTab', icon: Globe },
   { id: 'logs', labelKey: 'logsTab', icon: ScrollText },
 ]
 
@@ -114,6 +118,10 @@ export function RightPanel() {
   const setTab = useAppStore((s) => s.setRightPanelTab)
   const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
   const artifact = useAppStore((s) => s.rightPanelArtifact)
+  // The embedded browser is a native child webview that renders above all
+  // DOM — including the fullscreen settings dialog. Treat settings as
+  // "not active" so the native views get suspended while it's open.
+  const settingsOpen = useAppStore((s) => s.settingsOpen)
   // 标签多于面板宽度时，允许按住鼠标左右拖动平移这一排标签。
   const tabStrip = useDragScroll<HTMLDivElement>()
 
@@ -132,7 +140,7 @@ export function RightPanel() {
         </button>
       </div>
 
-      {/* Codex workbench tab strip */}
+      {/* Workbench tab strip */}
       <div
         ref={tabStrip.ref}
         onPointerDown={tabStrip.onPointerDown}
@@ -140,7 +148,7 @@ export function RightPanel() {
         role="tablist"
         aria-label={t('workbench')}
       >
-        {TABS.map((tabDef) => {
+        {TABS.filter((tabDef) => tabDef.id !== 'browser' || embeddedBrowserAvailable()).map((tabDef) => {
           const Icon = tabDef.icon
           const active = tab === tabDef.id
           return (
@@ -184,6 +192,9 @@ export function RightPanel() {
         {tab === 'terminal' && <TerminalPanel />}
         {tab === 'logs' && <LogsPanel />}
         {tab === 'artifact' && <ArtifactView />}
+        <div className={cn('h-full min-h-0', tab !== 'browser' && 'hidden')}>
+          {embeddedBrowserAvailable() && <BrowserPanel active={tab === 'browser' && !settingsOpen} />}
+        </div>
       </div>
     </aside>
   )

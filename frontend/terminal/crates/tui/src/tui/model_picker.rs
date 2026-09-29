@@ -24,9 +24,6 @@ use hakus_config::catalog::CatalogSource;
 use hakus_config::model_reference::ModelReferenceCard;
 use hakus_config::pricing::OfferingPricing;
 
-use crate::codex_model_cache::{
-    self, CodexModelCacheFreshness, CodexModelMetadata, CodexModelRoster,
-};
 use crate::config::{ApiProvider, Config, DEEPSEEK_ALIAS_REPLACEMENT};
 use crate::localization::{Locale, MessageId, tr};
 use crate::model_profile::{
@@ -72,12 +69,6 @@ const DEEPSEEK_PICKER_EFFORTS: &[ReasoningEffort] = &[
 const KIMI_CODE_K3_PICKER_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::Auto,
     ReasoningEffort::Off,
-    ReasoningEffort::Low,
-    ReasoningEffort::Medium,
-    ReasoningEffort::High,
-    ReasoningEffort::Max,
-];
-const CODEX_PICKER_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::Low,
     ReasoningEffort::Medium,
     ReasoningEffort::High,
@@ -1271,29 +1262,7 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
     let mut rows = Vec::new();
     let auto_hint = auto_picker_hint(app, config);
     push_auto_model_row(&mut rows, app, config, &auto_hint);
-    // One snapshot supplies both IDs, capabilities, and freshness so a cache
-    // replacement cannot produce mixed-generation picker rows.
-    let codex_roster = codex_model_cache::model_roster();
-    let mut active_model_ids = if app.api_provider == ApiProvider::OpenaiCodex {
-        let mut models = vec!["auto".to_string()];
-        for id in codex_roster.model_ids() {
-            push_model_id(&mut models, &id);
-        }
-        if let Some(model) = app
-            .provider_models
-            .get(app.provider_identity_for_persistence())
-            .map(|model| model.trim())
-            .filter(|model| !model.is_empty())
-        {
-            push_model_id(
-                &mut models,
-                picker_visible_model_id(app.api_provider, model, app.accepts_custom_model_ids()),
-            );
-        }
-        models
-    } else {
-        provider_scoped_model_ids_for_app(app, false)
-    };
+    let mut active_model_ids = provider_scoped_model_ids_for_app(app, false);
     push_configured_provider_model(&mut active_model_ids, config, app.api_provider);
     push_provider_model_rows(
         &mut rows,
@@ -1301,7 +1270,6 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
         active_model_ids,
         app.api_provider,
         config,
-        &codex_roster,
         &app.provider_health,
     );
 
@@ -1309,11 +1277,7 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
         if provider == app.api_provider {
             continue;
         }
-        let mut model_ids = if provider == ApiProvider::OpenaiCodex {
-            codex_roster.model_ids()
-        } else {
-            provider_catalog_model_ids(provider)
-        };
+        let mut model_ids = provider_catalog_model_ids(provider);
         if let Some(model) = app
             .provider_models
             .get(provider.as_str())
@@ -1336,7 +1300,6 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
             model_ids,
             app.api_provider,
             config,
-            &codex_roster,
             &app.provider_health,
         );
     }
@@ -1454,7 +1417,6 @@ fn push_provider_model_rows(
     model_ids: Vec<String>,
     active_provider: ApiProvider,
     config: &Config,
-    codex_roster: &CodexModelRoster,
     provider_health: &crate::provider_readiness::ProviderReadinessSnapshot,
 ) {
     for id in model_ids {
@@ -1465,20 +1427,8 @@ fn push_provider_model_rows(
             crate::provider_readiness::resolve_for_model(config, provider, &id, provider_health);
         let selectable = readiness.can_attempt();
         let readiness_label = readiness.label();
-        let roster_entry = if provider == ApiProvider::OpenaiCodex {
-            codex_roster.metadata_for(&id)
-        } else {
-            None
-        };
-        let codex_metadata = if codex_roster.freshness == CodexModelCacheFreshness::Fresh {
-            roster_entry
-        } else {
-            None
-        };
-        let codex_freshness = roster_entry.map(|_| codex_roster.freshness);
-        let metadata =
-            effective_picker_metadata_with_codex(config, Some(provider), &id, codex_metadata);
-        let mut hint = render_picker_model_hint(&id, Some(provider), &metadata, codex_freshness);
+        let metadata = effective_picker_metadata(config, Some(provider), &id);
+        let mut hint = render_picker_model_hint(&id, Some(provider), &metadata);
         hint = format!("{readiness_label} · {hint}");
         if provider != active_provider {
             hint = format!("switch route · {hint}");
@@ -2076,15 +2026,6 @@ fn effective_picker_metadata(
     provider: Option<ApiProvider>,
     id: &str,
 ) -> EffectivePickerMetadata {
-    effective_picker_metadata_with_codex(config, provider, id, None)
-}
-
-fn effective_picker_metadata_with_codex(
-    config: &Config,
-    provider: Option<ApiProvider>,
-    id: &str,
-    codex_metadata: Option<&CodexModelMetadata>,
-) -> EffectivePickerMetadata {
     let offering = provider.and_then(|provider| catalog_offering_for_model(provider, id));
     let card = offering.as_ref().map(ModelReferenceCard::from_offering);
     let registry = model_registry::lookup(id);
@@ -2136,8 +2077,6 @@ fn effective_picker_metadata_with_codex(
             && id.eq_ignore_ascii_case(crate::config::TOGETHER_INKLING_MODEL));
     let context_window = if context_override.is_some() {
         profile.context_window
-    } else if provider == ApiProvider::OpenaiCodex {
-        codex_metadata.and_then(|metadata| metadata.context_window)
     } else if preserves_unknown_limits {
         card_context
     } else {
@@ -2147,12 +2086,7 @@ fn effective_picker_metadata_with_codex(
         .as_ref()
         .and_then(|card| card.max_output)
         .map(|tokens| tokens.min(u64::from(u32::MAX)) as u32);
-    // The Codex cache does not publish a route-owned output ceiling. The
-    // profile's current value is inherited from the same-id OpenAI API model,
-    // so omitting it is more truthful than claiming that API limit for OAuth.
-    let max_output = if provider == ApiProvider::OpenaiCodex {
-        None
-    } else if preserves_unknown_limits {
+    let max_output = if preserves_unknown_limits {
         card_output
     } else {
         profile.max_output
@@ -2162,36 +2096,20 @@ fn effective_picker_metadata_with_codex(
         SupportState::Unsupported => Some(false),
         SupportState::Unknown => None,
     };
-    let tool_calls = if provider == ApiProvider::OpenaiCodex {
-        codex_metadata.and(profile_tool_calls)
-    } else {
-        offering
-            .as_ref()
-            .and_then(|offering| offering.tool_call)
-            .or(profile_tool_calls)
-    };
-    let reasoning = if provider == ApiProvider::OpenaiCodex {
-        codex_metadata
-            .map(|metadata| {
-                metadata
-                    .reasoning
-                    .unwrap_or_else(|| profile.supports_reasoning())
-            })
-            .unwrap_or(false)
-    } else {
-        offering
-            .as_ref()
-            .and_then(|offering| offering.reasoning)
-            .unwrap_or_else(|| profile.supports_reasoning())
-    };
+    let tool_calls = offering
+        .as_ref()
+        .and_then(|offering| offering.tool_call)
+        .or(profile_tool_calls);
+    let reasoning = offering
+        .as_ref()
+        .and_then(|offering| offering.reasoning)
+        .unwrap_or_else(|| profile.supports_reasoning());
     let vision = profile.image_input;
     let card_price = card.as_ref().and_then(|card| {
         let label = card.price_label();
         (label != "unknown").then_some(label)
     });
-    let pricing = if provider == ApiProvider::OpenaiCodex {
-        PickerPricing::Unavailable
-    } else if let Some(label) = card_price {
+    let pricing = if let Some(label) = card_price {
         PickerPricing::Known(label)
     } else if crate::pricing::has_pricing_for_provider(provider, id) {
         PickerPricing::Known("priced".to_string())
@@ -2201,13 +2119,12 @@ fn effective_picker_metadata_with_codex(
 
     // Honesty rungs (#5239, #5440, #5441). A window that reached the picker
     // only through the legacy provider fallback — no offering, no catalog
-    // row, no Codex roster, no operator override — is a guess (possibly an
+    // row, no operator override — is a guess (possibly an
     // `_Nk` name-suffix parse), and an unknown Anthropic-family model's
     // output ceiling is an assumed floor. Both still drive budgets; both
     // must say what they are instead of borrowing a verified label.
     let context_window_unverified = context_window.is_some()
         && context_override.is_none()
-        && provider != ApiProvider::OpenaiCodex
         && !preserves_unknown_limits
         && crate::model_catalog::resolved_context_window(id).is_none();
     let max_output_unverified = max_output.is_some()
@@ -2235,7 +2152,6 @@ fn render_picker_model_hint(
     id: &str,
     provider: Option<ApiProvider>,
     metadata: &EffectivePickerMetadata,
-    codex_freshness: Option<CodexModelCacheFreshness>,
 ) -> String {
     debug_assert_ne!(id, "auto", "Auto rows use the context-aware picker hint");
 
@@ -2254,16 +2170,7 @@ fn render_picker_model_hint(
     }
 
     if let Some(context_window) = metadata.context_window {
-        // The ChatGPT/Codex OAuth roster reports account-scoped windows (e.g.
-        // 272K for gpt-5.x) that differ from the API route's limits by
-        // deliberate policy. Label the value as route-scoped so it reads as a
-        // route fact, not a wrong generic model limit (TUI-DOG-016).
-        if provider == Some(ApiProvider::OpenaiCodex) {
-            parts.push(format!(
-                "{} ctx · ChatGPT route",
-                format_picker_context_window(u64::from(context_window))
-            ));
-        } else if provider == Some(ApiProvider::Moonshot)
+        if provider == Some(ApiProvider::Moonshot)
             && id.trim().eq_ignore_ascii_case("k3")
             && context_window == crate::models::KIMI_CODE_K3_CONTEXT_WINDOW_TOKENS
         {
@@ -2328,12 +2235,6 @@ fn render_picker_model_hint(
         Some(CatalogSource::Bundled) => parts.push("bundled".to_string()),
         Some(CatalogSource::UserOverride) => parts.push("override".to_string()),
         None => {}
-    }
-    if provider == Some(ApiProvider::OpenaiCodex) {
-        parts.push(match codex_freshness {
-            Some(freshness) => freshness.picker_label().to_string(),
-            None => "custom · OAuth roster unconfirmed".to_string(),
-        });
     }
 
     if parts.is_empty() {
@@ -2801,11 +2702,7 @@ impl ModelPickerView {
                     ReasoningEffort::XHigh => "extra-high reasoning".to_string(),
                     ReasoningEffort::Ultra => "ultra reasoning".to_string(),
                     ReasoningEffort::Max => {
-                        if effort_provider == ApiProvider::OpenaiCodex {
-                            "extra-high reasoning".to_string()
-                        } else {
-                            "maximum reasoning".to_string()
-                        }
+                        "maximum reasoning".to_string()
                     }
                 };
                 PaneRow::effort(label, hint)
@@ -2835,13 +2732,10 @@ pub(crate) fn picker_efforts_for_route(
         return AUTO_MODEL_PICKER_EFFORTS.to_vec();
     }
     // Exact-route overrides still win over catalog metadata: Kimi Code K3 and
-    // OpenAI Codex have wire dialects the generic Models.dev shape does not
-    // fully describe.
+    // Kimi Code has a wire dialect the generic catalog shape does not fully
+    // describe.
     if crate::config::is_exact_kimi_code_k3_route(provider, base_url, wire_model) {
         return KIMI_CODE_K3_PICKER_EFFORTS.to_vec();
-    }
-    if provider == ApiProvider::OpenaiCodex {
-        return CODEX_PICKER_EFFORTS.to_vec();
     }
     if let Some(catalog_efforts) = catalog_picker_efforts(provider, wire_model) {
         return catalog_efforts;
@@ -2947,12 +2841,8 @@ fn normalize_picker_effort(
     default_picker_effort(provider, &efforts)
 }
 
-fn default_picker_effort(provider: ApiProvider, efforts: &[ReasoningEffort]) -> ReasoningEffort {
-    let preferred = if provider == ApiProvider::OpenaiCodex {
-        ReasoningEffort::Medium
-    } else {
-        ReasoningEffort::High
-    };
+fn default_picker_effort(_provider: ApiProvider, efforts: &[ReasoningEffort]) -> ReasoningEffort {
+    let preferred = ReasoningEffort::High;
     if efforts.contains(&preferred) {
         preferred
     } else {

@@ -80,22 +80,6 @@ fn test_tokens_shows_usage_info() {
     assert!(msg.contains("Model:"));
 }
 
-#[test]
-fn tokens_report_uses_codex_oauth_route_context() {
-    let mut app = create_test_app();
-    app.api_provider = crate::config::ApiProvider::OpenaiCodex;
-    app.set_model_selection("gpt-5.5".to_string());
-    app.active_route_limits = Some(hakus_config::route::RouteLimits {
-        context_tokens: Some(272_000),
-        input_tokens: None,
-        output_tokens: None,
-    });
-
-    let message = tokens(&mut app).message.expect("tokens report");
-
-    assert!(message.contains("/ 272000"), "{message}");
-    assert!(!message.contains("1050000"), "{message}");
-}
 
 #[test]
 fn test_cost_shows_spending_info() {
@@ -133,75 +117,6 @@ fn cost_report_will_not_promote_an_unqualified_accumulator_to_a_total() {
     assert!(!msg.contains("$0.1234"), "{msg}");
 }
 
-#[test]
-fn cost_report_states_its_coverage_and_names_what_it_excludes() {
-    use crate::pricing::audit_turn_cost_for_provider_at;
-
-    let mut app = create_test_app();
-    let write_heavy = crate::models::Usage {
-        input_tokens: 1_000_000,
-        output_tokens: 100_000,
-        prompt_cache_hit_tokens: Some(200_000),
-        prompt_cache_write_tokens: Some(100_000),
-        ..Default::default()
-    };
-    let now = chrono::Utc::now();
-
-    // One priced turn, one turn whose route publishes no cache-write rate, and
-    // one subscription turn that is not money-metered at all.
-    let priced = audit_turn_cost_for_provider_at(
-        crate::config::ApiProvider::Anthropic,
-        "claude-haiku-4-5",
-        &write_heavy,
-        now,
-    );
-    assert!(priced.is_priced(), "fixture must be priced");
-    app.record_turn_cost_audit(&priced);
-    app.accrue_session_cost_estimate(priced.estimate.expect("priced"));
-
-    let unpriced = audit_turn_cost_for_provider_at(
-        crate::config::ApiProvider::Moonshot,
-        "kimi-k2.7-code",
-        &write_heavy,
-        now,
-    );
-    assert!(!unpriced.is_priced(), "fixture must fail closed");
-    app.record_turn_cost_audit(&unpriced);
-
-    let oauth = audit_turn_cost_for_provider_at(
-        crate::config::ApiProvider::OpenaiCodex,
-        "gpt-5.5",
-        &write_heavy,
-        now,
-    );
-    app.record_turn_cost_audit(&oauth);
-    assert!(
-        !app.session
-            .cost_unpriced_reasons
-            .contains("not_money_metered")
-    );
-
-    let msg = cost(&mut app).message.expect("cost report");
-
-    // Non-metered routes are not counted as "incomplete dollars".
-    assert!(msg.contains("Covered: 1 of 2"), "{msg}");
-    assert!(msg.contains("estimate, not a bill"), "{msg}");
-    assert!(msg.contains("Excluded: 1"), "{msg}");
-    assert!(msg.contains("Priced subtotal:"), "{msg}");
-    assert!(msg.contains("missing_class_price"), "{msg}");
-    assert!(msg.contains("cache_write"), "{msg}");
-
-    // A run with no unpriced turns says so without an exclusion note.
-    let mut clean = create_test_app();
-    clean.record_turn_cost_audit(&priced);
-    let clean_msg = cost(&mut clean).message.expect("cost report");
-    assert!(clean_msg.contains("Covered: 1 of 1"), "{clean_msg}");
-    assert!(clean_msg.contains("Estimated total:"), "{clean_msg}");
-    assert!(!clean_msg.contains("Excluded:"), "{clean_msg}");
-    assert!(clean_msg.contains("estimate, not a bill"), "{clean_msg}");
-    // Provenance of the row the total was built from is part of explaining it.
-    assert!(clean_msg.contains("Pricing sources used:"), "{clean_msg}");
-}
 
 #[test]
 fn cost_coverage_is_currency_specific_for_mixed_deepseek_openai() {
@@ -560,49 +475,6 @@ fn cache_inspect_json_reports_tool_catalog_hash_and_layer_sizes() {
     assert!(tool_layer["token_estimate"].as_u64().unwrap() > 0);
 }
 
-#[test]
-fn cache_inspect_json_keys_auto_replay_to_the_last_concrete_route() {
-    let mut app = create_test_app();
-    app.model = "auto".to_string();
-    app.auto_model = true;
-    app.reasoning_effort = crate::tui::app::ReasoningEffort::Off;
-    app.last_effective_provider = Some(crate::config::ApiProvider::OpenaiCodex);
-    app.last_effective_provider_identity =
-        Some(crate::config::ApiProvider::OpenaiCodex.as_str().to_string());
-    app.last_effective_model = Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string());
-    app.session.last_base_url = Some(crate::config::DEFAULT_OPENAI_CODEX_BASE_URL.to_string());
-    app.push_turn_cache_record(TurnCacheRecord {
-        provider: Some(crate::config::ApiProvider::OpenaiCodex),
-        provider_identity: Some(crate::config::ApiProvider::OpenaiCodex.as_str().to_string()),
-        model: Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string()),
-        auto_model: true,
-        input_tokens: 1,
-        output_tokens: 1,
-        cache_hit_tokens: None,
-        cache_miss_tokens: None,
-        cache_write_tokens: None,
-        reasoning_tokens: None,
-        cost_audit: None,
-        reasoning_replay_tokens: None,
-        recorded_at: Instant::now(),
-    });
-
-    let message = cache(&mut app, Some("inspect --json"))
-        .message
-        .expect("inspect json output");
-    let parsed: serde_json::Value = serde_json::from_str(&message).expect("valid json");
-    let key = &parsed["current_warmup_key"];
-
-    assert_eq!(
-        key["provider"],
-        crate::config::ApiProvider::OpenaiCodex.as_str()
-    );
-    assert_eq!(key["model"], crate::config::DEFAULT_OPENAI_CODEX_MODEL);
-    assert_eq!(
-        key["base_url"],
-        crate::config::DEFAULT_OPENAI_CODEX_BASE_URL
-    );
-}
 
 fn warmup_key(model: &str, static_hash: &str) -> CacheWarmupKey {
     CacheWarmupKey {

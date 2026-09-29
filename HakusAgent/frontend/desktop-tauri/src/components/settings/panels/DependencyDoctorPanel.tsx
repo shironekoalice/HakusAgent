@@ -1,5 +1,5 @@
 /**
- * Dependency doctor — Codex "Workspace dependencies" diagnose/reinstall card.
+ * Dependency doctor — workspace dependency diagnose/reinstall card.
  * Probes git/node/python/uv/gh via Tauri and shows backend health.
  */
 

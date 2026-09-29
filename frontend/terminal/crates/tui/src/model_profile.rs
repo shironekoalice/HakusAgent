@@ -450,27 +450,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_capability_profile_merges_provider_facts_and_overrides() {
-        let profile = resolved_capability_profile_with_overrides(
-            ApiProvider::OpenaiCodex,
-            "gpt-5-codex",
-            CapabilityOverride {
-                context_window: Some(123_456),
-                reasoning: Some(SupportState::Unsupported),
-                tool_surface_budget: Some(ToolSurfaceBudget::Compact),
-                ..CapabilityOverride::default()
-            },
-        );
-
-        assert_eq!(profile.provider, ApiProvider::OpenaiCodex);
-        assert_eq!(profile.request_payload_mode, RequestPayloadMode::Responses);
-        assert_eq!(profile.context_window, Some(123_456));
-        assert_eq!(profile.reasoning, SupportState::Unsupported);
-        assert_eq!(profile.native_tool_calls, SupportState::Supported);
-        assert_eq!(profile.tool_surface_budget, ToolSurfaceBudget::Compact);
-        assert!(profile.provenance.contains(&FactProvenance::UserOverride));
-    }
 
     #[test]
     fn capability_predicates_are_not_provider_string_checks() {

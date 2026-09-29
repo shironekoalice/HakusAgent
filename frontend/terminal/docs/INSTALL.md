@@ -1,87 +1,49 @@
-# HakusCLI 四端安装
+# 终端安装
 
-macOS / Linux / Windows / Android Termux。产物命名沿用下表，发布流水线见
-`.github/workflows/release.yml`（推 `v*` tag 触发）。
+## 下载
 
-| 平台 | 架构 | 安装方式 | Release 资产 |
-|---|---|---|---|
-| Linux | x64 / arm64 | 一键脚本 / `cargo install` | `hakuscli-linux-x64`、`hakuscli-linux-arm64` |
-| macOS | arm64 (M 系列) / x64 | 一键脚本 / `cargo install` | `hakuscli-macos-arm64`、`hakuscli-macos-x64` |
-| Windows | x64 / arm64 | 一键脚本 / `cargo install` | `hakuscli-windows-x64.exe`、`hakuscli-windows-arm64.exe` |
-| Android Termux | arm64 (aarch64) | 见下方 Termux 节 | `hakuscli-android-arm64.tar.gz` |
+从 [Releases](https://github.com/modemneko/HakusAgent/releases) 下载与系统和 CPU 架构匹配的程序：
 
-## 方式一：一键脚本（推荐）
+| 平台 | 常见架构 |
+| --- | --- |
+| Windows | x64、arm64 |
+| macOS | Intel、Apple silicon |
+| Linux | x64、arm64 |
+| Android / Termux | arm64 |
 
-```sh
-# macOS / Linux / Termux
-sh scripts/install.sh
+Linux 和 macOS 的程序通常没有扩展名；Windows 使用 `.exe`。Android / Termux 必须使用 Android 专用包，不能直接使用 Linux arm64 程序。
+
+## 安装与运行
+
+将程序放入可执行路径后运行：
+
+```text
+hakuscli
 ```
 
-```powershell
-# Windows
-.\scripts\install.ps1
+非交互任务：
+
+```text
+hakuscli exec "检查当前项目的依赖更新"
 ```
 
-脚本行为：优先从 GitHub Releases 下载当前平台预编译产物；不可用时回退到
-源码编译（需要 Rust 工具链）。发布仓库默认 `modemneko/HakusAgent`，可用
-`HAKUSCLI_RELEASE_REPO=a/b` 覆盖。
+首次启动会创建本机数据目录，并在需要时引导你配置模型服务。
 
-## 方式二：从源码编译
+## 从源码安装
 
-```sh
-git clone <repo> && cd HakusAgent/frontend/terminal
-cargo install --locked --path crates/cli    # 安装 hakuscli 到 ~/.cargo/bin
-```
-
-Windows 用同样的命令（PowerShell 下路径分隔符不同）。arm64 Linux 交叉编译
-建议用 `cross`；Windows ARM64 需要 MSVC ARM64 组件。
-
-## Android Termux
-
-Termux 是 Bionic libc——**不要**安装 linux glibc 包。
-
-```sh
-pkg install -y git rust binutils clang
-cd ~ && git clone <repo> && cd HakusAgent/frontend/terminal
-sh scripts/install.sh        # 自动走 android-arm64 资产或源码编译
-```
-
-或直接用发布产物：
-
-```sh
-curl -L -O https://github.com/modemneko/HakusAgent/releases/latest/download/hakuscli-android-arm64.tar.gz
-tar xzf hakuscli-android-arm64.tar.gz -C "$PREFIX/bin" && chmod +x "$PREFIX/bin/hakuscli"
-```
-
-平台行为差异与安全模型见 [TERMUX.md](TERMUX.md)。源码编译首次约 20–40 分钟，
-属正常现象。
-
-## 配置与 API key
-
-key 发现顺序（四端一致）：
-
-1. `~/.hakus/config.toml` 的 `[providers.*].api_key`（也可用 `/settings`
-   在 TUI 里直接配置模型商）
-2. 环境变量，如 `DEEPSEEK_API_KEY`
-3. 从当前目录向上查找 HakusAgent 仓库根的 `config.yaml` `api_keys:` 段
-   （`${VAR:default}` 展开取 default；可用 `HAKUS_AGENT_CONFIG` 显式指定）
-
-## 运行
-
-```sh
-hakuscli            # 交互 TUI
-hakuscli exec "..." # 非交互
-```
+源码构建属于维护流程，普通使用者应优先下载 Release 产物。若你需要自行构建，请使用仓库对应版本的构建说明，并确认系统已准备 Rust 工具链和平台编译依赖。
 
 ## 数据位置
 
-HakusCLI 默认是免安装便携模式：所有运行数据写入当前工作目录的
-`.hakus/`，包括配置、会话、日志、缓存和凭据。这样删除程序目录即可一并
-管理这份数据，不会偷偷写入用户目录。
+终端程序把配置、会话、凭据引用、日志和缓存放在本机数据目录。可以通过应用设置或环境变量指定独立的数据根目录，适合便携使用和多配置隔离。
 
-需要安装到系统路径时，设置 `HAKUS_INSTALL_MODE=installed`；安装模式把数据
-写入用户 HOME 下的 `.hakus/`。也可以用绝对路径 `HAKUS_HOME` 指定独立数据根。
-程序不读取、不迁移、不回退到旧的 `.deepseek/` 目录。
+建议：
 
-上游更详尽的历史参考（npm/FreeBSD 等）保留在
-[INSTALL.upstream-reference.md](INSTALL.upstream-reference.md)。
+- 不要把真实凭据提交到项目目录；
+- 多人共享的项目使用项目范围配置时，先检查其中是否包含秘密；
+- 迁移设备前分别备份配置、会话和项目文件；
+- 删除数据前确认是否还需要恢复历史。
+
+## 更新
+
+更新时下载同一平台的新程序并替换旧文件。稳定版和测试版属于不同渠道，升级前请确认渠道一致。

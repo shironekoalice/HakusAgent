@@ -817,14 +817,6 @@ impl Default for ModelRegistry {
                 supports_tools: true,
                 supports_reasoning: true,
             },
-            // OpenAI Codex (ChatGPT OAuth) models
-            ModelInfo {
-                id: "gpt-5.5".to_string(),
-                provider: ProviderKind::OpenaiCodex,
-                aliases: vec!["codex-gpt-5.5".to_string(), "chatgpt-gpt-5.5".to_string()],
-                supports_tools: true,
-                supports_reasoning: true,
-            },
             // Anthropic native Messages API models (#3014)
             ModelInfo {
                 id: "claude-opus-4-8".to_string(),
@@ -2345,21 +2337,6 @@ mod tests {
             assert_eq!(resolved.resolved.id, model_id, "{model_id}");
             assert!(!resolved.used_fallback, "{model_id}");
         }
-    }
-
-    #[test]
-    fn gpt_55_stays_provider_scoped_between_openai_and_codex() {
-        let registry = ModelRegistry::default();
-
-        let unscoped = registry.resolve(Some("gpt-5.5"), None);
-        assert_eq!(unscoped.resolved.provider, ProviderKind::Openai);
-        assert_eq!(unscoped.resolved.id, "gpt-5.5");
-        assert!(!unscoped.used_fallback);
-
-        let codex = registry.resolve(Some("gpt-5.5"), Some(ProviderKind::OpenaiCodex));
-        assert_eq!(codex.resolved.provider, ProviderKind::OpenaiCodex);
-        assert_eq!(codex.resolved.id, "gpt-5.5");
-        assert!(!codex.used_fallback);
     }
 
     #[test]

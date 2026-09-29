@@ -29,7 +29,6 @@ mod auto_reasoning;
 mod automation_manager;
 mod child_env;
 mod client;
-mod codex_model_cache;
 mod command_safety;
 mod commands;
 mod compaction;
@@ -78,7 +77,6 @@ mod models;
 mod models_dev_live;
 mod native_memory;
 mod network_policy;
-mod oauth;
 mod palette;
 mod plugins;
 mod prefix_cache;
@@ -3770,25 +3768,6 @@ fn resolve_credential_diagnostic(config: &Config) -> CredentialDiagnostic {
         );
     }
     let custom_endpoint = config.provider_uses_custom_endpoint(provider);
-    if !custom_endpoint && provider == crate::config::ApiProvider::OpenaiCodex {
-        return config
-            .external_credential_consent_status(provider)
-            .filter(|status| status.route_state == "active")
-            .map_or_else(
-                || {
-                    CredentialDiagnostic::new(
-                        ApiKeySource::OAuth,
-                        CredentialAvailability::NotProbed,
-                    )
-                },
-                |_| {
-                    CredentialDiagnostic::new(
-                        ApiKeySource::ExternalConsent,
-                        CredentialAvailability::NotProbed,
-                    )
-                },
-            );
-    }
     if !custom_endpoint
         && provider == crate::config::ApiProvider::Xai
         && auth_mode
@@ -4157,11 +4136,6 @@ fn doctor_should_probe_api(
 /// doctor limits itself to non-mutating readiness inspection.
 fn doctor_should_probe_auth(config: &Config) -> bool {
     let provider = config.api_provider();
-    if provider == crate::config::ApiProvider::OpenaiCodex
-        && !config.provider_uses_custom_endpoint(provider)
-    {
-        return false;
-    }
     let auth_mode = config.auth_mode_for_provider(provider);
     if provider == crate::config::ApiProvider::Xai
         && auth_mode
@@ -6309,7 +6283,6 @@ fn doctor_external_credential_consent_statuses(
     config: &Config,
 ) -> Vec<hakus_config::ExternalCredentialConsentStatus> {
     [
-        crate::config::ApiProvider::OpenaiCodex,
         crate::config::ApiProvider::Xai,
         crate::config::ApiProvider::Deepseek,
     ]
@@ -13032,226 +13005,6 @@ mod doctor_setup_state_tests {
         assert_eq!(provider_step(&report)["status"], "needs_action");
     }
 
-    #[test]
-    fn doctor_setup_provider_model_json_covers_cn_codex_and_local_matrix() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().expect("tempdir");
-        let (_home_guard, _hakus_home) = prepare_env(&tmp);
-        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path());
-        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", tmp.path());
-        let _deepseek_key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _deepseek_source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-        let _codex_key = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _codex_legacy_key = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let codex_auth_path = tmp.path().join("external-codex-auth.json");
-        let codex_auth_raw = serde_json::json!({
-            "tokens": {
-                "access_token": crate::test_support::future_test_jwt("doctor"),
-                "account_id": "acct-doctor-read-only",
-                "refresh_token": "must-never-be-used",
-                "unknown": {"preserve": true}
-            }
-        })
-        .to_string();
-        fs::write(&codex_auth_path, &codex_auth_raw).expect("Codex auth trap fixture");
-        let _codex_auth =
-            crate::test_support::EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &codex_auth_path);
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-
-        let cn_config = Config {
-            provider: Some("deepseek-cn".to_string()),
-            ..Config::default()
-        };
-        let cn_report = doctor_setup_report_json(&cn_config, &workspace);
-        assert_eq!(cn_report["provider_model"]["provider"]["id"], "deepseek-cn");
-        assert_eq!(
-            cn_report["provider_model"]["provider"]["display"],
-            "DeepSeek (legacy alias)"
-        );
-        assert_eq!(
-            cn_report["provider_model"]["auth"]["env_vars"][0],
-            "DEEPSEEK_API_KEY"
-        );
-        assert_eq!(
-            cn_report["provider_model"]["auth"]["credential_url"],
-            "https://platform.deepseek.com"
-        );
-        assert_eq!(cn_report["provider_model"]["auth"]["oauth_only"], false);
-        assert_eq!(
-            cn_report["provider_model"]["health"]["live_validation"],
-            false
-        );
-
-        let codex_config = Config {
-            provider: Some("openai-codex".to_string()),
-            ..Config::default()
-        };
-        crate::external_credentials::reset_side_effect_trap();
-        let codex_report = doctor_setup_report_json(&codex_config, &workspace);
-        assert_eq!(
-            codex_report["provider_model"]["provider"]["id"],
-            crate::config::ApiProvider::OpenaiCodex.as_str()
-        );
-        assert!(codex_report["provider_model"]["auth"]["credential_url"].is_null());
-        assert_eq!(
-            codex_report["provider_model"]["auth"]["credential_mode"],
-            "oauth"
-        );
-        assert_eq!(codex_report["provider_model"]["auth"]["oauth_only"], true);
-        assert_eq!(
-            codex_report["provider_model"]["health"]["next_action"],
-            "/setup provider or /provider setup <name>"
-        );
-        assert_eq!(
-            crate::external_credentials::side_effect_trap_counts(),
-            (0, 0),
-            "doctor must not stat or read external credentials without consent"
-        );
-
-        let mut consent = hakus_config::ExternalCredentialConsentToml::read_only(
-            hakus_config::ProviderKind::OpenaiCodex,
-            hakus_config::ExternalCredentialSource::CodexCli,
-            codex_auth_path.clone(),
-        );
-        let codex_read_only = Config {
-            provider: Some("openai-codex".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openai_codex: crate::config::ProviderConfig {
-                    auth_mode: Some("oauth".to_string()),
-                    external_credentials: Some(consent.clone()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Config::default()
-        };
-        let changed_ambient_path = tmp.path().join("new-ambient-codex-auth.json");
-        let _changed_codex_auth =
-            crate::test_support::EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &changed_ambient_path);
-        crate::external_credentials::reset_side_effect_trap();
-        let codex_read_only_report = doctor_setup_report_json(&codex_read_only, &workspace);
-        assert_eq!(
-            codex_read_only_report["provider_model"]["auth"]["present_or_local"],
-            false
-        );
-        assert_eq!(
-            codex_read_only_report["provider_model"]["auth"]["source"],
-            "external_consent"
-        );
-        let status_json = doctor_external_credential_consent_json(&codex_read_only);
-        let codex_status = status_json
-            .as_array()
-            .and_then(|rows| rows.first())
-            .expect("Codex structural status");
-        assert_eq!(codex_status["access"], "read_only");
-        assert_eq!(codex_status["provider"], "openai-codex");
-        assert_eq!(codex_status["source"], "codex_cli");
-        assert_eq!(codex_status["route_state"], "active");
-        assert_eq!(codex_status["ambient_path_changed"], true);
-        assert!(
-            codex_status["ambient_path_warning"]
-                .as_str()
-                .is_some_and(|warning| warning.contains("remains pinned"))
-        );
-        assert_eq!(
-            codex_status["revoke_command"],
-            "hakus auth external-revoke --provider openai-codex"
-        );
-        let human = doctor_external_credential_consent_lines(&codex_read_only).join("\n");
-        assert!(human.contains("path="), "{human}");
-        assert!(human.contains("version=1"), "{human}");
-        assert!(human.contains("no refresh, identity-provider or discovery requests"));
-        assert!(human.contains("normal requests to the explicitly selected provider"));
-        assert!(human.contains("consent remains pinned"), "{human}");
-        assert!(
-            human.contains(&hakus_config::quote_os_path(&codex_auth_path)),
-            "{human}"
-        );
-        assert!(!human.contains(&changed_ambient_path.display().to_string()));
-        assert_eq!(
-            crate::external_credentials::complete_side_effect_trap_counts(),
-            (0, 0, 0, 0, 0),
-            "doctor consent status is structural and must not inspect the file"
-        );
-        assert_eq!(
-            fs::read_to_string(&codex_auth_path).expect("unchanged Codex auth fixture"),
-            codex_auth_raw
-        );
-
-        consent.access = hakus_config::ExternalCredentialAccess::Managed;
-        let codex_managed = Config {
-            provider: Some("openai-codex".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openai_codex: crate::config::ProviderConfig {
-                    auth_mode: Some("oauth".to_string()),
-                    external_credentials: Some(consent),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Config::default()
-        };
-        crate::external_credentials::reset_side_effect_trap();
-        let codex_managed_report = doctor_setup_report_json(&codex_managed, &workspace);
-        assert_eq!(
-            codex_managed_report["provider_model"]["auth"]["present_or_local"],
-            false
-        );
-        assert_eq!(
-            crate::external_credentials::side_effect_trap_counts(),
-            (0, 0),
-            "unsupported managed mode must fail before external I/O"
-        );
-        assert_eq!(
-            fs::read_to_string(&codex_auth_path).expect("unchanged managed auth fixture"),
-            codex_auth_raw
-        );
-
-        let local_config = Config {
-            provider: Some("ollama".to_string()),
-            ..Config::default()
-        };
-        let local_report = doctor_setup_report_json(&local_config, &workspace);
-        assert_eq!(local_report["provider_model"]["provider"]["id"], "ollama");
-        assert_eq!(
-            local_report["provider_model"]["auth"]["present_or_local"],
-            true
-        );
-        assert!(local_report["provider_model"]["auth"]["credential_url"].is_null());
-        assert_eq!(
-            local_report["provider_model"]["auth"]["credential_mode"],
-            "local_optional"
-        );
-        assert_eq!(local_report["provider_model"]["auth"]["oauth_only"], false);
-        assert_eq!(
-            local_report["provider_model"]["health"]["next_action"],
-            "/model"
-        );
-
-        let kimi_config = Config {
-            provider: Some("moonshot".to_string()),
-            ..Config::default()
-        };
-        let kimi_report = doctor_setup_report_json(&kimi_config, &workspace);
-        assert_eq!(
-            kimi_report["provider_model"]["auth"]["credential_url"],
-            "https://platform.kimi.ai"
-        );
-        assert_eq!(
-            kimi_report["provider_model"]["auth"]["credential_docs_url"],
-            "https://platform.kimi.ai"
-        );
-        assert_eq!(
-            kimi_report["provider_model"]["auth"]["credential_mode"],
-            "api_key"
-        );
-        assert!(
-            kimi_report["provider_model"]["auth"]["credential_guidance"]
-                .as_str()
-                .is_some_and(|guidance| guidance.contains("OAuth is not available"))
-        );
-    }
 
     #[test]
     fn doctor_setup_report_json_uses_persisted_state() {
@@ -15244,30 +14997,6 @@ mod terminal_mode_tests {
         );
     }
 
-    #[test]
-    fn cli_route_tracks_auto_reasoning_independently_from_auto_model() {
-        use crate::tui::app::ReasoningEffort;
-
-        let fixed_model_auto_reasoning = CliAutoRoute {
-            provider: crate::config::ApiProvider::Deepseek,
-            model: crate::config::DEFAULT_TEXT_MODEL.to_string(),
-            reasoning_effort: Some(ReasoningEffort::Auto),
-            auto_controls_reasoning: true,
-            auto_model: false,
-        };
-        let auto_model_fixed_reasoning = CliAutoRoute {
-            provider: crate::config::ApiProvider::OpenaiCodex,
-            model: crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
-            reasoning_effort: Some(ReasoningEffort::High),
-            auto_controls_reasoning: false,
-            auto_model: true,
-        };
-
-        assert!(fixed_model_auto_reasoning.auto_controls_reasoning);
-        assert!(!fixed_model_auto_reasoning.auto_model);
-        assert!(!auto_model_fixed_reasoning.auto_controls_reasoning);
-        assert!(auto_model_fixed_reasoning.auto_model);
-    }
 
     #[test]
     fn saved_reasoning_preference_overrides_config_for_non_tui_runtimes() {
@@ -17540,28 +17269,6 @@ mod doctor_live_probe_tests {
         ));
     }
 
-    #[test]
-    fn oauth_routes_skip_live_probe_to_keep_doctor_non_mutating() {
-        let codex = Config {
-            provider: Some("openai-codex".to_string()),
-            ..Config::default()
-        };
-        assert!(!doctor_should_probe_auth(&codex));
-
-        let xai = Config {
-            provider: Some("xai".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                xai: crate::config::ProviderConfig {
-                    auth_mode: Some("oauth".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Config::default()
-        };
-        assert!(!doctor_should_probe_auth(&xai));
-        assert!(doctor_should_probe_auth(&Config::default()));
-    }
 }
 
 #[cfg(test)]

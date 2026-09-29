@@ -345,18 +345,6 @@ fn missing_provider_api_key_message_uses_provider_metadata() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn opencode_zen_missing_credentials_never_mentions_codex_oauth() -> Result<()> {
-    let message = missing_provider_api_key_message(ApiProvider::OpencodeZen)?;
-    assert!(message.contains("OpenCode Zen API key not found"));
-    assert!(message.contains("OPENCODE_ZEN_API_KEY"));
-    assert!(message.contains("OPENCODE_API_KEY"));
-    assert!(message.contains("[providers.opencode_zen]"));
-    assert!(!message.contains("codex login"));
-    assert!(!message.contains("ChatGPT"));
-    assert!(!message.contains("auth.json"));
-    Ok(())
-}
 
 // GHSA-72w5-pf8h-xfp4 — regression: `allow_shell` must be opt-in.
 #[test]
@@ -3964,15 +3952,6 @@ base_url = "https://openrouter.ai/api/v1" # pinned
     Ok(())
 }
 
-#[test]
-fn save_api_key_for_openai_codex_refuses_config_storage() {
-    let err = save_api_key_for(ApiProvider::OpenaiCodex, "codex-token")
-        .expect_err("Codex OAuth tokens must not be persisted as provider API keys");
-
-    let message = err.to_string();
-    assert!(message.contains("OpenAI Codex uses OAuth"), "{message}");
-    assert!(message.contains("codex login"), "{message}");
-}
 
 /// Clearing credentials must not disturb comments, `api_key_env`, or
 /// provider tables with quoted names.
@@ -4761,119 +4740,7 @@ model = "managed-model"
     Ok(())
 }
 
-#[test]
-fn managed_config_cannot_grant_external_credential_consent() -> Result<()> {
-    let _lock = lock_test_env();
-    let temp_root = tempfile::tempdir()?;
-    let _guard = EnvGuard::new(temp_root.path());
-    let config_path = temp_root.path().join("config.toml");
-    let managed_path = temp_root.path().join("managed.toml");
-    let external_path = temp_root.path().join("codex-auth.json");
-    let external_raw = r#"{"tokens":{"access_token":"must-never-be-read"}}"#;
-    fs::write(&external_path, external_raw)?;
-    fs::write(
-        &managed_path,
-        format!(
-            r#"[providers.openai_codex.external_credentials]
-access = "read_only"
-provider = "openai-codex"
-source = "codex_cli"
-path = {:?}
-consent_version = 1
-"#,
-            external_path.display().to_string()
-        ),
-    )?;
-    fs::write(
-        &config_path,
-        format!(
-            "provider = \"openai-codex\"\nmanaged_config_path = {:?}\n",
-            managed_path.display().to_string()
-        ),
-    )?;
 
-    crate::external_credentials::reset_side_effect_trap();
-    let config = Config::load(Some(config_path), None)?;
-    assert!(
-        config
-            .provider_config_for(ApiProvider::OpenaiCodex)
-            .and_then(|provider| provider.external_credentials.as_ref())
-            .is_none()
-    );
-    assert!(!has_api_key_for(&config, ApiProvider::OpenaiCodex));
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (0, 0),
-        "managed config must not consent to user-owned external credentials"
-    );
-    assert_eq!(fs::read_to_string(external_path)?, external_raw);
-    Ok(())
-}
-
-#[test]
-fn managed_disabled_external_policy_tightens_lower_user_consent() -> Result<()> {
-    let _lock = lock_test_env();
-    let temp_root = tempfile::tempdir()?;
-    let _guard = EnvGuard::new(temp_root.path());
-    let config_path = temp_root.path().join("config.toml");
-    let managed_path = temp_root.path().join("managed.toml");
-    let external_path = temp_root.path().join("codex-auth.json");
-    fs::write(
-        &external_path,
-        r#"{"tokens":{"access_token":"must-not-read"}}"#,
-    )?;
-    fs::write(
-        &managed_path,
-        format!(
-            r#"[providers.openai_codex.external_credentials]
-access = "disabled"
-provider = "openai-codex"
-source = "codex_cli"
-path = {:?}
-consent_version = 1
-"#,
-            external_path.display().to_string()
-        ),
-    )?;
-    fs::write(
-        &config_path,
-        format!(
-            r#"provider = "openai-codex"
-managed_config_path = {:?}
-
-[providers.openai_codex]
-auth_mode = "oauth"
-
-[providers.openai_codex.external_credentials]
-access = "read_only"
-provider = "openai-codex"
-source = "codex_cli"
-path = {:?}
-consent_version = 1
-"#,
-            managed_path.display().to_string(),
-            external_path.display().to_string(),
-        ),
-    )?;
-    let _auth_path = EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &external_path);
-    crate::external_credentials::reset_side_effect_trap();
-    let config = Config::load(Some(config_path), None)?;
-    let effective = config
-        .provider_config_for(ApiProvider::OpenaiCodex)
-        .and_then(|provider| provider.external_credentials.as_ref())
-        .expect("managed disabled tombstone");
-    assert_eq!(
-        effective.access,
-        hakus_config::ExternalCredentialAccess::Disabled
-    );
-    assert!(!has_api_key_for(&config, ApiProvider::OpenaiCodex));
-    assert_eq!(
-        crate::external_credentials::complete_side_effect_trap_counts(),
-        (0, 0, 0, 0, 0),
-        "managed deny must suppress lower consent before every side effect"
-    );
-    Ok(())
-}
 
 #[test]
 fn env_base_url_provenance_tracks_the_route_across_provider_switches() -> Result<()> {
@@ -7173,50 +7040,6 @@ fn openai_provider_uses_openai_compatible_defaults() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn openai_codex_default_model_falls_back_to_codex_model() {
-    // The Codex Responses backend only accepts its own model family, and a
-    // global `default_text_model` is validated to DeepSeek IDs (or "auto"),
-    // so with the Codex provider it must resolve to the Codex default
-    // instead of leaking a DeepSeek id the backend rejects.
-    // Isolate from any ambient developer Codex roster: the seed fallback is
-    // asserted here; the fresh-roster preference (#5034) is covered by
-    // codex_switch_without_saved_model_prefers_fresh_roster_head.
-    let _lock = lock_test_env();
-    let empty_codex_home = tempfile::tempdir().expect("empty codex home");
-    let _codex_home = EnvVarGuard::set("CODEX_HOME", empty_codex_home.path());
-    let with_deepseek_default = Config {
-        provider: Some("openai-codex".to_string()),
-        default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),
-        ..Default::default()
-    };
-    assert_eq!(
-        with_deepseek_default.api_provider(),
-        ApiProvider::OpenaiCodex
-    );
-    assert_eq!(
-        with_deepseek_default.default_model(),
-        DEFAULT_OPENAI_CODEX_MODEL
-    );
-
-    // No global default resolves the same way.
-    let bare = Config {
-        provider: Some("openai-codex".to_string()),
-        ..Default::default()
-    };
-    assert_eq!(bare.default_model(), DEFAULT_OPENAI_CODEX_MODEL);
-
-    // An explicit provider-scoped model still wins over the fallback.
-    let mut providers = ProvidersConfig::default();
-    providers.openai_codex.model = Some("gpt-5.5-codex-preview".to_string());
-    let pinned = Config {
-        provider: Some("openai-codex".to_string()),
-        default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),
-        providers: Some(providers),
-        ..Default::default()
-    };
-    assert_eq!(pinned.default_model(), "gpt-5.5-codex-preview");
-}
 
 #[test]
 fn direct_provider_ignores_foreign_deepseek_root_default_model() {
@@ -7323,25 +7146,6 @@ fn xiaomi_mimo_provider_drops_stale_deepseek_root_default_model() -> Result<()> 
     Ok(())
 }
 
-#[test]
-fn openai_codex_provider_ignores_legacy_root_base_url() -> Result<()> {
-    let config = Config {
-        provider: Some("openai-codex".to_string()),
-        // `base_url` is the legacy DeepSeek setting in a normal multi-provider
-        // config. Switching to Codex must not inherit it and make the official
-        // CLI OAuth login ineligible.
-        base_url: Some("https://api.deepseek.com".to_string()),
-        default_text_model: Some("gpt-5.5".to_string()),
-        ..Default::default()
-    };
-
-    config.validate()?;
-    assert_eq!(config.api_provider(), ApiProvider::OpenaiCodex);
-    assert_eq!(config.default_model(), "gpt-5.5");
-    assert_eq!(config.deepseek_base_url(), DEFAULT_OPENAI_CODEX_BASE_URL);
-    assert!(!config.provider_uses_custom_endpoint(ApiProvider::OpenaiCodex));
-    Ok(())
-}
 
 #[test]
 fn xiaomi_provider_alias_table_maps_to_mimo_config() -> Result<()> {
@@ -9286,177 +9090,7 @@ fn moonshot_credential_help_keeps_direct_and_kimi_code_routes_distinct() {
     );
 }
 
-#[test]
-fn codex_external_credentials_are_disabled_by_default_and_managed_fails_before_io() -> Result<()> {
-    let _lock = lock_test_env();
-    let temp = tempfile::tempdir()?;
-    let temp_root = temp.path().canonicalize()?;
-    let auth_path = temp_root.join("codex-auth.json");
-    let token = crate::test_support::future_test_jwt("codex");
-    let raw = serde_json::to_string_pretty(&json!({
-        "tokens": {
-            "access_token": token.clone(),
-            "account_id": "acct-must-not-be-read",
-            "refresh_token": "must-never-be-used"
-        },
-        "unknown": {"preserve": true}
-    }))?;
-    fs::write(&auth_path, &raw)?;
-    let ambient_decoy = temp_root.join("ambient-decoy.json");
-    let ambient_decoy_raw = r#"{"tokens":{"access_token":"must-not-be-read"}}"#;
-    fs::write(&ambient_decoy, ambient_decoy_raw)?;
-    let _auth_path = EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &ambient_decoy);
-    let _access = EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-    let _legacy_access = EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-    let _account = EnvVarGuard::remove("OPENAI_CODEX_ACCOUNT_ID");
-    let _legacy_account = EnvVarGuard::remove("CODEX_ACCOUNT_ID");
 
-    let disabled = Config {
-        provider: Some(ApiProvider::OpenaiCodex.as_str().to_string()),
-        ..Default::default()
-    };
-    crate::external_credentials::reset_side_effect_trap();
-    assert!(!has_api_key_for(&disabled, ApiProvider::OpenaiCodex));
-    let error = disabled
-        .deepseek_api_key()
-        .expect_err("external credentials default to disabled");
-    assert!(error.to_string().contains("are disabled"));
-    assert_eq!(disabled.codex_account_id(), None);
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (0, 0)
-    );
-
-    let mut managed_consent = hakus_config::ExternalCredentialConsentToml::read_only(
-        hakus_config::ProviderKind::OpenaiCodex,
-        hakus_config::ExternalCredentialSource::CodexCli,
-        auth_path.clone(),
-    );
-    managed_consent.access = hakus_config::ExternalCredentialAccess::Managed;
-    let managed = Config {
-        provider: Some(ApiProvider::OpenaiCodex.as_str().to_string()),
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                auth_mode: Some("oauth".to_string()),
-                external_credentials: Some(managed_consent),
-                ..Default::default()
-            },
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    crate::external_credentials::reset_side_effect_trap();
-    assert!(!has_api_key_for(&managed, ApiProvider::OpenaiCodex));
-    let error = managed
-        .deepseek_api_key()
-        .expect_err("managed access needs a preservation adapter");
-    assert!(
-        error
-            .to_string()
-            .contains("schema-safe preservation adapter")
-    );
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (0, 0)
-    );
-    assert_eq!(fs::read_to_string(&auth_path)?, raw);
-    Ok(())
-}
-
-#[test]
-fn codex_read_only_consent_reads_exact_file_without_mutation() -> Result<()> {
-    let _lock = lock_test_env();
-    let temp = tempfile::tempdir()?;
-    let temp_root = temp.path().canonicalize()?;
-    let auth_path = temp_root.join("codex-auth.json");
-    let token = crate::test_support::future_test_jwt("codex");
-    let raw = serde_json::to_string_pretty(&json!({
-        "tokens": {
-            "access_token": token.clone(),
-            "account_id": "acct-read-only",
-            "refresh_token": "must-never-be-used",
-            "future_field": ["preserve"]
-        },
-        "future_top_level": true
-    }))?;
-    fs::write(&auth_path, &raw)?;
-    let ambient_decoy = temp_root.join("ambient-decoy.json");
-    let ambient_decoy_raw = r#"{"tokens":{"access_token":"must-not-be-read"}}"#;
-    fs::write(&ambient_decoy, ambient_decoy_raw)?;
-    let _auth_path = EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &ambient_decoy);
-    let _access = EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-    let _legacy_access = EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-    let config = Config {
-        provider: Some(ApiProvider::OpenaiCodex.as_str().to_string()),
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                auth_mode: Some("oauth".to_string()),
-                external_credentials: Some(
-                    hakus_config::ExternalCredentialConsentToml::read_only(
-                        hakus_config::ProviderKind::OpenaiCodex,
-                        hakus_config::ExternalCredentialSource::CodexCli,
-                        auth_path.clone(),
-                    ),
-                ),
-                ..Default::default()
-            },
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-
-    let mut inactive = config.clone();
-    inactive.provider = Some(ApiProvider::Deepseek.as_str().to_string());
-    crate::external_credentials::reset_side_effect_trap();
-    assert!(inactive.external_credential_read_consent_configured(
-        ApiProvider::OpenaiCodex,
-        hakus_config::ExternalCredentialSource::CodexCli,
-    ));
-    let dormant_error = inactive
-        .external_credential_read_grant(
-            ApiProvider::OpenaiCodex,
-            hakus_config::ExternalCredentialSource::CodexCli,
-            &ambient_decoy,
-        )
-        .expect_err("inactive providers cannot mint external read capabilities");
-    assert!(dormant_error.to_string().contains("explicitly selected"));
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (0, 0)
-    );
-
-    let active_grant = config.external_credential_read_grant(
-        ApiProvider::OpenaiCodex,
-        hakus_config::ExternalCredentialSource::CodexCli,
-        &ambient_decoy,
-    )?;
-    assert_eq!(
-        active_grant.path(),
-        auth_path,
-        "the selected route remains pinned to the persisted consent path"
-    );
-
-    crate::external_credentials::reset_side_effect_trap();
-    assert_eq!(config.deepseek_api_key()?, token);
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (1, 1)
-    );
-    assert_eq!(fs::read_to_string(&auth_path)?, raw);
-    assert_eq!(fs::read_to_string(&ambient_decoy)?, ambient_decoy_raw);
-
-    drop(_access);
-    let _process_access = EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "process-token");
-    crate::external_credentials::reset_side_effect_trap();
-    assert_eq!(config.deepseek_api_key()?, "process-token");
-    assert_eq!(config.codex_account_id(), None);
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (0, 0),
-        "process-scoped Codex auth must not be mixed with external-file metadata"
-    );
-    Ok(())
-}
 
 #[test]
 fn moonshot_kimi_code_api_key_uses_coding_model() -> Result<()> {
@@ -10449,20 +10083,6 @@ fn provider_capability_openrouter_v4_pro_has_thinking_no_cache() {
     );
 }
 
-#[test]
-fn provider_capability_openai_codex_uses_responses_payload() {
-    let cap = provider_capability(ApiProvider::OpenaiCodex, DEFAULT_OPENAI_CODEX_MODEL);
-    assert_eq!(cap.provider, ApiProvider::OpenaiCodex);
-    assert_eq!(cap.resolved_model, DEFAULT_OPENAI_CODEX_MODEL);
-    assert_eq!(
-        cap.context_window,
-        OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS
-    );
-    assert_eq!(cap.max_output, Some(4096));
-    assert!(cap.thinking_supported);
-    assert!(!cap.cache_telemetry_supported);
-    assert_eq!(cap.request_payload_mode, RequestPayloadMode::Responses);
-}
 
 #[test]
 fn invalid_provider_auth_source_is_not_explicit_configuration() {
@@ -11992,66 +11612,6 @@ fn session_provider_identity_fails_closed_for_removed_or_invalid_custom_table() 
     assert!(url_error.contains("will not fall back"));
 }
 
-#[test]
-fn picker_consent_persists_only_confirmed_exact_scope_and_revoke_is_one_step() {
-    let dir = tempfile::TempDir::new().expect("tempdir");
-    let config_path = dir.path().join("config.toml");
-    let external_path = dir.path().join("codex-auth.json");
-    std::fs::write(
-        &config_path,
-        "# preserve operator comment\n[providers.openai_codex]\nmodel = \"gpt-5-codex\" # preserve model\n",
-    )
-    .expect("seed config");
-    let mut live = Config {
-        provider: Some(ApiProvider::OpenaiCodex.as_str().to_string()),
-        ..Config::default()
-    };
-
-    crate::external_credentials::reset_side_effect_trap();
-    persist_external_credential_consent_for_at(
-        Some(&config_path),
-        &mut live,
-        ApiProvider::OpenaiCodex,
-        hakus_config::ProviderKind::OpenaiCodex,
-        hakus_config::ExternalCredentialSource::CodexCli,
-        &external_path,
-    )
-    .expect("persist confirmed consent");
-    let saved = std::fs::read_to_string(&config_path).expect("saved config");
-    assert!(saved.contains("# preserve operator comment"));
-    assert!(saved.contains("model = \"gpt-5-codex\" # preserve model"));
-    assert!(saved.contains("access = \"read_only\""));
-    assert!(saved.contains("source = \"codex_cli\""));
-    assert!(saved.contains(&external_path.display().to_string()));
-    let consent = live
-        .provider_config_for(ApiProvider::OpenaiCodex)
-        .and_then(|entry| entry.external_credentials.as_ref())
-        .expect("live consent");
-    assert_eq!(consent.path, external_path);
-    assert_eq!(
-        crate::external_credentials::complete_side_effect_trap_counts(),
-        (0, 0, 0, 0, 0),
-        "grant persistence must not inspect the disclosed external path"
-    );
-
-    revoke_external_credential_consent_for_at(
-        Some(&config_path),
-        &mut live,
-        ApiProvider::OpenaiCodex,
-    )
-    .expect("one-step revoke");
-    let revoked = std::fs::read_to_string(&config_path).expect("revoked config");
-    assert!(!revoked.contains("external_credentials"));
-    assert!(
-        live.provider_config_for(ApiProvider::OpenaiCodex)
-            .and_then(|entry| entry.external_credentials.as_ref())
-            .is_none()
-    );
-    assert_eq!(
-        crate::external_credentials::complete_side_effect_trap_counts(),
-        (0, 0, 0, 0, 0)
-    );
-}
 
 /// Every provider must accept the model ids it advertises for itself.
 ///

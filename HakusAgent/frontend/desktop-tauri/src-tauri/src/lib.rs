@@ -18,6 +18,10 @@ mod http_cmds;
 mod fs_cmds;
 #[cfg(not(target_os = "android"))]
 mod git_cmds;
+#[cfg(not(target_os = "android"))]
+mod remote_cmds;
+#[cfg(not(target_os = "android"))]
+mod browser_cmds;
 
 #[cfg(not(target_os = "android"))]
 use std::time::{Duration, Instant};
@@ -107,6 +111,9 @@ fn kill_backend(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<voice_cmds::VoiceProcessState>() {
         voice_cmds::stop_process(state.inner());
     }
+    if let Some(state) = app.try_state::<remote_cmds::RemoteRuntimeState>() {
+        state.stop_all();
+    }
 }
 
 /// Toggle the main window's visibility — used by tray left-click and the
@@ -153,6 +160,38 @@ fn apply_rounded_corners(app: &tauri::AppHandle) {
     };
     if let Err(error) = result {
         eprintln!("[setup] Failed to set rounded corners: {error}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_material(app: &tauri::AppHandle) {
+    use tauri::window::{Effect, EffectsBuilder};
+
+    if let Some(window) = app.get_webview_window("main") {
+        let acrylic = EffectsBuilder::new().effect(Effect::Acrylic).build();
+        if let Err(error) = window.set_effects(acrylic) {
+            eprintln!("[setup] Acrylic material unavailable, falling back to Mica: {error}");
+            if let Err(error) =
+                window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build())
+            {
+                eprintln!("[setup] Failed to apply the native window material: {error}");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_window_material(app: &tauri::AppHandle) {
+    use tauri::window::{Effect, EffectState, EffectsBuilder};
+
+    if let Some(window) = app.get_webview_window("main") {
+        let effects = EffectsBuilder::new()
+            .effect(Effect::Sidebar)
+            .state(EffectState::FollowsWindowActiveState)
+            .build();
+        if let Err(error) = window.set_effects(effects) {
+            eprintln!("[setup] Failed to apply the native window material: {error}");
+        }
     }
 }
 
@@ -244,6 +283,7 @@ pub fn run() {
             .setup(|app| {
                 app.manage(updater_cmds::UpdaterCommandState::default());
                 app.manage(voice_cmds::VoiceProcessState::default());
+                app.manage(remote_cmds::RemoteRuntimeState::default());
                 match embedded_backend::EmbeddedBackendState::start(app.handle()) {
                     Ok(state) => {
                         app.manage(state);
@@ -258,6 +298,9 @@ pub fn run() {
                 // No external splash window: the React app boots straight
                 // into its in-window AwakeningSplash, which covers the
                 // whole boot sequence and fades into the UI by itself.
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                apply_window_material(app.handle());
+
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                 }
@@ -384,7 +427,8 @@ pub fn run() {
         voice_cmds::voice_stop_celia,
         // OS clipboard (WebView navigator.clipboard is unreliable)
         clipboard_cmds::copy_text,
-        // Codex-aligned git review / worktree / dependency doctor
+        clipboard_cmds::read_clipboard_text,
+        // Git review / worktree / dependency doctor
         git_cmds::git_apply_patch,
         git_cmds::git_branch_list,
         git_cmds::git_worktree_list,
@@ -396,6 +440,20 @@ pub fn run() {
         fs_cmds::fs_read_text,
         fs_cmds::fs_write_text,
         fs_cmds::fs_list_dir,
+        remote_cmds::remote_list_targets,
+        remote_cmds::remote_list_ssh_hosts,
+        remote_cmds::remote_connect,
+        remote_cmds::remote_list_dir,
+        remote_cmds::remote_sync,
+        remote_cmds::remote_start_runtime,
+        remote_cmds::remote_stop_runtime,
+        browser_cmds::browser_create,
+        browser_cmds::browser_set_bounds,
+        browser_cmds::browser_select_tab,
+        browser_cmds::browser_hide_tabs,
+        browser_cmds::browser_close_tab,
+        browser_cmds::browser_current_url,
+        browser_cmds::browser_action,
     ]);
 
     #[cfg(target_os = "android")]

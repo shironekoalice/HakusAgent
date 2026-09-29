@@ -1,5 +1,5 @@
 /**
- * MessageNavRail — Codex 风格的会话右缘「用户消息导航轨」。
+ * MessageNavRail — 会话右缘「用户消息导航轨」。
  *
  * 对齐解码资产 thread-user-message-navigation-rail-app-5098d9077294.js /
  * thread-user-message-navigation-rail-app-33e1d82a93e0.css 的精确规格：

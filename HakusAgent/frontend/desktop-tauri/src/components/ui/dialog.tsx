@@ -47,7 +47,7 @@ const DialogContent = React.forwardRef<
             // box against the viewport on every WebView, while translate/-
             // transform centering silently breaks when any ancestor gains
             // a transform/filter (fixed elements then anchor to that box).
-            'fixed inset-0 z-50 m-auto grid h-fit w-[calc(100%-2rem)] max-w-lg gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-2xl',
+            'fixed inset-0 z-50 m-auto grid h-fit w-[calc(100%-2rem)] max-w-lg gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-[var(--ui-radius-surface)]',
         className,
       )}
       {...props}
@@ -83,7 +83,7 @@ const DialogContent = React.forwardRef<
           on open, so any always-on focus ring here lights up a box around the
           X the moment a dialog appears. Keep the button visually quiet on
           focus; hover is the affordance. */}
-      <DialogPrimitive.Close className="dialog-close absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus-visible:opacity-100 disabled:pointer-events-none">
+      <DialogPrimitive.Close className="dialog-close absolute right-4 top-4 rounded-md opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus-visible:opacity-100 disabled:pointer-events-none">
         <X className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>

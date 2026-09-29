@@ -1,5 +1,5 @@
 /**
- * AutomationsPanel — Codex-style scheduled turns management.
+ * AutomationsPanel — scheduled turns management.
  *
  * Lists automations from the backend scheduler, lets the user create
  * (name / schedule / prompt), pause/resume, run-now, delete, and

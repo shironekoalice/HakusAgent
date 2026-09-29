@@ -2538,33 +2538,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reasoning_cycle_uses_codex_effort_tiers() {
-        let registry = HotbarActionRegistry::with_builtins();
-        let reasoning = registry.get("reasoning.cycle").expect("reasoning action");
-        let mut app = test_app();
-        app.api_provider = ApiProvider::OpenaiCodex;
-        app.auto_model = false;
-        app.reasoning_effort = ReasoningEffort::Low;
-
-        for (expected_effort, expected_label) in [
-            (ReasoningEffort::Medium, "medium"),
-            (ReasoningEffort::High, "high"),
-            (ReasoningEffort::Max, "xhigh"),
-            (ReasoningEffort::Low, "low"),
-        ] {
-            assert!(matches!(
-                reasoning.dispatch(&mut app).expect("dispatch reasoning"),
-                HotbarDispatch::AppAction(AppAction::UpdateCompaction(_))
-            ));
-            assert_eq!(app.reasoning_effort, expected_effort);
-            let expected_message = format!("Reasoning effort: {expected_label}");
-            assert_eq!(
-                app.status_message.as_deref(),
-                Some(expected_message.as_str())
-            );
-        }
-    }
 
     #[test]
     fn sidebar_toggle_reports_visibility_and_dispatches() {

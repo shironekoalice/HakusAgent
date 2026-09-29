@@ -66,6 +66,54 @@ pub fn copy_text(text: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+pub fn read_clipboard_text() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+            "-STA",
+                "-Command",
+                "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; $value = Get-Clipboard -Raw; if ($null -ne $value) { [Console]::Write($value) }",
+            ])
+            .output()
+            .map_err(|error| format!("读取系统剪贴板失败：{error}"))?;
+        if !output.status.success() {
+            return Err("读取系统剪贴板失败".into());
+        }
+        return String::from_utf8(output.stdout)
+            .map_err(|error| format!("剪贴板文本编码无效：{error}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    let candidates: [(&str, &[&str]); 1] = [("pbpaste", &[])];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let candidates: [(&str, &[&str]); 3] = [
+        ("wl-paste", &["--no-newline", "--type", "text"]),
+        ("xclip", &["-selection", "clipboard", "-o"]),
+        ("xsel", &["--clipboard", "--output"]),
+    ];
+
+    #[cfg(unix)]
+    {
+        for (program, args) in candidates {
+            let output = match std::process::Command::new(program).args(args).output() {
+                Ok(output) if output.status.success() => output,
+                _ => continue,
+            };
+            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+        }
+        Err("未找到可用的系统剪贴板读取工具".into())
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        Err("当前平台不支持读取系统剪贴板".into())
+    }
+}
+
 #[allow(dead_code)]
 fn copy_with_arboard(text: &str) -> bool {
     // arboard is not a direct dependency; keep this hook for when it is added.

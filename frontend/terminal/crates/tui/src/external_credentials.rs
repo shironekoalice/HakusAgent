@@ -688,15 +688,11 @@ mod tests {
 
     fn grant(path: &Path) -> ExternalCredentialReadGrant {
         ExternalCredentialConsentToml::read_only(
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
+            ProviderKind::Xai,
+            ExternalCredentialSource::GrokCli,
             path.to_path_buf(),
         )
-        .read_grant(
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
-            path,
-        )
+        .read_grant(ProviderKind::Xai, ExternalCredentialSource::GrokCli, path)
         .expect("test grant")
     }
 

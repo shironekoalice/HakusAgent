@@ -276,7 +276,7 @@ export function AdvancedPanel() {
 
       <Separator />
 
-      {/* Codex-style dependency doctor */}
+      {/* Dependency doctor */}
       <DependencyDoctorPanel />
 
       <Separator />

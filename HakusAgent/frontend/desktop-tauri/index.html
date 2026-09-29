@@ -84,22 +84,18 @@
       html, body {
         background: transparent;
       }
-      /* Rounded, themed surface for the frameless desktop window, painted
-         before index.css loads. Mirrors :root.is-rounded-window #root below;
-         the app is still opaque here, so the window never reads as broken. */
+      /* Keep the WebView root transparent so the native window material can
+         show through. Content surfaces paint their own opaque backgrounds. */
       html.is-rounded-window #root {
         border-radius: 12px;
-        background: hsl(240 8% 97%);
-      }
-      html.is-rounded-window.dark #root {
-        background: hsl(240 7% 6%);
+        background: transparent;
       }
       #hakus-overlay-root {
         position: absolute;
         inset: 0;
         pointer-events: none;
       }
-      /* Dark theme base text color (background comes from #root) */
+      /* Theme text colors */
       html {
         color: hsl(220 18% 12%);
       }

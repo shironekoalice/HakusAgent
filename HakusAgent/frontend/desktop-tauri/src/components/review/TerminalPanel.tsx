@@ -3,7 +3,7 @@ import { TerminalSquare, Trash2, Loader2 } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { apiClient } from '@/api/client'
-import { useSettingsStore } from '@/store/settings'
+import { useProjectsStore } from '@/store/projects'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
@@ -21,13 +21,14 @@ import '@xterm/xterm/css/xterm.css'
 export function TerminalPanel() {
   const { locale } = useI18n()
   const copy = (zh: string, en: string) => locale === 'zh-CN' ? zh : en
-  const serverUrl = useSettingsStore((s) => s.connection.serverUrl)
+  const workingDirectory = useProjectsStore((s) => s.activeProject?.path ?? null)
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef(false)
   const [connected, setConnected] = useState(false)
+  const [connecting, setConnecting] = useState(true)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -77,6 +78,13 @@ export function TerminalPanel() {
         ws.send(JSON.stringify({ type: 'stdin', data }))
       }
     })
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.ctrlKey && event.key.toLowerCase() === 'l') {
+        term.clear()
+        return false
+      }
+      return true
+    })
     term.onResize(({ cols, rows }) => {
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -92,9 +100,12 @@ export function TerminalPanel() {
       }
     }
     window.addEventListener('resize', handleResize)
+    const resizeObserver = new ResizeObserver(handleResize)
+    resizeObserver.observe(containerRef.current)
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      resizeObserver.disconnect()
       reconnectRef.current = false
       wsRef.current?.close()
       wsRef.current = null
@@ -107,37 +118,50 @@ export function TerminalPanel() {
   useEffect(() => {
     const connect = () => {
       if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return
-      if (serverUrl) apiClient.setBaseUrl(serverUrl)
       const url = apiClient.terminalWsUrl()
       let ws: WebSocket
       try {
+        reconnectRef.current = true
+        setConnecting(true)
         ws = new WebSocket(url)
       } catch (e: any) {
         terminalRef.current?.writeln(`\x1b[31m${copy('连接失败：', 'Connection failed: ')}${e?.message || e}\x1b[0m`)
         return
       }
+      ws.binaryType = 'arraybuffer'
       wsRef.current = ws
 
       ws.onopen = () => {
         setConnected(true)
+        setConnecting(false)
         reconnectRef.current = true
-        // Sync initial size immediately after open.
+        // Start in the active local project when one is selected.
         try {
-          fitAddonRef.current?.fit()
           const { cols, rows } = terminalRef.current ?? { cols: 80, rows: 24 }
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+          ws.send(JSON.stringify({ type: 'init', cwd: workingDirectory, cols, rows }))
+          fitAddonRef.current?.fit()
         } catch {
           // ignore
         }
       }
       ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          terminalRef.current?.write(new Uint8Array(e.data))
+          return
+        }
         if (typeof e.data === 'string') {
           // Fast path: raw terminal output is the common case.
           if (e.data.startsWith('{')) {
             try {
               const msg = JSON.parse(e.data)
               if (msg.type === 'error') {
+                setConnecting(false)
                 terminalRef.current?.writeln(`\x1b[31m${copy('错误：', 'Error: ')}${msg.message}\x1b[0m`)
+                return
+              }
+              if (msg.type === 'ready') return
+              if (msg.type === 'exit') {
+                terminalRef.current?.writeln(`\r\n\x1b[90m${copy('终端进程已退出', 'Terminal process exited')}${msg.code == null ? '' : ` (${msg.code})`}\x1b[0m`)
                 return
               }
             } catch {
@@ -148,10 +172,12 @@ export function TerminalPanel() {
         }
       }
       ws.onerror = () => {
+        setConnecting(false)
         terminalRef.current?.writeln(`\x1b[31m${copy('WebSocket 错误', 'WebSocket error')}\x1b[0m`)
       }
       ws.onclose = () => {
         setConnected(false)
+        setConnecting(false)
         if (reconnectRef.current) {
           terminalRef.current?.writeln(`\x1b[33m${copy('连接已断开，3s 后重连...', 'Disconnected; reconnecting in 3s...')}\x1b[0m`)
           setTimeout(() => {
@@ -166,7 +192,7 @@ export function TerminalPanel() {
       reconnectRef.current = false
       wsRef.current?.close()
     }
-  }, [serverUrl])
+  }, [workingDirectory])
 
   const handleClear = () => {
     terminalRef.current?.clear()
@@ -199,7 +225,7 @@ export function TerminalPanel() {
 
       {/* Terminal */}
       <div className="relative min-h-0 flex-1 overflow-hidden p-2">
-        {!connected && (
+        {connecting && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0a0b]/80 text-xs text-muted-foreground">
             <Loader2 className="mr-2 h-3 w-3 animate-spin" />
             {copy('连接中...', 'Connecting...')}

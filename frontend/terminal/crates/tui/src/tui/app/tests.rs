@@ -241,40 +241,6 @@ fn test_trust_mode_follows_yolo_on_startup() {
     assert!(app.trust_mode);
 }
 
-#[test]
-fn reasoning_effort_display_label_uses_codex_xhigh() {
-    assert_eq!(
-        ReasoningEffort::Off.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "low"
-    );
-    assert_eq!(
-        ReasoningEffort::Medium.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "medium"
-    );
-    assert_eq!(
-        ReasoningEffort::Max.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "xhigh"
-    );
-    assert_eq!(
-        ReasoningEffort::Max.display_label_for_provider(ApiProvider::Deepseek),
-        "max"
-    );
-    assert_eq!(
-        ReasoningEffort::High.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "high"
-    );
-
-    let mut app = App::new(test_options(false), &Config::default());
-    app.api_provider = ApiProvider::OpenaiCodex;
-    app.reasoning_effort = ReasoningEffort::Max;
-    app.auto_model = false;
-    assert_eq!(app.reasoning_effort_display_label(), "xhigh");
-
-    app.reasoning_effort = ReasoningEffort::Auto;
-    app.last_effective_reasoning_effort =
-        Some(EffectiveReasoningEffort::Tier(ReasoningEffort::Max));
-    assert_eq!(app.reasoning_effort_display_label(), "auto: xhigh");
-}
 
 #[test]
 fn fixed_auto_reasoning_label_preserves_untiered_effective_receipt() {
@@ -334,165 +300,8 @@ fn cache_replay_keeps_untiered_reasoning_enabled() {
     );
 }
 
-#[test]
-fn cache_replay_normalizes_reasoning_against_the_concrete_auto_route() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.api_provider = ApiProvider::Deepseek;
-    app.model = "auto".to_string();
-    app.auto_model = true;
 
-    app.reasoning_effort = ReasoningEffort::Off;
-    assert_eq!(
-        app.reasoning_effort_api_value_for_replay(
-            ApiProvider::OpenaiCodex,
-            crate::config::DEFAULT_OPENAI_CODEX_BASE_URL,
-            crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-        ),
-        Some("low"),
-        "Codex must apply its Off-to-Low floor even when DeepSeek is configured"
-    );
 
-    app.reasoning_effort = ReasoningEffort::Medium;
-    assert_eq!(
-        app.reasoning_effort_api_value_for_replay(
-            ApiProvider::Moonshot,
-            crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-            crate::config::KIMI_CODE_K3_MODEL,
-        ),
-        Some("medium"),
-        "Kimi Code K3 must retain its exact-route Medium tier"
-    );
-}
-
-#[test]
-fn cache_replay_target_uses_the_last_completed_auto_route() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.model = "auto".to_string();
-    app.auto_model = true;
-    app.last_effective_provider = Some(ApiProvider::OpenaiCodex);
-    app.last_effective_provider_identity = Some(ApiProvider::OpenaiCodex.as_str().to_string());
-    app.last_effective_model = Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string());
-    app.session.last_base_url = Some(crate::config::DEFAULT_OPENAI_CODEX_BASE_URL.to_string());
-    app.push_turn_cache_record(TurnCacheRecord {
-        provider: Some(ApiProvider::OpenaiCodex),
-        provider_identity: Some(ApiProvider::OpenaiCodex.as_str().to_string()),
-        model: Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string()),
-        auto_model: true,
-        input_tokens: 1,
-        output_tokens: 1,
-        cache_hit_tokens: None,
-        cache_miss_tokens: None,
-        cache_write_tokens: None,
-        reasoning_tokens: None,
-        cost_audit: None,
-        reasoning_replay_tokens: None,
-        recorded_at: std::time::Instant::now(),
-    });
-
-    let target = app
-        .cache_replay_target()
-        .expect("completed Auto route must be replayable");
-
-    assert_eq!(target.provider, ApiProvider::OpenaiCodex);
-    assert_eq!(target.provider_identity, ApiProvider::OpenaiCodex.as_str());
-    assert_eq!(
-        target.provider_id.as_deref(),
-        Some(ApiProvider::OpenaiCodex.as_str())
-    );
-    assert_eq!(target.model, crate::config::DEFAULT_OPENAI_CODEX_MODEL);
-    assert_eq!(
-        target.base_url.as_deref(),
-        Some(crate::config::DEFAULT_OPENAI_CODEX_BASE_URL)
-    );
-
-    // A restored Auto session has no turn ring or raw endpoint. Once warmup
-    // safely re-resolves that route, its exact key becomes sufficient
-    // endpoint evidence for a following inspect.
-    app.session.turn_cache_history.clear();
-    app.session.last_base_url = None;
-    app.session.last_warmup_key = Some(CacheWarmupKey {
-        provider: ApiProvider::OpenaiCodex.as_str().to_string(),
-        model: crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
-        base_url: crate::config::DEFAULT_OPENAI_CODEX_BASE_URL.to_string(),
-        static_prefix_hash: "static".to_string(),
-        tool_catalog_hash: "tools".to_string(),
-        project_pack_hash: "project".to_string(),
-        skills_hash: "skills".to_string(),
-    });
-    assert_eq!(
-        app.cache_replay_target()
-            .and_then(|target| target.base_url)
-            .as_deref(),
-        Some(crate::config::DEFAULT_OPENAI_CODEX_BASE_URL)
-    );
-}
-
-#[test]
-fn auto_reasoning_change_invalidates_the_previous_route_and_receipt() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.api_provider = ApiProvider::Deepseek;
-    app.model = "auto".to_string();
-    app.auto_model = true;
-    app.reasoning_effort = ReasoningEffort::Low;
-    app.reasoning_effort_preference = Some(ReasoningEffort::Low);
-    app.last_effective_provider = Some(ApiProvider::OpenaiCodex);
-    app.last_effective_provider_identity = Some(ApiProvider::OpenaiCodex.as_str().to_string());
-    app.last_effective_model = Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string());
-    app.last_auto_route_receipt = Some(crate::model_routing::AutoRouteReceipt {
-        tier: crate::model_routing::AutoRouteTier::Strong,
-        pair: crate::model_routing::AutoRoutePair {
-            strong: crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
-            fast: None,
-        },
-        scope: crate::model_routing::AutoRouteScope::ResolvedProvider,
-        data_path: crate::model_routing::AutoRouteDataPath::LocalHeuristic,
-        reason: crate::model_routing::AutoRouteReason::LocalHeuristic(
-            crate::model_routing::AutoRouteHeuristicReason::ComplexRequest,
-        ),
-    });
-    app.last_effective_reasoning_effort =
-        Some(EffectiveReasoningEffort::Tier(ReasoningEffort::Max));
-
-    assert!(
-        app.cache_replay_target().is_some(),
-        "the completed route is replayable before its classifier input changes"
-    );
-
-    app.cycle_effort();
-
-    assert_eq!(app.reasoning_effort, ReasoningEffort::Medium);
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("Reasoning effort: med"),
-        "the change must describe the new unresolved request, not the old Codex receipt"
-    );
-    assert_eq!(app.last_effective_reasoning_effort, None);
-    assert_eq!(app.last_effective_provider, None);
-    assert_eq!(app.last_effective_provider_identity, None);
-    assert_eq!(app.last_effective_model, None);
-    assert_eq!(app.last_auto_route_receipt, None);
-    assert!(
-        app.cache_replay_target().is_none(),
-        "cache replay must wait for a route accepted under the new reasoning request"
-    );
-
-    let work = app
-        .work_state_snapshot()
-        .expect("Work snapshot")
-        .expect("effort activity creates graph state");
-    let crate::work_graph::WorkActivityEvent::ReasoningEffortChanged { effective, .. } = work
-        .graph
-        .expect("Work Graph")
-        .activities
-        .last()
-        .cloned()
-        .expect("effort activity");
-    assert_eq!(
-        effective,
-        crate::work_graph::ReasoningEffortTier::Medium,
-        "the activity receipt must not reuse the previous turn's effective tier"
-    );
-}
 
 #[test]
 fn mode_and_thinking_are_locked_while_a_turn_is_running() {
@@ -1109,33 +918,6 @@ fn reasoning_effort_display_receipts_route_normalization() {
     assert_eq!(app.reasoning_effort_display_label(), "off→low");
 }
 
-#[test]
-fn reasoning_effort_api_values_are_provider_aware_for_codex() {
-    assert_eq!(
-        ReasoningEffort::Off.normalize_for_provider(ApiProvider::OpenaiCodex),
-        ReasoningEffort::Low
-    );
-    assert_eq!(
-        ReasoningEffort::Auto.normalize_for_provider(ApiProvider::OpenaiCodex),
-        ReasoningEffort::Medium
-    );
-    assert_eq!(
-        ReasoningEffort::Max.api_value_for_provider(ApiProvider::OpenaiCodex),
-        Some("xhigh")
-    );
-    assert_eq!(
-        ReasoningEffort::Off.api_value_for_provider(ApiProvider::OpenaiCodex),
-        Some("low")
-    );
-    assert_eq!(
-        ReasoningEffort::Max.api_value_for_provider(ApiProvider::Deepseek),
-        Some("max")
-    );
-    assert_eq!(
-        ReasoningEffort::from_setting("ultracode"),
-        ReasoningEffort::Ultra
-    );
-}
 
 #[test]
 fn ollama_cloud_normal_turns_preserve_the_documented_reasoning_ladder() {
@@ -1435,104 +1217,8 @@ fn picker_uses_catalog_reasoning_efforts_for_grok_45() {
     assert_eq!(labels, vec!["auto", "low", "medium", "high"]);
 }
 
-#[test]
-fn set_model_selection_normalizes_codex_fixed_model_effort() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.api_provider = ApiProvider::OpenaiCodex;
-    app.reasoning_effort = ReasoningEffort::Off;
-    app.reasoning_effort_preference = Some(ReasoningEffort::Off);
 
-    app.set_model_selection("gpt-5.5-codex".to_string());
 
-    assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
-    assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::Off));
-    assert!(!app.auto_model);
-    assert_eq!(app.reasoning_effort_display_label(), "low");
-}
-
-#[test]
-fn auto_model_selection_preserves_only_explicit_reasoning_effort() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.reasoning_effort = ReasoningEffort::Max;
-    app.reasoning_effort_preference = None;
-
-    app.set_model_selection("auto".to_string());
-
-    assert!(app.auto_model);
-    assert_eq!(app.reasoning_effort, ReasoningEffort::Auto);
-    assert_eq!(app.reasoning_effort_preference, None);
-
-    for (provider, requested, normalized) in [
-        (
-            ApiProvider::Deepseek,
-            ReasoningEffort::Low,
-            ReasoningEffort::High,
-        ),
-        (
-            ApiProvider::OpenaiCodex,
-            ReasoningEffort::Off,
-            ReasoningEffort::Low,
-        ),
-    ] {
-        app.api_provider = provider;
-        app.auto_model = false;
-        app.model = "fixed-model".to_string();
-        app.reasoning_effort = normalized;
-        app.reasoning_effort_preference = Some(requested);
-
-        app.set_model_selection("auto".to_string());
-
-        assert_eq!(app.reasoning_effort, requested, "{provider:?}");
-        assert_eq!(
-            app.reasoning_effort_preference,
-            Some(requested),
-            "{provider:?}"
-        );
-    }
-}
-
-#[test]
-fn app_new_normalizes_saved_codex_reasoning_effort() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let _token = EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "test-codex-startup-token");
-    let config = Config {
-        provider: Some("openai-codex".to_string()),
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                model: Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string()),
-                ..ProviderConfig::default()
-            },
-            ..ProvidersConfig::default()
-        }),
-        ..Config::default()
-    };
-
-    for (raw, expected, display) in [
-        ("off", ReasoningEffort::Low, "low"),
-        ("auto", ReasoningEffort::Medium, "medium"),
-        ("max", ReasoningEffort::Max, "xhigh"),
-    ] {
-        std::fs::write(
-            tmp.path().join("settings.toml"),
-            format!("reasoning_effort = \"{raw}\"\n"),
-        )
-        .expect("settings");
-
-        let app = App::new(test_options(false), &config);
-
-        assert_eq!(app.api_provider, ApiProvider::OpenaiCodex);
-        assert_eq!(app.reasoning_effort, expected, "raw setting {raw}");
-        assert_eq!(
-            app.reasoning_effort_preference,
-            Some(ReasoningEffort::from_setting(raw)),
-            "raw setting {raw}"
-        );
-        assert_eq!(app.reasoning_effort_display_label(), display);
-    }
-}
 
 #[test]
 fn app_new_exposes_direct_moonshot_k3_off_as_effective_low() {
@@ -1573,61 +1259,6 @@ fn app_new_exposes_direct_moonshot_k3_off_as_effective_low() {
     assert_eq!(app.reasoning_effort_display_label(), "low");
 }
 
-#[test]
-fn codex_startup_threads_fresh_roster_context_into_active_route_limits() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let codex_home = tmp.path().join("codex-home");
-    std::fs::create_dir_all(&codex_home).expect("Codex home");
-    std::fs::write(
-        codex_home.join("models_cache.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "fetched_at": chrono::Utc::now(),
-            "models": [{
-                "slug": crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-                "priority": 1,
-                "context_window": 128000,
-                "supported_reasoning_levels": [{"effort": "high"}]
-            }]
-        }))
-        .expect("serialize cache"),
-    )
-    .expect("write cache");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let _codex_home = EnvVarGuard::set("CODEX_HOME", &codex_home);
-    let _token = EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "test-codex-startup-token");
-    let config = Config {
-        provider: Some("openai-codex".to_string()),
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                model: Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string()),
-                ..ProviderConfig::default()
-            },
-            ..ProvidersConfig::default()
-        }),
-        ..Config::default()
-    };
-
-    let mut options = test_options(false);
-    options.model = crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string();
-    let app = App::new(options, &config);
-
-    assert_eq!(app.api_provider, ApiProvider::OpenaiCodex);
-    assert_eq!(
-        app.active_route_limits
-            .and_then(|limits| limits.context_tokens),
-        Some(128_000)
-    );
-    assert_eq!(
-        crate::route_budget::route_context_window_tokens(
-            app.api_provider,
-            &app.model,
-            app.active_route_limits,
-        ),
-        128_000
-    );
-}
 
 #[test]
 fn settings_default_provider_auth_check_uses_provider_scoped_key() {
@@ -1865,7 +1496,7 @@ fn subscription_route_hides_stale_session_dollars_in_footer() {
     let mut app = App::new(test_options(false), &Config::default());
     app.accrue_session_cost_estimate(CostEstimate::usd_only(12.34));
     app.billing_presentation =
-        crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
+        crate::route_billing::BillingPresentation::Subscription("Plan allowance");
     // Stale unaudited dollars must never render on a plan route; the usage
     // chip carries the plan-aware line instead of money or silence.
     let chip = app.cumulative_usage_chip();
@@ -1875,52 +1506,9 @@ fn subscription_route_hides_stale_session_dollars_in_footer() {
     );
     let rendered = crate::route_billing::format_usage_chip(&chip).unwrap_or_default();
     assert!(!rendered.contains('$'), "{rendered}");
-    assert!(rendered.contains("Codex OAuth quota"), "{rendered}");
+    assert!(rendered.contains("Plan allowance"), "{rendered}");
 }
 
-#[test]
-fn provider_switch_keeps_audited_cumulative_spend_visible() {
-    let mut app = App::new(test_options(false), &Config::default());
-    let usage = crate::models::Usage {
-        input_tokens: 10_000,
-        output_tokens: 1_000,
-        ..Default::default()
-    };
-    let priced = crate::pricing::audit_turn_cost_for_provider_at(
-        ApiProvider::Deepseek,
-        "deepseek-v4-flash",
-        &usage,
-        chrono::Utc::now(),
-    );
-    app.record_turn_cost_audit(&priced);
-    app.accrue_session_cost_estimate(priced.estimate.expect("priced"));
-
-    app.api_provider = ApiProvider::OpenaiCodex;
-    app.model = "gpt-5.5".to_string();
-    app.billing_presentation =
-        crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
-    assert!(matches!(
-        app.cumulative_usage_chip(),
-        crate::route_billing::UsageChip::Money(_)
-    ));
-    assert!(
-        crate::route_billing::format_usage_chip(&app.cumulative_usage_chip())
-            .is_some_and(|label| !label.is_empty())
-    );
-
-    let unknown = crate::pricing::audit_turn_cost_for_route_at(
-        ApiProvider::Openai,
-        "gpt-5.5",
-        Some(crate::pricing::UNCLASSIFIED_BILLING_SURFACE),
-        &usage,
-        chrono::Utc::now(),
-    );
-    app.record_turn_cost_audit(&unknown);
-    assert!(matches!(
-        app.cumulative_usage_chip(),
-        crate::route_billing::UsageChip::PricedSubtotal { legacy: false, .. }
-    ));
-}
 
 #[test]
 fn slash_command_classifier_treats_absolute_path_as_message() {
@@ -5732,90 +5320,6 @@ fn advance_fallback_all_unready_exhausts_with_clear_reason() {
     );
 }
 
-#[test]
-fn startup_and_fallback_skip_inactive_external_only_routes_without_io() {
-    let _lock = lock_test_env();
-    let temp = tempfile::tempdir().expect("external fallback fixtures");
-    let codex_path = temp.path().join("codex-auth.json");
-    let grok_path = temp.path().join("grok-auth.json");
-    let codex_raw = "inactive Codex bytes must not be read";
-    let grok_raw = "inactive Grok bytes must not be read";
-    std::fs::write(&codex_path, codex_raw).expect("write Codex trap");
-    std::fs::write(&grok_path, grok_raw).expect("write Grok trap");
-    let _home = EnvVarGuard::set("HAKUS_HOME", temp.path().join("owned-home"));
-    let _codex_path = EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &codex_path);
-    let _grok_path = EnvVarGuard::set("GROK_AUTH_PATH", &grok_path);
-    let _codex_access = EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-    let _legacy_codex_access = EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-    let _xai_key = EnvVarGuard::remove("XAI_API_KEY");
-    let _cli_key = EnvVarGuard::remove("HAKUS_CLI_API_KEY");
-    let _cli_source = EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-
-    let config = Config {
-        provider: Some(ApiProvider::Deepseek.as_str().to_string()),
-        api_key: Some("active-deepseek-key".to_string()),
-        fallback_providers: vec![
-            hakus_config::ProviderKind::OpenaiCodex,
-            hakus_config::ProviderKind::Xai,
-        ],
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                auth_mode: Some("oauth".to_string()),
-                external_credentials: Some(
-                    hakus_config::ExternalCredentialConsentToml::read_only(
-                        hakus_config::ProviderKind::OpenaiCodex,
-                        hakus_config::ExternalCredentialSource::CodexCli,
-                        codex_path.clone(),
-                    ),
-                ),
-                ..Default::default()
-            },
-            xai: ProviderConfig {
-                auth_mode: Some("oauth".to_string()),
-                external_credentials: Some(
-                    hakus_config::ExternalCredentialConsentToml::read_only(
-                        hakus_config::ProviderKind::Xai,
-                        hakus_config::ExternalCredentialSource::GrokCli,
-                        grok_path.clone(),
-                    ),
-                ),
-                ..Default::default()
-            },
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let mut options = test_options(false);
-    options.skip_onboarding = true;
-
-    crate::external_credentials::reset_side_effect_trap();
-    let mut app = App::new(options, &config);
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (0, 0),
-        "startup readiness must not inspect inactive external credentials"
-    );
-    assert_eq!(app.advance_fallback("active route unavailable"), None);
-    assert_eq!(
-        crate::external_credentials::side_effect_trap_counts(),
-        (0, 0),
-        "fallback selection must skip external-only inactive routes without inspection"
-    );
-    let reason = app.last_fallback_reason.as_deref().unwrap_or_default();
-    assert!(
-        reason.contains("skipped openai-codex: needs auth"),
-        "{reason}"
-    );
-    assert!(reason.contains("skipped xai: needs auth"), "{reason}");
-    assert_eq!(
-        std::fs::read_to_string(&codex_path).expect("Codex trap unchanged"),
-        codex_raw
-    );
-    assert_eq!(
-        std::fs::read_to_string(&grok_path).expect("Grok trap unchanged"),
-        grok_raw
-    );
-}
 
 #[test]
 fn advance_fallback_local_primary_does_not_fall_back_to_cloud() {

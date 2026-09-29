@@ -572,8 +572,8 @@ mod tests {
         let ws = tempfile::TempDir::new().unwrap();
 
         save_in(ws.path(), FleetScope::Personal, "DeepSeek Flash");
-        save_in(ws.path(), FleetScope::Workspace, "OpenAI Codex");
-        set_selected("OpenAI Codex", FleetScope::Workspace, ws.path()).unwrap();
+        save_in(ws.path(), FleetScope::Workspace, "Remote Workspace");
+        set_selected("Remote Workspace", FleetScope::Workspace, ws.path()).unwrap();
 
         let mut app = app_in(ws.path().to_path_buf());
         let view = FleetListView::new(&app, &Config::default());
@@ -591,12 +591,12 @@ mod tests {
         assert!(
             view.entries
                 .iter()
-                .any(|e| e.name == "OpenAI Codex" && e.scope == FleetScope::Workspace),
+                .any(|e| e.name == "Remote Workspace" && e.scope == FleetScope::Workspace),
             "{:?}",
             view.entries
         );
         let selected = view.selected.as_ref().unwrap();
-        assert_eq!(selected.name, "OpenAI Codex");
+        assert_eq!(selected.name, "Remote Workspace");
         assert_eq!(selected.scope, FleetScope::Workspace);
 
         // Restore env.

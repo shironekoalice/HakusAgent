@@ -1,91 +1,20 @@
-# Installing plugins
+# 扩展包
 
-This is the walkthrough for the `/plugin install` on-ramp (v0.9.4, #5182).
-[PLUGIN_BUNDLES.md](PLUGIN_BUNDLES.md) remains the contract for the bundle
-format (`plugin.json`, compatible `kimi.plugin.json`, or legacy
-`plugin.toml`), discovery, validation, and
-the trust/enable lifecycle — this document covers how bits get onto disk in
-the first place.
+扩展包可以组合 Skills、命令、工具声明和参考资源。它们比单个 Skill 影响范围更大，因此安装、启用和更新都应经过审查。
 
-`/plugin suggest <task>` is a local, read-only companion: it ranks already
-installed bundles by their validated name, description, bundled skill names,
-and declared hosts. It explains the match and gives the next review/enable
-step, but never installs, trusts, or enables a bundle. HakusCLI deliberately
-does not treat arbitrary remote archives as a plugin marketplace; a remote
-catalog needs publisher and provenance policy before it can make suggestions.
+## 推荐流程
 
-## Sources
+1. 从可信来源获取扩展包。
+2. 查看名称、来源、包含的文件和声明的能力。
+3. 保持停用状态完成初步检查。
+4. 只在需要的项目中启用。
+5. 更新后重新审查内容和权限。
 
-`/plugin install <spec>` accepts three source kinds:
+扩展包不等于官方组件。远程压缩包、本地文件夹和项目中已有的扩展都可能包含脚本或外部服务配置。
 
-```text
-/plugin install ./path/to/bundle            # local directory (copied)
-/plugin install github:owner/repo           # GitHub archive of the default branch
-/plugin install https://example.com/x.tar.gz  # direct tarball URL
-```
+## 安全边界
 
-There is no registry index and no `git clone` in v1 — tarball-only fetching
-keeps the size cap and no-symlink guarantees of the installer. Downloads are
-gated by the per-domain network policy: an unknown host returns a
-"needs approval" error naming the host (`/network allow <host>`, then retry),
-a denied host aborts without touching disk.
-
-The fetched tree must contain **exactly one** bundle root — a directory
-holding a `plugin.json`, compatible `kimi.plugin.json`, or legacy `plugin.toml`
-manifest. Kimi bundles are accepted when they use HakusCLI-compatible Skills,
-commands, agents, and MCP declarations; unsupported Kimi runtime fields fail
-closed instead of being silently ignored. Bundles land in
-the user plugins root at `~/.hakuscli/plugins/<name>/`, where `<name>` is the
-manifest's plugin name.
-
-## The guided flow
-
-Installing never activates anything. The command places the bits, then drops
-you straight into the standard capability review:
-
-```text
-/plugin install github:someone/neat-plugin
-→ Installed plugin 'neat-plugin' to ~/.hakuscli/plugins/neat-plugin.
-  It is disabled and untrusted. Review its requested authority below…
-  <full inventory, permissions, MCP authority render>
-  /plugin trust neat-plugin <content-hash>.<capability-hash>
-
-/plugin trust neat-plugin <paste the token>   # records the hash-bound receipt
-/plugin enable neat-plugin                    # activates for this workspace
-```
-
-This is the same review render and confirmation token as `/plugin trust
-<name>` — trust is the strict hash-bound receipt flow, not an advisory marker.
-If the bundle's content or declared capabilities change, the receipt stops
-matching and the plugin goes inactive until you review again.
-
-## Update and uninstall
-
-```text
-/plugin update <name>      # re-download, byte-compare, atomic swap if changed
-/plugin disable <name>     # required before uninstall
-/plugin uninstall <name>   # deletes the bundle and prunes its state entry
-```
-
-- `update` re-downloads the recorded source. Identical bytes are a no-op; a
-  changed bundle is swapped atomically and its trust receipt is automatically
-  invalidated (the hash no longer matches), so re-review is forced before the
-  plugin can activate again. Plugins installed from a local path cannot be
-  re-downloaded — reinstall them with `/plugin install <path>`.
-- `uninstall` refuses enabled plugins (disable first), deletes the bundle
-  directory, and removes its persisted trust/enablement entry.
-
-## Safety rules
-
-- Every install carries an `.installed-from` provenance marker. The installer
-  **refuses to overwrite or delete** a bundle that lacks it — hand-placed
-  bundles under `~/.hakuscli/plugins/` are never clobbered.
-- Tarballs are size-capped and extracted into a private staging directory
-  first; path traversal (`..`, absolute paths) and symlinks/hard links inside
-  the bundle are rejected, and the destination only appears via an atomic
-  rename after every check passes.
-- Install pre-checks the name against builtin and workspace bundles so a
-  higher-precedence bundle cannot silently shadow (or be shadowed by) the
-  install.
-- Newly installed bits are always **disabled and untrusted**; enablement only
-  ever happens through the explicit trust review above.
+- 不要把真实凭据放进扩展包。
+- 启用扩展不会绕过文件、命令、网络和人工确认规则。
+- 扩展声明的外部服务可能接收当前上下文或工具结果。
+- 删除前先停用，并确认不会影响仍需恢复的会话。

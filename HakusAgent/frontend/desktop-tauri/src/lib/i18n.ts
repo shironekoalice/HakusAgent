@@ -48,6 +48,7 @@ type MessageKey =
   | 'reviewTab'
   | 'trajectoryTab'
   | 'terminalTab'
+  | 'browserTab'
   | 'logsTab'
   | 'usageTab'
   | 'goalTab'
@@ -170,7 +171,7 @@ type MessageKey =
 const messages: Record<ResolvedLocale, Record<MessageKey, string>> = {
   'zh-CN': {
     settings: '设置', settingsCategory: '设置分类', backToChat: '返回聊天', closeSidebar: '关闭侧栏',
-    toggleSidebar: '切换侧栏', reviewPanel: '审阅 / 终端面板', reviewTab: '审阅', trajectoryTab: '轨迹', terminalTab: '终端', logsTab: '日志', usageTab: '用量', goalTab: '目标', worktreeTab: 'Worktree', filesTab: '文件', artifactTab: '文档', openInPanel: '在侧栏打开', copyLabel: '复制', workbench: '工作台', clearChat: '清空对话', minimize: '最小化',
+    toggleSidebar: '切换侧栏', reviewPanel: '审阅 / 终端面板', reviewTab: '审阅', trajectoryTab: '轨迹', terminalTab: '终端', browserTab: '浏览器', logsTab: '日志', usageTab: '用量', goalTab: '目标', worktreeTab: 'Worktree', filesTab: '文件', artifactTab: '文档', openInPanel: '在侧栏打开', copyLabel: '复制', workbench: '工作台', clearChat: '清空对话', minimize: '最小化',
     maximize: '最大化 / 还原', close: '关闭', workMode: 'Work', codeMode: 'Code', flowMode: 'Flow', flowRunTab: 'Flow', awaitingModel: '等待模型信息',
     welcomeTitle: '欢迎使用 HakusAI', welcomeHint: '点击侧栏的 + 开始新对话', startChat: '开始新对话', connectionUnavailable: '无法连接到 HakusAI 服务', retry: '重试',
     helloHakus: '你好，我是 HakusAI', readyToWorkPrefix: '准备好在', readyToWorkSuffix: '里开工了。构建新功能、审查代码、探索代码库，或修复问题，选一个开始吧。', currentDirectory: '当前目录',
@@ -200,7 +201,7 @@ const messages: Record<ResolvedLocale, Record<MessageKey, string>> = {
   },
   'en-US': {
     settings: 'Settings', settingsCategory: 'Settings categories', backToChat: 'Back to chat', closeSidebar: 'Close sidebar',
-    toggleSidebar: 'Toggle sidebar', reviewPanel: 'Review / terminal panel', reviewTab: 'Review', trajectoryTab: 'Activity', terminalTab: 'Terminal', logsTab: 'Logs', usageTab: 'Usage', goalTab: 'Goal', worktreeTab: 'Worktree', filesTab: 'Files', artifactTab: 'Document', openInPanel: 'Open in panel', copyLabel: 'Copy', workbench: 'Workbench', clearChat: 'Clear chat', minimize: 'Minimize',
+    toggleSidebar: 'Toggle sidebar', reviewPanel: 'Review / terminal panel', reviewTab: 'Review', trajectoryTab: 'Activity', terminalTab: 'Terminal', browserTab: 'Browser', logsTab: 'Logs', usageTab: 'Usage', goalTab: 'Goal', worktreeTab: 'Worktree', filesTab: 'Files', artifactTab: 'Document', openInPanel: 'Open in panel', copyLabel: 'Copy', workbench: 'Workbench', clearChat: 'Clear chat', minimize: 'Minimize',
     maximize: 'Maximize / restore', close: 'Close', workMode: 'Work', codeMode: 'Code', flowMode: 'Flow', flowRunTab: 'Flow', awaitingModel: 'Waiting for model',
     welcomeTitle: 'Welcome to HakusAI', welcomeHint: 'Click + in the sidebar to start a new chat', startChat: 'Start a new chat', connectionUnavailable: 'HakusAI service is unavailable', retry: 'Retry',
     helloHakus: "Hi, I'm HakusAI", readyToWorkPrefix: 'Ready to work in', readyToWorkSuffix: '. Build a feature, review code, explore the repository, or fix a bug.', currentDirectory: 'Current directory',

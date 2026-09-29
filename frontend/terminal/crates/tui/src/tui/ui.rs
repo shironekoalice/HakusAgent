@@ -2935,11 +2935,11 @@ impl UpdateNotice {
     /// on disk, and the next upgrade silently reverts the user.
     fn notice_block(&self, install: InstallMethod) -> String {
         let action = if install.supports_self_update() {
-            "Run `/update install` here (preview it with a bare `/update`), or `hakus update` in a shell, then restart CodeWhale."
+            "Run `/update install` here (preview it with a bare `/update`), or `hakus update` in a shell, then restart HakusCLI."
                 .to_string()
         } else {
             format!(
-                "Installed via {label}. Run `{command}`, then restart CodeWhale.\n\
+                "Installed via {label}. Run `{command}`, then restart HakusCLI.\n\
                  Do not use `hakus update` here — it would replace a binary {label} manages.",
                 label = install.label(),
                 command = install.update_command()
@@ -2947,7 +2947,7 @@ impl UpdateNotice {
         };
         format!(
             "Update available: v{current} -> v{latest}\n\
-             Release notes: https://github.com/Hmbown/CodeWhale/releases/tag/v{latest}\n\
+             Release notes: https://github.com/modemneko/HakusAgent/releases/tag/v{latest}\n\
              {action}",
             current = self.current,
             latest = self.latest

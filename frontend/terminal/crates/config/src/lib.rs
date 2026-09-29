@@ -322,16 +322,6 @@ pub struct ProvidersToml {
         alias = "baidu"
     )]
     pub qianfan: ProviderConfigToml,
-    #[serde(
-        default,
-        skip_serializing_if = "ProviderConfigToml::is_empty",
-        alias = "openai-codex",
-        alias = "openai_codex",
-        alias = "codex",
-        alias = "chatgpt",
-        alias = "chatgpt-codex"
-    )]
-    pub openai_codex: ProviderConfigToml,
     #[serde(default, skip_serializing_if = "ProviderConfigToml::is_empty")]
     pub anthropic: ProviderConfigToml,
     #[serde(
@@ -690,7 +680,6 @@ impl ProvidersToml {
             ProviderKind::Huggingface => &self.huggingface,
             ProviderKind::Together => &self.together,
             ProviderKind::Qianfan => &self.qianfan,
-            ProviderKind::OpenaiCodex => &self.openai_codex,
             ProviderKind::Anthropic => &self.anthropic,
             ProviderKind::Openmodel => &self.openmodel,
             ProviderKind::Zai => &self.zai,
@@ -742,7 +731,6 @@ impl ProvidersToml {
             ProviderKind::Huggingface => &mut self.huggingface,
             ProviderKind::Together => &mut self.together,
             ProviderKind::Qianfan => &mut self.qianfan,
-            ProviderKind::OpenaiCodex => &mut self.openai_codex,
             ProviderKind::Anthropic => &mut self.anthropic,
             ProviderKind::Openmodel => &mut self.openmodel,
             ProviderKind::Zai => &mut self.zai,
@@ -3240,14 +3228,11 @@ impl ConfigToml {
         let root_deepseek_api_key = (provider == ProviderKind::Deepseek)
             .then(|| self.api_key.clone())
             .flatten();
-        // Root `base_url` is the legacy DeepSeek field, but Xiaomi MiMo and
-        // OpenAI Codex also honour it when the per-provider table has no
-        // endpoint of its own. Silently ignoring a configured root URL while
-        // also dropping the root model made both routes unusable from a
-        // minimal top-level config.
+        // Root `base_url` is the legacy DeepSeek field; Xiaomi MiMo also
+        // honours it when the per-provider table has no endpoint of its own.
         let root_base_url = matches!(
             provider,
-            ProviderKind::Deepseek | ProviderKind::XiaomiMimo | ProviderKind::OpenaiCodex
+            ProviderKind::Deepseek | ProviderKind::XiaomiMimo
         )
         .then(|| self.base_url.clone())
         .flatten();
@@ -3344,7 +3329,6 @@ impl ConfigToml {
                 ProviderKind::Huggingface => DEFAULT_HUGGINGFACE_BASE_URL.to_string(),
                 ProviderKind::Together => DEFAULT_TOGETHER_BASE_URL.to_string(),
                 ProviderKind::Qianfan => DEFAULT_QIANFAN_BASE_URL.to_string(),
-                ProviderKind::OpenaiCodex => DEFAULT_OPENAI_CODEX_BASE_URL.to_string(),
                 ProviderKind::Anthropic => DEFAULT_ANTHROPIC_BASE_URL.to_string(),
                 ProviderKind::Openmodel => DEFAULT_OPENMODEL_BASE_URL.to_string(),
                 ProviderKind::Zai => DEFAULT_ZAI_BASE_URL.to_string(),
@@ -4562,7 +4546,6 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Huggingface => DEFAULT_HUGGINGFACE_MODEL,
         ProviderKind::Together => DEFAULT_TOGETHER_MODEL,
         ProviderKind::Qianfan => DEFAULT_QIANFAN_MODEL,
-        ProviderKind::OpenaiCodex => DEFAULT_OPENAI_CODEX_MODEL,
         ProviderKind::Anthropic => DEFAULT_ANTHROPIC_MODEL,
         ProviderKind::Openmodel => DEFAULT_OPENMODEL_MODEL,
         ProviderKind::Zai => DEFAULT_ZAI_MODEL,
@@ -4614,7 +4597,6 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Huggingface => DEFAULT_HUGGINGFACE_BASE_URL,
         ProviderKind::Together => DEFAULT_TOGETHER_BASE_URL,
         ProviderKind::Qianfan => DEFAULT_QIANFAN_BASE_URL,
-        ProviderKind::OpenaiCodex => DEFAULT_OPENAI_CODEX_BASE_URL,
         ProviderKind::Anthropic => DEFAULT_ANTHROPIC_BASE_URL,
         ProviderKind::Openmodel => DEFAULT_OPENMODEL_BASE_URL,
         ProviderKind::Zai => DEFAULT_ZAI_BASE_URL,
@@ -5655,7 +5637,7 @@ pub fn default_secrets() -> &'static Secrets {
 
 // ── Hakus state root ─────────────────────────────────────────────────
 
-pub use hakus_paths::HAKUS_APP_DIR;
+pub use hakus_paths::{HAKUS_APP_DIR, LEGACY_APP_DIR};
 
 /// Resolve the canonical Hakus home directory.
 ///
@@ -6705,8 +6687,6 @@ struct EnvRuntimeOverrides {
     together_model: Option<String>,
     qianfan_base_url: Option<String>,
     qianfan_model: Option<String>,
-    openai_codex_base_url: Option<String>,
-    openai_codex_model: Option<String>,
     anthropic_base_url: Option<String>,
     anthropic_model: Option<String>,
     openmodel_base_url: Option<String>,
@@ -6952,14 +6932,6 @@ impl EnvRuntimeOverrides {
                         .ok()
                         .filter(|v| !v.trim().is_empty())
                 }),
-            openai_codex_base_url: std::env::var("OPENAI_CODEX_BASE_URL")
-                .or_else(|_| std::env::var("CODEX_BASE_URL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openai_codex_model: std::env::var("OPENAI_CODEX_MODEL")
-                .or_else(|_| std::env::var("CODEX_MODEL"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
             anthropic_base_url: std::env::var("ANTHROPIC_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -7159,7 +7131,6 @@ impl EnvRuntimeOverrides {
             ProviderKind::Huggingface => self.huggingface_base_url.clone(),
             ProviderKind::Together => self.together_base_url.clone(),
             ProviderKind::Qianfan => self.qianfan_base_url.clone(),
-            ProviderKind::OpenaiCodex => self.openai_codex_base_url.clone(),
             ProviderKind::Anthropic => self.anthropic_base_url.clone(),
             ProviderKind::Openmodel => self.openmodel_base_url.clone(),
             ProviderKind::Zai => self.zai_base_url.clone(),
@@ -7207,7 +7178,6 @@ impl EnvRuntimeOverrides {
             ProviderKind::Huggingface => self.huggingface_model.clone(),
             ProviderKind::Together => self.together_model.clone(),
             ProviderKind::Qianfan => self.qianfan_model.clone(),
-            ProviderKind::OpenaiCodex => self.openai_codex_model.clone(),
             ProviderKind::Anthropic => self.anthropic_model.clone(),
             ProviderKind::Openmodel => self.openmodel_model.clone(),
             ProviderKind::Zai => self.zai_model.clone(),

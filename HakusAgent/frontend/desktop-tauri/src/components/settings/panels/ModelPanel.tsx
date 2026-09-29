@@ -133,9 +133,6 @@ export function ModelPanel() {
   // ── 批量删除自定义模型商（内置确认弹窗，不用系统 confirm）──
   const [deleteSelection, setDeleteSelection] = useState<string[]>([])
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
-  /** Inline confirm popover target — shows a small chip next to the provider row. */
-  const [inlineDeleteId, setInlineDeleteId] = useState<string | null>(null)
-  const inlineDeleteRef = useRef<HTMLDivElement | null>(null)
   const [deleting, setDeleting] = useState(false)
 
   // 新增: provider 元数据 (分组)
@@ -171,12 +168,12 @@ export function ModelPanel() {
   const [customForm, setCustomForm] = useState({
     id: '', display_name: '', base_url: '', model: '', api_key: '', api_key_env: '', group: '自定义模型商', wire: 'openai',
   })
-  const providerRowRefs = useRef<Record<string, HTMLButtonElement | null>>({})
-  const providerListRef = useRef<HTMLDivElement | null>(null)
   const providerFormRef = useRef<HTMLDivElement | null>(null)
+  const refreshInFlightRef = useRef(false)
 
   // 初次加载拉 provider 列表 + meta
   useEffect(() => {
+    let active = true
     const state = useSettingsStore.getState()
     if (state.providersLoading && state.providersLoadingSince) {
       const elapsed = Date.now() - state.providersLoadingSince
@@ -189,28 +186,47 @@ export function ModelPanel() {
       loadProviders()
     }
     // 同时拉 provider 元数据 (分组用)
-    apiClient.getProvidersMeta().then((r) => setMetaList(r.providers)).catch((e) => {
+    apiClient.getProvidersMeta().then((r) => {
+      if (active) setMetaList(r.providers)
+    }).catch((e) => {
       console.warn('[ModelPanel] getProvidersMeta failed:', e)
     })
+    return () => { active = false }
   }, [loadProviders, resetProvidersLoading])
 
   // Provider catalogs change independently from the current form (new routes,
   // rotated credentials, updated defaults). Refresh in the background so the
   // picker stays current without making the user reopen Settings.
   useEffect(() => {
+    let active = true
     const refresh = async () => {
+      if (
+        !active
+        || document.visibilityState !== 'visible'
+        || !navigator.onLine
+        || refreshInFlightRef.current
+      ) return
+
+      refreshInFlightRef.current = true
       try {
         await Promise.all([
           loadProviders(),
-          apiClient.getProvidersMeta().then((r) => setMetaList(r.providers)),
+          apiClient.getProvidersMeta().then((r) => {
+            if (active) setMetaList(r.providers)
+          }),
         ])
-        setLastProviderRefresh(new Date())
+        if (active) setLastProviderRefresh(new Date())
       } catch (error) {
         console.warn('[ModelPanel] background provider refresh failed:', error)
+      } finally {
+        refreshInFlightRef.current = false
       }
     }
-    const timer = window.setInterval(refresh, 30_000)
-    return () => window.clearInterval(timer)
+    const timer = window.setInterval(refresh, 60_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
   }, [loadProviders])
 
   // 默认选中 is_default 或第一个
@@ -220,26 +236,6 @@ export function ModelPanel() {
       setSelectedId(def.id)
     }
   }, [providers, selectedId])
-
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      const list = providerListRef.current
-      const row = providerRowRefs.current[selectedId]
-      if (!list || !row) return
-      // Keep the provider navigation as the only scroll owner. scrollIntoView()
-      // can bubble to the settings dialog and move the form column as well.
-      // Bounding rectangles remain correct even though rows are nested inside
-      // group containers (offsetTop would otherwise be relative to that group).
-      const listRect = list.getBoundingClientRect()
-      const rowRect = row.getBoundingClientRect()
-      if (rowRect.top < listRect.top) {
-        list.scrollTop -= listRect.top - rowRect.top + 12
-      } else if (rowRect.bottom > listRect.bottom) {
-        list.scrollTop += rowRect.bottom - listRect.bottom + 12
-      }
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [selectedId, providers.length])
 
   // 选中变化时同步表单
   const selected: ProviderInfo | undefined = providers.find((p) => p.id === selectedId)
@@ -588,32 +584,9 @@ export function ModelPanel() {
   }
 
   const confirmDeleteIds = (ids: string[]) => {
-    if (ids.length === 1) {
-      setInlineDeleteId(ids[0])
-      setConfirmDeleteOpen(false)
-      return
-    }
     setDeleteSelection(ids)
     setConfirmDeleteOpen(true)
   }
-
-  // Dismiss the inline delete chip when clicking outside.
-  useEffect(() => {
-    if (!inlineDeleteId) return
-    const onPointerDown = (event: PointerEvent) => {
-      const root = inlineDeleteRef.current
-      if (root && !root.contains(event.target as Node)) setInlineDeleteId(null)
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setInlineDeleteId(null)
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [inlineDeleteId])
 
   // 内置模型商"删除"：重置本地配置（停用、清空模型列表与密钥）并从列表隐藏。
   // 目录条目本身无法从 Runtime 配置移除，重新添加会自动解除隐藏。
@@ -639,7 +612,7 @@ export function ModelPanel() {
   }
 
   const runBatchDelete = async () => {
-    const ids = inlineDeleteId ? [inlineDeleteId] : [...deleteSelection]
+    const ids = [...deleteSelection]
     if (ids.length === 0) return
     setDeleting(true)
     const failed: string[] = []
@@ -658,7 +631,6 @@ export function ModelPanel() {
     }
     setDeleteSelection([])
     setConfirmDeleteOpen(false)
-    setInlineDeleteId(null)
     await loadProviders()
     if (selectedId && ids.includes(selectedId)) {
       setSelectedId('')
@@ -829,7 +801,7 @@ export function ModelPanel() {
   // an intentional second step, matching the compact Dsh settings flow.
   if (!editorOpen) {
     return (
-      <div className="model-provider-overview mx-auto w-full max-w-3xl space-y-6">
+      <div className="model-provider-overview mx-auto w-full max-w-3xl space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h2 className="text-xl font-semibold tracking-tight">{copy('模型', 'Models')}</h2>
@@ -857,27 +829,25 @@ export function ModelPanel() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={copy('搜索模型商…', 'Search providers…')}
-            className="h-10 rounded-xl pl-9"
+            className="h-9 rounded-lg pl-9"
           />
         </div>
 
-          <div className="space-y-5">
+        <div className="space-y-5">
           {groupedProviders.map(({ group, items }) => (
-            <section key={group} aria-labelledby={`provider-group-${group}`} className="space-y-2">
-              <h3 id={`provider-group-${group}`} className="px-1 text-xs font-medium text-muted-foreground">
+            <section key={group} aria-labelledby={`provider-group-${group}`} className="space-y-2.5">
+              <h3 id={`provider-group-${group}`} className="px-1 text-xs font-semibold text-muted-foreground">
                 {providerGroupLabel(group, locale)}
               </h3>
-              <div className="space-y-2">
+              <div className="model-provider-overview-list">
                 {items.map((provider) => {
                   const enabled = provider.enabled !== false
                   const configured = provider.has_api_key || provider.auth_mode === 'none' || provider.id === 'ollama'
-                  const inlineOpen = inlineDeleteId === provider.id
-                  const inlineProvider = inlineOpen ? provider : null
                   return (
                     <div
                       key={provider.id}
                       className={cn(
-                        'model-provider-overview-row glass-card group relative flex items-center gap-3 px-4 py-3',
+                        'model-provider-overview-row group relative flex items-center gap-3 px-3.5 py-2.5',
                         !enabled && 'opacity-65',
                       )}
                     >
@@ -888,6 +858,7 @@ export function ModelPanel() {
                           <span
                             className={cn('h-1.5 w-1.5 shrink-0 rounded-full', configured ? 'bg-emerald-400' : 'bg-amber-400')}
                             title={configured ? copy('已配置', 'Configured') : copy('尚未配置密钥', 'API key not configured')}
+                            aria-label={configured ? copy('已配置', 'Configured') : copy('尚未配置密钥', 'API key not configured')}
                           />
                           {provider.is_default && <span className="text-[10px] text-muted-foreground">{copy('当前使用', 'In use')}</span>}
                         </div>
@@ -904,13 +875,10 @@ export function ModelPanel() {
                       />
                       <Button
                         type="button"
-                        variant="ghost"
-                        size="icon"
-                        className={cn(
-                          'h-8 w-8 shrink-0 text-muted-foreground transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100',
-                          inlineOpen ? 'opacity-100 text-destructive' : 'opacity-0',
-                        )}
-                        onClick={() => setInlineDeleteId(inlineOpen ? null : provider.id)}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => confirmDeleteIds([provider.id])}
                         title={provider.is_custom ? copy('删除', 'Delete') : copy('删除（重置并隐藏）', 'Delete (reset & hide)')}
                         aria-label={`${copy('删除', 'Delete')} ${provider.display_name}`}
                       >
@@ -926,51 +894,6 @@ export function ModelPanel() {
                         {copy('编辑', 'Edit')}
                       </Button>
 
-                      {inlineOpen && inlineProvider && (
-                        <div
-                          ref={inlineDeleteRef}
-                          role="dialog"
-                          aria-label={copy('确认删除', 'Confirm delete')}
-                          className="absolute right-3 top-1/2 z-20 w-[min(320px,calc(100%-1.5rem))] -translate-y-1/2 rounded-xl border border-destructive/35 bg-popover/95 p-3 shadow-xl shadow-black/20 backdrop-blur-md"
-                        >
-                          <div className="text-[13px] font-medium text-foreground">
-                            {copy(`删除 ${inlineProvider.display_name}？`, `Delete ${inlineProvider.display_name}?`)}
-                          </div>
-                          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                            {inlineProvider.is_default
-                              ? copy(
-                                  '这是当前使用的模型商。删除后需要重新选择默认模型，会话记录仍会保留。',
-                                  'This is the provider currently in use. You will need to pick a default model again. Session history is kept.',
-                                )
-                              : inlineProvider.is_custom
-                                ? copy('将移除本地自定义配置，不会删除会话记录。', 'Removes local custom config. Session history is kept.')
-                                : copy('将重置并从列表隐藏（可稍后重新启用），不会删除会话记录。', 'Resets and hides from the list (can re-enable later). Session history is kept.')}
-                          </p>
-                          <div className="mt-2.5 flex justify-end gap-2">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2.5 text-xs"
-                              onClick={() => setInlineDeleteId(null)}
-                              disabled={deleting}
-                            >
-                              {copy('取消', 'Cancel')}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="destructive"
-                              size="sm"
-                              className="h-7 px-2.5 text-xs"
-                              onClick={() => void runBatchDelete()}
-                              disabled={deleting}
-                            >
-                              {deleting ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Trash2 className="mr-1 h-3 w-3" />}
-                              {copy('删除', 'Delete')}
-                            </Button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )
                 })}
@@ -978,7 +901,7 @@ export function ModelPanel() {
             </section>
           ))}
           {groupedProviders.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-border/80 px-4 py-10 text-center text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed border-border/80 px-4 py-10 text-center text-sm text-muted-foreground">
               {search.trim()
                 ? copy('没有匹配的模型商', 'No matching providers')
                 : copy('还没有添加模型商，点击下方按钮开始配置。', 'No providers have been added yet. Start with one of the actions below.')}
@@ -1023,7 +946,7 @@ export function ModelPanel() {
         <div className="grid gap-3 sm:grid-cols-2">
           <button
             type="button"
-            className="flex min-h-14 items-center justify-center gap-2 rounded-2xl border border-dashed border-border/90 px-4 text-sm text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/[0.03] hover:text-foreground"
+            className="flex min-h-12 items-center justify-center gap-2 rounded-lg border border-dashed border-border/90 px-4 text-sm text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/[0.03] hover:text-foreground"
             onClick={() => openProviderEditor()}
           >
             <Plus className="h-4 w-4" />
@@ -1031,7 +954,7 @@ export function ModelPanel() {
           </button>
           <button
             type="button"
-            className="flex min-h-14 items-center justify-center gap-2 rounded-2xl border border-dashed border-border/90 px-4 text-sm text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/[0.03] hover:text-foreground"
+            className="flex min-h-12 items-center justify-center gap-2 rounded-lg border border-dashed border-border/90 px-4 text-sm text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-foreground/[0.03] hover:text-foreground"
             onClick={() => {
               resetCustomProviderForm()
               setCustomEditorOpen(true)
@@ -1087,23 +1010,23 @@ export function ModelPanel() {
 
           <div className="space-y-2">
             <Label htmlFor="custom-provider-id">{copy('唯一 ID', 'Unique ID')}</Label>
-            <Input id="custom-provider-id" value={customForm.id} onChange={(e) => setCustomForm((v) => ({ ...v, id: e.target.value }))} />
+            <Input id="custom-provider-id" name="provider-identifier" autoComplete="off" value={customForm.id} onChange={(e) => setCustomForm((v) => ({ ...v, id: e.target.value }))} />
             <p className="text-[11px] text-muted-foreground">{copy('仅用于本地保存和识别，建议使用小写短横线。', 'Stored locally to identify this provider. Lowercase with dashes is recommended.')}</p>
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="custom-provider-name">{copy('显示名称', 'Display name')}</Label>
-            <Input id="custom-provider-name" value={customForm.display_name} onChange={(e) => setCustomForm((v) => ({ ...v, display_name: e.target.value }))} />
+            <Input id="custom-provider-name" name="provider-display-name" autoComplete="off" value={customForm.display_name} onChange={(e) => setCustomForm((v) => ({ ...v, display_name: e.target.value }))} />
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="custom-provider-url">Base URL</Label>
-            <Input id="custom-provider-url" value={customForm.base_url} onChange={(e) => setCustomForm((v) => ({ ...v, base_url: e.target.value }))} />
+            <Input id="custom-provider-url" name="provider-endpoint" autoComplete="off" value={customForm.base_url} onChange={(e) => setCustomForm((v) => ({ ...v, base_url: e.target.value }))} />
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="custom-provider-group">{copy('分组', 'Group')}</Label>
-            <Input id="custom-provider-group" value={customForm.group} onChange={(e) => setCustomForm((v) => ({ ...v, group: e.target.value }))} />
+            <Input id="custom-provider-group" name="provider-group" autoComplete="off" value={customForm.group} onChange={(e) => setCustomForm((v) => ({ ...v, group: e.target.value }))} />
           </div>
 
           <div className="space-y-2">
@@ -1118,6 +1041,7 @@ export function ModelPanel() {
                     <>
                       <Input
                         autoFocus
+                        autoComplete="off"
                         value={editingCustomValue}
                         onChange={(e) => setEditingCustomValue(e.target.value)}
                         onKeyDown={(e) => {
@@ -1142,7 +1066,7 @@ export function ModelPanel() {
               ))}
             </div>
             <div className="flex gap-2">
-              <Input value={customNewModel} onChange={(e) => setCustomNewModel(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddCustomModel() } }} className="font-mono text-xs" />
+              <Input autoComplete="off" value={customNewModel} onChange={(e) => setCustomNewModel(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddCustomModel() } }} className="font-mono text-xs" />
               <Button type="button" variant="outline" size="sm" onClick={handleAddCustomModel} disabled={!customNewModel.trim()}><Plus className="mr-1 h-3.5 w-3.5" />{copy('添加', 'Add')}</Button>
             </div>
           </div>
@@ -1164,12 +1088,12 @@ export function ModelPanel() {
 
           <div className="space-y-2">
             <Label htmlFor="custom-provider-key">{copy('API Key（可选）', 'API key (optional)')}</Label>
-            <Input id="custom-provider-key" type="password" value={customForm.api_key} onChange={(e) => setCustomForm((v) => ({ ...v, api_key: e.target.value }))} placeholder={copy('保存到系统凭据存储', 'Saved to secure system storage')} />
+            <Input id="custom-provider-key" name="provider-secret" type="password" autoComplete="new-password" value={customForm.api_key} onChange={(e) => setCustomForm((v) => ({ ...v, api_key: e.target.value }))} placeholder={copy('保存到系统凭据存储', 'Saved to secure system storage')} />
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="custom-provider-env">{copy('环境变量名（可选）', 'Environment variable (optional)')}</Label>
-            <Input id="custom-provider-env" value={customForm.api_key_env} onChange={(e) => setCustomForm((v) => ({ ...v, api_key_env: e.target.value }))}  />
+            <Input id="custom-provider-env" name="provider-secret-env" autoComplete="off" value={customForm.api_key_env} onChange={(e) => setCustomForm((v) => ({ ...v, api_key_env: e.target.value }))}  />
           </div>
 
           <div className="flex items-center gap-2 pt-1">
@@ -1192,111 +1116,6 @@ export function ModelPanel() {
 
   return (
     <div className="model-provider-editor-layout block">
-      {/* Left: provider list with group + search */}
-      <div className="model-provider-sidebar !hidden" aria-hidden="true">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-foreground">{copy('模型服务商', 'Model providers')}</div>
-            <div className="text-[10px] text-muted-foreground">{copy('选择一个接入渠道配置模型', 'Choose a route to configure its models')}</div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            <Badge variant="secondary" className="text-[10px]">{providers.length}</Badge>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={() => {
-                void loadProviders().then(() => setLastProviderRefresh(new Date()))
-              }}
-              disabled={providersLoading}
-              title={copy('刷新模型服务商列表', 'Refresh provider list')}
-              aria-label={copy('刷新模型服务商列表', 'Refresh provider list')}
-            >
-              <RefreshCw className={cn('h-3.5 w-3.5', providersLoading && 'animate-spin')} />
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 px-2 text-[11px]"
-              onClick={() => {
-                resetCustomProviderForm()
-                setCustomEditorOpen(true)
-              }}
-              title={copy('添加自定义模型商', 'Add custom provider')}
-            >
-              <Plus className="mr-1 h-3.5 w-3.5" /> {copy('添加', 'Add')}
-            </Button>
-          </div>
-        </div>
-        {/* 搜索框 */}
-        <div className="relative mb-2">
-          <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={copy('搜索 provider...', 'Search providers...')}
-            className="h-8 pl-8 text-xs"
-          />
-        </div>
-        <div ref={providerListRef} className="model-provider-list-scroll max-h-[55vh] space-y-3 overflow-y-auto pr-1">
-          {groupedProviders.map(({ group, items }) => (
-            <div key={group}>
-              <div className="mb-1 px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
-                {providerGroupLabel(group, locale)}
-              </div>
-              <div className="space-y-1">
-                {items.map((p) => {
-                  const active = p.id === selectedId
-                  const enabled = p.enabled !== false
-                  return (
-                    <div
-                      key={p.id}
-                      className={cn(
-                        'model-provider-row group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 transition-colors duration-150',
-                        active ? 'border-primary/20 bg-primary/[0.08]' : 'border-transparent hover:bg-foreground/[0.035]',
-                        !enabled && 'opacity-55',
-                      )}
-                      data-selected={active ? 'true' : undefined}
-                    >
-                      <button
-                        type="button"
-                        ref={(node) => { providerRowRefs.current[p.id] = node }}
-                        onClick={() => setSelectedId(p.id)}
-                        title={`${p.display_name} · ${providerRouteHint(p, locale)}`}
-                        className="flex min-w-0 flex-1 items-center gap-2.5 text-left outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0"
-                        aria-current={active ? 'true' : undefined}
-                      >
-                        <ProviderLogo providerId={p.id} size={18} className="shrink-0" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[13px] font-medium leading-tight" title={p.display_name}>{p.display_name}</span>
-                          <span className="block truncate text-[10px] text-muted-foreground">{p.model_name || copy('未配置模型', 'No model configured')}</span>
-                        </span>
-                        {p.is_default && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" aria-label={copy('当前使用', 'In use')} />}
-                      </button>
-                      <Switch
-                        checked={enabled}
-                        disabled={saving}
-                        onCheckedChange={(value) => {
-                          void handleToggleProvider(value, p)
-                        }}
-                        aria-label={`${p.display_name} ${enabled ? copy('已启用', 'enabled') : copy('已停用', 'disabled')}`}
-                        className="h-4 w-7 [&>span]:h-3 [&>span]:w-3 data-[state=checked]:[&>span]:translate-x-3"
-                      />
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-          {groupedProviders.length === 0 && (
-            <div className="py-8 text-center text-xs text-muted-foreground">
-              {copy('没有匹配的 provider', 'No matching providers')}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Right: edit form */}
       <div ref={providerFormRef} className="model-provider-form mx-auto w-full max-w-3xl space-y-5">
         {!selected && (
           <div className="py-8 text-center text-sm text-muted-foreground">
@@ -1497,7 +1316,7 @@ export function ModelPanel() {
                 })}
               </div>
               <div className="flex gap-2">
-                <Input value={newModel} onChange={(e) => setNewModel(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel() } }}  className="font-mono text-xs" />
+                <Input autoComplete="off" value={newModel} onChange={(e) => setNewModel(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel() } }}  className="font-mono text-xs" />
                 <Button type="button" variant="outline" size="sm" onClick={handleAddModel} disabled={!newModel.trim()}><Plus className="mr-1 h-3.5 w-3.5" />{copy('添加', 'Add')}</Button>
               </div>
             </div>
@@ -1507,6 +1326,8 @@ export function ModelPanel() {
                 <Label htmlFor="base-url">Base URL</Label>
                 <Input
                   id="base-url"
+                  name="provider-endpoint"
+                  autoComplete="off"
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
 
@@ -1537,6 +1358,7 @@ export function ModelPanel() {
               <Label htmlFor="context-window">{copy('上下文窗口', 'Context window')}</Label>
               <Input
                 id="context-window"
+                autoComplete="off"
                 inputMode="numeric"
                 value={contextWindow}
                 onChange={(e) => setContextWindow(e.target.value.replace(/[^\d]/g, ''))}
@@ -1557,7 +1379,9 @@ export function ModelPanel() {
                 <div className="relative">
                   <Input
                     id="api-key"
+                    name="provider-secret"
                     type={showKey ? 'text' : 'password'}
+                    autoComplete="new-password"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter' && apiKey.trim()) { e.preventDefault(); void persistNow({ apiKey: apiKey.trim() }) } }}
@@ -1734,12 +1558,15 @@ export function ModelPanel() {
             <div className="space-y-2">
               <Label className="text-xs">{copy('添加新 Key', 'Add another key')}</Label>
               <Input
+                name="provider-secret"
+                autoComplete="new-password"
                 value={newKey}
                 onChange={(e) => setNewKey(e.target.value)}
                 placeholder="sk-..."
                 className="font-mono text-xs"
               />
               <Input
+                autoComplete="off"
                 value={newKeyLabel}
                 onChange={(e) => setNewKeyLabel(e.target.value)}
                 placeholder={copy('标签 (可选, 例如: 主号 / 备用)', 'Label (optional, e.g. primary / backup)')}
@@ -1771,6 +1598,7 @@ export function ModelPanel() {
             {headerEntries.map((entry, i) => (
               <div key={i} className="flex gap-2">
                 <Input
+                  autoComplete="off"
                   value={entry.k}
                   onChange={(e) => {
                     const next = [...headerEntries]
@@ -1781,6 +1609,7 @@ export function ModelPanel() {
                   className="flex-1 font-mono text-xs"
                 />
                 <Input
+                  autoComplete="off"
                   value={entry.v}
                   onChange={(e) => {
                     const next = [...headerEntries]

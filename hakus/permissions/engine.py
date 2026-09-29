@@ -1,8 +1,6 @@
-"""Five-tier permission engine (Codex-style permission profiles).
+"""Five-tier permission engine with configurable permission profiles.
 
-Ported from the OpenAI Codex desktop app's permission model (see
-``D:\\项目\\ChatGPT_App_decoded`` — ``src-BiETdQsO`` permission profiles):
-five tiers, each a combination of ``sandbox_mode`` + ``approval_policy``
+The five tiers combine ``sandbox_mode`` + ``approval_policy``
 + ``approver``:
 
   - ``read_only``  — all mutating tools hard-denied (no prompt)

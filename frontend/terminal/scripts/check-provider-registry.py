@@ -148,7 +148,6 @@ def provider_kind_ids(config_rs: str) -> dict[str, str]:
     for variant_name, id_literal in [
         ("Deepseek", "deepseek"),
         ("DeepseekAnthropic", "deepseek-anthropic"),
-        ("OpenaiCodex", "openai-codex"),
         ("Anthropic", "anthropic"),
         ("Openmodel", "openmodel"),
         ("MinimaxAnthropic", "minimax-anthropic"),

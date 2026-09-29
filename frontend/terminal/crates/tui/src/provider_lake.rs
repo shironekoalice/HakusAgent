@@ -17,7 +17,6 @@ use std::sync::{Arc, RwLock};
 
 use hakus_config::catalog::{CatalogOffering, CatalogSnapshot, bundled_catalog_offerings};
 
-use crate::codex_model_cache;
 use crate::config::{
     ApiProvider, Config, model_completion_names_for_provider, opencode_go_chat_model_id,
     provider_is_configured_for_active,
@@ -372,13 +371,6 @@ fn catalog_models_from_offerings<'a>(
 /// local providers (and gateways not yet in the offline seed) keep defaults.
 #[must_use]
 pub fn all_catalog_models_for_provider(provider: ApiProvider) -> Vec<String> {
-    // ChatGPT OAuth availability is account-scoped. A generic OpenAI or
-    // Models.dev catalog is not evidence that a model can be routed through
-    // the Codex backend, so this provider owns a separate secret-free source.
-    if provider == ApiProvider::OpenaiCodex {
-        return codex_model_cache::model_roster().model_ids();
-    }
-
     let catalog_id = catalog_provider_id(provider);
     let merged = merged_snapshot();
     let mut models = catalog_models_from_offerings(merged.offerings_for_provider(catalog_id));
@@ -401,9 +393,6 @@ pub fn catalog_offering_for_model(
     provider: ApiProvider,
     wire_model_id: &str,
 ) -> Option<CatalogOffering> {
-    if provider == ApiProvider::OpenaiCodex {
-        return None;
-    }
     let catalog_id = catalog_provider_id(provider);
     let needle = wire_model_id.trim();
     if needle.is_empty() {
@@ -430,9 +419,6 @@ pub fn bundled_catalog_offering_for_model(
     provider: ApiProvider,
     wire_model_id: &str,
 ) -> Option<CatalogOffering> {
-    if provider == ApiProvider::OpenaiCodex {
-        return None;
-    }
     let catalog_id = catalog_provider_id(provider);
     let needle = wire_model_id.trim();
     if needle.is_empty() {
@@ -511,26 +497,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn configured_providers_matches_provider_predicate() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let _auth_file = crate::test_support::EnvVarGuard::set(
-            "OPENAI_CODEX_AUTH_FILE",
-            tmp.path().join("missing-auth.json"),
-        );
-        let _openai_token = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _codex_token = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let config = Config::default();
-        let active = ApiProvider::Deepseek;
-        let expected: Vec<_> = ApiProvider::sorted_for_display()
-            .into_iter()
-            .filter(|provider| {
-                crate::config::provider_is_configured_for_active(&config, *provider, active)
-            })
-            .collect();
-        assert_eq!(configured_providers(&config, active), expected);
-    }
 
     #[test]
     fn models_for_provider_filters_unconfigured_gateways() {
@@ -567,8 +533,6 @@ mod tests {
     #[test]
     fn catalog_facade_covers_every_provider_with_a_legacy_table() {
         let _env = crate::test_support::lock_test_env();
-        let codex_home = tempfile::tempdir().expect("temporary CODEX_HOME");
-        let _codex_home = crate::test_support::EnvVarGuard::set("CODEX_HOME", codex_home.path());
         let _live = lock_live_snapshot();
         clear_live_snapshot();
         for &provider in ApiProvider::all() {
@@ -585,72 +549,7 @@ mod tests {
         }
     }
 
-    /// #4188: CodeWhale-only / local providers keep defaults via the legacy
-    /// fallback when Models.dev (live or bundled) has no rows for them.
-    #[test]
-    fn hakus_only_providers_keep_legacy_defaults() {
-        let _env = crate::test_support::lock_test_env();
-        let codex_home = tempfile::tempdir().expect("temporary CODEX_HOME");
-        let _codex_home = crate::test_support::EnvVarGuard::set("CODEX_HOME", codex_home.path());
-        let _live = lock_live_snapshot();
-        clear_live_snapshot();
-        let openai_codex = all_catalog_models_for_provider(ApiProvider::OpenaiCodex);
-        assert!(
-            !openai_codex.is_empty(),
-            "openai-codex must keep a default model offline: {openai_codex:?}"
-        );
-        assert_eq!(
-            openai_codex,
-            model_completion_names_for_provider(ApiProvider::OpenaiCodex)
-                .iter()
-                .map(|m| (*m).to_string())
-                .collect::<Vec<_>>(),
-            "openai-codex should come from the compatibility fallback table"
-        );
 
-        // Ollama intentionally has an empty legacy table (user-supplied ids);
-        // the lake must still return empty rather than inventing rows.
-        assert!(all_catalog_models_for_provider(ApiProvider::Ollama).is_empty());
-        assert!(model_completion_names_for_provider(ApiProvider::Ollama).is_empty());
-    }
-
-    /// #4116 / #4188 (AC): a provider with no bundled/live catalog coverage must
-    /// fall back to the legacy table verbatim, so CodeWhale-only routes stay
-    /// usable. We assert this for every currently-unbundled provider that still
-    /// carries a non-empty legacy list, and require at least one such provider
-    /// to exist so the fallback path is actually exercised.
-    #[test]
-    fn unbundled_provider_falls_back_to_legacy_table() {
-        let _live = lock_live_snapshot();
-        clear_live_snapshot();
-        let merged = merged_snapshot();
-        let mut exercised = 0usize;
-        for &provider in ApiProvider::all() {
-            // OpenAI Codex deliberately owns an account-scoped cache source;
-            // its fallback behavior is covered separately above.
-            if provider == ApiProvider::OpenaiCodex {
-                continue;
-            }
-            let catalog_id = catalog_provider_id(provider);
-            let has_catalog_rows = !merged.offerings_for_provider(catalog_id).is_empty();
-            let legacy = model_completion_names_for_provider(provider);
-            if has_catalog_rows || legacy.is_empty() {
-                continue;
-            }
-            // Unbundled + non-empty legacy: the facade must echo the legacy list.
-            let facade = all_catalog_models_for_provider(provider);
-            let expected: Vec<String> = legacy.iter().map(|m| m.to_string()).collect();
-            assert_eq!(
-                facade, expected,
-                "unbundled provider {provider:?} did not fall back to the legacy table"
-            );
-            exercised += 1;
-        }
-        assert!(
-            exercised > 0,
-            "expected at least one unbundled provider to exercise the legacy fallback path"
-        );
-    }
 
     /// #4188: live Models.dev rows win over bundled on identity, and clearing
     /// live restores the offline bundled snapshot (offline startup still works).

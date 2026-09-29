@@ -399,24 +399,7 @@ fn hosted_provider_does_not_probe_without_explicit_opt_in() {
         },
     ));
 }
-#[test]
-fn resolve_api_key_source_does_not_clone_openai_codex_env_tokens() {
-    let _guard = crate::test_support::lock_test_env();
-    let sentinel = "OPENAI-CODEX-ACCESS-TOKEN-SENTINEL";
-    let _token = crate::test_support::EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", sentinel);
-    let _legacy_token = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-    let config = Config {
-        provider: Some("openai-codex".to_string()),
-        ..Config::default()
-    };
 
-    let source = resolve_api_key_source(&config);
-    let report = doctor_provider_model_report_json(&config).to_string();
-
-    assert_eq!(source, ApiKeySource::OAuth);
-    assert_eq!(doctor_api_key_source_label(source), "oauth_unprobed");
-    assert!(!report.contains(sentinel));
-}
 #[test]
 fn resolve_api_key_source_does_not_inspect_dispatcher_source_or_value() {
     let _guard = crate::test_support::lock_test_env();

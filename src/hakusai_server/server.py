@@ -664,6 +664,8 @@ class HakusAIServer:
                     if not user_id:
                         logger.warning("WeChat: dropping message with empty user_id")
                         return
+                    if not wechat.wechat_config.auto_reply:
+                        return
 
                     lock = await wechat._get_user_lock(user_id)
                     if lock.locked():
@@ -3960,6 +3962,7 @@ class HakusAIServer:
                 await wechat.check_session_alive()
             return {
                 "enabled": wechat.config.enabled or wechat.is_connected,
+                "auto_reply": wechat.wechat_config.auto_reply,
                 "status": wechat.login_status,
                 "connected": wechat.is_connected,
                 "account_id": wechat._account_id,
@@ -3985,6 +3988,17 @@ class HakusAIServer:
                 raise HTTPException(status_code=404, detail="WeChat platform not configured")
             await wechat.disconnect()
             return {"status": "disconnected"}
+
+        @app.patch("/api/wechat/settings")
+        async def update_wechat_settings(request: dict):
+            wechat = platform_manager.get("wechat")
+            if not wechat:
+                raise HTTPException(status_code=404, detail="WeChat platform not configured")
+            enabled = request.get("enabled")
+            if not isinstance(enabled, bool):
+                raise HTTPException(status_code=400, detail="enabled must be a boolean")
+            wechat.wechat_config.auto_reply = enabled
+            return {"enabled": enabled}
 
         @app.post("/api/wechat/send")
         async def wechat_send(request: dict):

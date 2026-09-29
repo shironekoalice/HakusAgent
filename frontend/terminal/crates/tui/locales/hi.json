@@ -420,7 +420,7 @@
   "CmdModelsDescription": "सक्रिय API से लाइव मॉडल ID लाएँ",
   "CmdModelDbDescription": "बंडल किया मॉडल डेटाबेस ब्राउज़ करें",
   "CmdNetworkDescription": "नेटवर्क अनुमति और निषेध नियम प्रबंधित करें",
-  "CmdUpdateDescription": "नया CodeWhale रिलीज़ जाँचें और इंस्टॉल करें",
+  "CmdUpdateDescription": "नया HakusCLI रिलीज़ जाँचें और इंस्टॉल करें",
   "CmdNoteDescription": "वर्कस्पेस नोट जोड़ें, सूचीबद्ध करें, संपादित करें या हटाएँ",
   "CmdThemeDescription": "थीम बदलें या थीम चयनकर्ता खोलें",
   "CmdProviderDescription": "सक्रिय प्रोवाइडर और/या मॉडल बदलें",
@@ -493,7 +493,7 @@
   "TranslationFailed": "अनुवाद विफल",
   "CmdTrustDescription": "वर्कस्पेस ट्रस्ट और प्रति-पथ अनुमति सूची प्रबंधित करें",
   "CmdWorkspaceDescription": "वर्तमान वर्कस्पेस दिखाएँ या बदलें",
-  "CmdWechatDescription": "WeChat से कनेक्ट करें: QR लॉगिन, स्थिति, भेजें और संदेश पोलिंग",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "अंतिम संदेश जोड़ी हटाएँ",
   "CmdVerboseDescription": "ट्रांसक्रिप्ट में पूरी लाइव थिंकिंग टॉगल करें",
   "CmdCacheAdvice": "तीसरे टर्न के बाद ~70% से अधिक हिट/मिस दर स्थिर कैश प्रीफ़िक्स दर्शाती है; \n लंबे सत्रों में इससे कम दर प्रीफ़िक्स बदलाव का संकेत है, जाँच उचित (#263).",
@@ -908,7 +908,7 @@
   "ApprovalChooseAction": "चुना विकल्प भेजें, या सीधे y/a/d दबाएँ",
   "ApprovalIntentLabel": "इरादा: ",
   "ApprovalMoreLines": "  … (+{count} पंक्तियाँ)",
-  "ApprovalAutoDeniedSession": "स्वतः अस्वीकृत {tool}: इस CodeWhale रन में पहले मिलता-जुलता अनुरोध अस्वीकृत हुआ था। पुनर्विचार के लिए CodeWhale फिर शुरू करें।",
+  "ApprovalAutoDeniedSession": "स्वतः अस्वीकृत {tool}: इस HakusCLI रन में पहले मिलता-जुलता अनुरोध अस्वीकृत हुआ था। पुनर्विचार के लिए HakusCLI फिर शुरू करें।",
   "ElevationTitleSandboxDenied": "  ⚠, सैंडबॉक्स अस्वीकृत ",
   "ElevationTitleRequired": " सैंडबॉक्स एलिवेशन आवश्यक ",
   "ElevationFieldTool": "  टूल: ",
@@ -1255,7 +1255,6 @@
   "ProviderExternalActionRevoke": "बाहरी एक्सेस रद्द करें",
   "ProviderExternalActionChoices": "बाहरी एक्सेस विकल्प",
   "ProviderExternalActionReuseGrok": "बाहरी Grok पुनःउपयोग",
-  "ProviderExternalHintCodexReview": "{login} के बाद, अक्षम/रीड-ओनली/मैनेज्ड एक्सेस विकल्पों की समीक्षा के लिए Enter दबाएँ।",
   "ProviderExternalHintXaiReview": "HakusCLI-स्वामित्व डिवाइस लॉगिन के लिए Enter दबाएँ; मौजूदा Grok CLI पुनःउपयोग की समीक्षा के लिए E दबाएँ।",
   "ProviderExternalHintXaiApiKey": "या XAI_API_KEY इस्तेमाल करें और यह पिकर फिर खोलें।",
   "XaiAuthChoiceTitle": " xAI प्रमाणीकरण ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} के पास /models एंडपॉइंट नहीं है; पहुँच की जाँच नहीं हुई।",
   "ProviderTemplateOpened": "प्रोवाइडर टेम्पलेट '{id}' खुला। केवल API कुंजी दर्ज करें।",
   "ProviderTemplateUnknown": "अज्ञात प्रोवाइडर टेम्पलेट '{id}'।",
-  "ProviderTemplateOpenedEnvOnly": "अंतर्निहित टेम्पलेट '{id}' खुला। API कुंजी का पर्यावरण चर नाम दर्ज कर सहेजें; कच्ची कुंजी न चिपकाएँ।",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "अंतर्निहित टेम्पलेट '{id}' खुला। API कुंजी का पर्यावरण चर नाम दर्ज कर सहेजें; कच्ची कुंजी न चिपकाएँ।"
 }

@@ -452,7 +452,6 @@ fn provider_uses_oauth_cli(config: &Config, provider: ApiProvider) -> bool {
         return false;
     }
     match provider {
-        ApiProvider::OpenaiCodex => true,
         ApiProvider::Xai => config
             .provider_config_for(provider)
             .and_then(|entry| entry.auth_mode.as_deref())

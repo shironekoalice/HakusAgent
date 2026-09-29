@@ -86,8 +86,8 @@ export const MessageBubble = memo(function MessageBubble({
   const verticalGap =
     isAssistant && !isFirstSegmentOfAssistantTurn ? 'py-1' : 'py-3'
 
-  // ChatGPT/Codex 桌面端风格：无头像列，整条消息是一个 article 流。
-  // assistant 无边框全宽排版；user 右对齐（Codex PMa: items-end justify-end gap-2）。
+  // 无头像列，整条消息是一个 article 流。
+  // assistant 无边框全宽排版；user 右对齐。
   return (
     <div
       // data-role + data-message-id let the parent ChatView find user
@@ -112,7 +112,7 @@ export const MessageBubble = memo(function MessageBubble({
           />
         )}
 
-        {/* Content — user: Codex 资产精确值（app-initial PMa，data-user-message-bubble）：
+        {/* Content — user message bubble layout:
             bg-text/5 + rounded-2xl + px-3 py-2 + max-w-[77%]，无 ring 无边框；
             assistant: borderless full-width article text with comfortable line height. */}
         {segmentText ? (
@@ -312,7 +312,7 @@ function QuestionCard({ messageId, question, onAnswer }: QuestionCardProps) {
 
   // The hint line advertises keyboard selection — make it true: number keys
   // jump to an option, ArrowUp/Down cycle, Enter confirms, Tab (shift for
-  // reverse) moves the selection like Codex's option cards.
+  // reverse) moves the selection like the option cards.
   const handleCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (question.answered || isSubmitting) return
     const count = question.options.length

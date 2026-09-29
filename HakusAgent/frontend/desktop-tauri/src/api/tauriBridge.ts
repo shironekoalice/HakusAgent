@@ -4,6 +4,12 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import type {
+  RemoteConnectionType,
+  RemoteProjectConnection,
+  RemoteRuntimeInstallMode,
+  Project,
+} from '@/api/types'
 
 // ── Store ──────────────────────────────────────────────────────────
 export const store = {
@@ -75,6 +81,17 @@ export const platform = {
       if (ua.includes("linux")) return "linux";
     }
     return "unknown";
+  },
+};
+
+export const clipboardOs = {
+  readText: async () => {
+    if (isAndroid()) {
+      const clipboard = navigator.clipboard
+      if (!clipboard?.readText) throw new Error("Clipboard access is unavailable")
+      return clipboard.readText()
+    }
+    return invoke<string>("read_clipboard_text")
   },
 };
 
@@ -152,6 +169,141 @@ export const fsOs = {
   writeText: (root: string, path: string, content: string) =>
     invoke<string>('fs_write_text', { root, path, content }),
   listDir: (root: string, path: string) => invoke<TauriDirEntry[]>('fs_list_dir', { root, path }),
+}
+
+// ── Remote project access ─────────────────────────────────────────
+
+export interface RemoteConnectionInput {
+  kind: RemoteConnectionType
+  alias?: string
+  host?: string
+  port?: number
+  username?: string
+  authMethod?: 'password' | 'key'
+  privateKeyPath?: string
+  password?: string
+  trustHostKey?: boolean
+  distro?: string
+  container?: string
+}
+
+export interface RemoteConnectionResult {
+  ok: boolean
+  cwd: string
+  logs: string[]
+}
+
+export interface RemoteDirEntry {
+  name: string
+  path: string
+  isDir: boolean
+}
+
+export interface RemoteSyncResult {
+  ok: boolean
+  resource: string
+  logs: string[]
+}
+
+export interface RemoteRuntimeResult {
+  localPort: number
+  remotePort: number
+  runtimeToken: string
+  platform: string
+  installed: boolean
+  logs: string[]
+}
+
+export interface RemoteRuntimeProgress {
+  projectId: string
+  message: string
+}
+
+export interface RemoteSshHost {
+  alias: string
+  host?: string
+  port?: number
+  username?: string
+  privateKeyPath?: string
+}
+
+const hasTauriRuntime = () => typeof __TAURI_INTERNALS__ !== 'undefined'
+const REMOTE_PROJECTS_KEY = 'hakusai-remote-projects'
+
+export const remoteOs = {
+  listSshHosts: () => invoke<RemoteSshHost[]>('remote_list_ssh_hosts'),
+  listTargets: (kind: RemoteConnectionType) =>
+    invoke<string[]>('remote_list_targets', { kind }),
+  connect: (config: RemoteConnectionInput) =>
+    invoke<RemoteConnectionResult>('remote_connect', { config }),
+  listDir: (config: RemoteConnectionInput, path: string) =>
+    invoke<RemoteDirEntry[]>('remote_list_dir', { config, path }),
+  sync: (config: RemoteConnectionInput, path: string, resource: string) =>
+    invoke<RemoteSyncResult>('remote_sync', { config, path, resource }),
+  startRuntime: (projectId: string, config: RemoteConnectionInput, path: string, installMode?: RemoteRuntimeInstallMode) =>
+    invoke<RemoteRuntimeResult>('remote_start_runtime', {
+      request: { projectId, config, path, installMode },
+    }),
+  stopRuntime: (projectId: string) =>
+    invoke<void>('remote_stop_runtime', { projectId }),
+}
+
+export async function loadRemoteProjects(): Promise<Project[]> {
+  try {
+    const raw = hasTauriRuntime()
+      ? await store.get(REMOTE_PROJECTS_KEY)
+      : JSON.parse(localStorage.getItem(REMOTE_PROJECTS_KEY) || 'null')
+    return Array.isArray(raw) ? raw.filter((item): item is Project => item?.kind === 'remote') : []
+  } catch {
+    return []
+  }
+}
+
+export async function saveRemoteProjects(projects: Project[]): Promise<void> {
+  const value = projects.map((project) => ({ ...project, kind: 'remote' as const }))
+  if (hasTauriRuntime()) {
+    await store.set(REMOTE_PROJECTS_KEY, value)
+    return
+  }
+  try {
+    localStorage.setItem(REMOTE_PROJECTS_KEY, JSON.stringify(value))
+  } catch {
+    // Private browsing or a full storage quota should not block local projects.
+  }
+}
+
+export function remoteConnectionForProject(project: Project): RemoteConnectionInput | null {
+  const connection = project.remote
+  if (!connection) return null
+  return {
+    kind: connection.type,
+    alias: connection.alias,
+    host: connection.host,
+    port: connection.port,
+    username: connection.username,
+    authMethod: connection.authMethod,
+    privateKeyPath: connection.privateKeyPath,
+    distro: connection.distro,
+    container: connection.container,
+  }
+}
+
+export function toRemoteProjectConnection(
+  input: RemoteConnectionInput,
+  id: string,
+): RemoteProjectConnection {
+  return {
+    id,
+    type: input.kind,
+    alias: input.alias,
+    host: input.host,
+    port: input.port,
+    username: input.username,
+    authMethod: input.authMethod,
+    privateKeyPath: input.privateKeyPath,
+    distro: input.distro,
+    container: input.container,
+  }
 }
 
 // ── Git review / worktree / doctor ─────────────────────────────────

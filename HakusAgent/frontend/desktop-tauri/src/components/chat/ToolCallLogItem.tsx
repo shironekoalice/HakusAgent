@@ -50,7 +50,7 @@ const TOOL_LABELS: Record<string, string> = {
   task: '创建子任务',
   tool_search: '搜索工具',
   code_execution: '执行代码',
-  // 线程即工具（Codex-style thread ops）
+  // 线程即工具
   create_thread: '创建子会话',
   fork_thread: '派生会话',
   send_message_to_thread: '发送到子会话',

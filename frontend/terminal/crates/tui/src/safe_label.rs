@@ -477,8 +477,8 @@ mod tests {
     #[test]
     fn phrases_allow_spaces_but_not_paths() {
         assert_eq!(
-            SafeLabel::phrase("Codex OAuth quota").as_str(),
-            "Codex OAuth quota"
+            SafeLabel::phrase("Plan allowance").as_str(),
+            "Plan allowance"
         );
         assert!(SafeLabel::phrase("/opt/quota/plan").is_redacted());
     }

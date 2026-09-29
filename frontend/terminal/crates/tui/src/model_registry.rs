@@ -53,8 +53,6 @@ pub enum ModelProvider {
     Anthropic,
     /// OpenAI public API models (GPT-5.5 / GPT-5.6 families).
     OpenAi,
-    /// OpenAI Codex route models (gpt-5*-codex).
-    OpenAiCodex,
     /// Moonshot / Kimi models.
     Moonshot,
     /// Z.ai GLM models.
@@ -143,14 +141,14 @@ const SEED_MODEL_IDS: &[(&str, ModelProvider)] = &[
     ("claude-sonnet-5", ModelProvider::Anthropic),
     ("claude-fable-5", ModelProvider::Anthropic),
     ("claude-haiku-4-5", ModelProvider::Anthropic),
-    // --- OpenAI public API + Codex (config DEFAULT_OPENAI_CODEX_MODEL) ---
+    // --- OpenAI public API ---
     ("gpt-5.5", ModelProvider::OpenAi),
     ("gpt-5.5-pro", ModelProvider::OpenAi),
     ("gpt-5.6", ModelProvider::OpenAi),
     ("gpt-5.6-sol", ModelProvider::OpenAi),
     ("gpt-5.6-terra", ModelProvider::OpenAi),
     ("gpt-5.6-luna", ModelProvider::OpenAi),
-    ("gpt-5-codex", ModelProvider::OpenAiCodex),
+    ("gpt-5-codex", ModelProvider::OpenAi),
     ("gpt-5.3-codex", ModelProvider::OpenAi),
     // --- Moonshot / Kimi (config DEFAULT_MOONSHOT_MODEL / KIMI_CODE) ---
     ("kimi-k2.7-code", ModelProvider::Moonshot),

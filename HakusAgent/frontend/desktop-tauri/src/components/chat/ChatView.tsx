@@ -34,6 +34,9 @@ import { useI18n } from '@/lib/i18n'
 import { isProviderConfigured } from '@/lib/providerState'
 import { confirmProjectAccess, pickProjectFolder } from '@/api/tauriBridge'
 import { assignSessionWorkspace } from '@/lib/sessionWorkspaces'
+import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
+import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
+import { executeAgentBrowserAction } from '@/lib/agentBrowser'
 
 interface TimelineMessageItem {
   kind: 'message'
@@ -654,6 +657,27 @@ export function ChatView() {
 
   // Handle typed AgentEvent from the protocol layer
   const handleAgentEvent = (event: AgentEvent, sessionId: string) => {
+    if (event.event_type === 'browser_tool_requested') {
+      useAppStore.getState().setRightPanelTab('browser')
+      void (async () => {
+        let result: { success: boolean; content: Array<{ type: 'input_text'; text: string }> }
+        try {
+          const text = await executeAgentBrowserAction(event.arguments)
+          result = { success: true, content: [{ type: 'input_text', text }] }
+        } catch (error) {
+          result = {
+            success: false,
+            content: [{ type: 'input_text', text: error instanceof Error ? error.message : String(error) }],
+          }
+        }
+        try {
+          await apiClient.submitRuntimeToolCallResult(event.thread_id, event.turn_id, event.call_id, result)
+        } catch (error) {
+          console.error('[browser] failed to return tool result:', error)
+        }
+      })()
+      return
+    }
     if (event.event_type === 'goal_updated') {
       setGoal((event as any).goal || null)
       return
@@ -1012,7 +1036,7 @@ export function ChatView() {
           corner. The buttons live OUTSIDE the scroll div so they
           don't scroll with the content. */}
       <div className="relative min-h-0 flex-1">
-        {/* 悬浮工具簇：检查点 + 子代理（Codex 风格借鉴）。有消息时显示。 */}
+        {/* 悬浮工具簇：检查点 + 子代理。有消息时显示。 */}
         {activeMessages.length > 0 && (
           <div className="absolute right-3 top-3 z-10 flex gap-1.5">
             <CheckpointList messages={activeMessages} onRewind={handleRewind} />
@@ -1117,8 +1141,11 @@ function WorkspaceLaunchpad({
 }: WorkspaceLaunchpadProps) {
   const { locale } = useI18n()
   const activeProject = projects.find((project) => project.id === activeProjectId)
+  const [projectSourceOpen, setProjectSourceOpen] = useState(false)
+  const [remoteWizardOpen, setRemoteWizardOpen] = useState(false)
 
   return (
+    <>
     <main className="workspace-launchpad flex min-h-0 flex-1 items-center justify-center bg-background px-5 py-8">
       <div className="workspace-launchpad-inner w-full max-w-[46rem]">
         <div className="workspace-launchpad-heading text-center">
@@ -1164,7 +1191,7 @@ function WorkspaceLaunchpad({
                 </div>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={onCreateWorkspace} className="gap-2 rounded-xl px-2.5 py-2.5">
+              <DropdownMenuItem onSelect={() => setProjectSourceOpen(true)} className="gap-2 rounded-xl px-2.5 py-2.5">
                 <FolderPlus className="h-4 w-4 shrink-0 text-primary" />
                 <span className="font-medium">{locale.startsWith('zh') ? '新建工作区' : 'Create workspace'}</span>
               </DropdownMenuItem>
@@ -1187,7 +1214,7 @@ function WorkspaceLaunchpad({
               onContinueActive(activeProject.id)
               return
             }
-            onCreateWorkspace()
+            setProjectSourceOpen(true)
           }}
           aria-label={
             activeProject
@@ -1222,6 +1249,14 @@ function WorkspaceLaunchpad({
         </button>
       </div>
     </main>
+    <ProjectSourceDialog
+      open={projectSourceOpen}
+      onOpenChange={setProjectSourceOpen}
+      onLocal={onCreateWorkspace}
+      onRemote={() => { setProjectSourceOpen(false); setRemoteWizardOpen(true) }}
+    />
+    <RemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
+    </>
   )
 }
 

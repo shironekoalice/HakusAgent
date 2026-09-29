@@ -8,9 +8,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::{ApiError, RuntimeApiState};
@@ -66,7 +66,7 @@ fn load(state: &RuntimeApiState) -> Result<Vec<ProjectRecord>, ApiError> {
         Err(error) => {
             return Err(ApiError::internal(format!(
                 "read project registry: {error}"
-            )))
+            )));
         }
     };
     if raw.trim().is_empty() {
@@ -128,6 +128,10 @@ fn sorted(mut projects: Vec<ProjectRecord>) -> Vec<ProjectRecord> {
             .then_with(|| right.created_at.cmp(&left.created_at))
     });
     projects
+}
+
+pub(super) fn project_records(state: &RuntimeApiState) -> Result<Vec<ProjectRecord>, ApiError> {
+    Ok(sorted(load(state)?))
 }
 
 pub async fn list_projects(

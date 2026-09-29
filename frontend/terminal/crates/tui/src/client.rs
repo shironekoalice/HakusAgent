@@ -192,9 +192,6 @@ pub struct DeepSeekClient {
     /// they must not reconstruct output caps with `None` and discard a custom
     /// route's context window.
     route_limits: Option<RouteLimits>,
-    /// ChatGPT account id captured through the same consent-gated credential
-    /// resolution as the Codex bearer token.
-    pub(super) codex_account_id: Option<String>,
     wire_format: WireFormat,
     retry: RetryPolicy,
     /// Auxiliary inspection calls use the normal bounded retry schedule but
@@ -228,23 +225,12 @@ const ALLOW_INSECURE_HTTP_ENV: &str = "HAKUS_ALLOW_INSECURE_HTTP";
 /// Legacy alias for [`ALLOW_INSECURE_HTTP_ENV`].
 const LEGACY_ALLOW_INSECURE_HTTP_ENV: &str = "DEEPSEEK_ALLOW_INSECURE_HTTP";
 
-fn client_user_agent(api_provider: ApiProvider) -> &'static str {
-    // The ChatGPT Codex backend is the sole route with a documented
-    // compatibility exception. Kimi Code, including K3, must keep the normal
-    // Hakus identity rather than impersonating a Kimi CLI.
-    if api_provider == ApiProvider::OpenaiCodex {
-        concat!(
-            "codex_cli_rs/0.137.0 (CodeWhale ",
-            env!("CARGO_PKG_VERSION"),
-            ")"
-        )
-    } else {
-        concat!(
-            "Mozilla/5.0 (compatible; hakus/",
-            env!("CARGO_PKG_VERSION"),
-            "; +https://github.com/Hmbown/CodeWhale)"
-        )
-    }
+fn client_user_agent(_api_provider: ApiProvider) -> &'static str {
+    concat!(
+        "Mozilla/5.0 (compatible; hakus/",
+        env!("CARGO_PKG_VERSION"),
+        "; +https://github.com/modemneko/HakusAgent)"
+    )
 }
 
 /// Upper bound on a single sleep inside the provider-wide rate-limit pause
@@ -460,7 +446,6 @@ impl Clone for DeepSeekClient {
             billing_surface: self.billing_surface.clone(),
             billing_mode: self.billing_mode,
             route_limits: self.route_limits,
-            codex_account_id: self.codex_account_id.clone(),
             wire_format: self.wire_format,
             retry: self.retry.clone(),
             isolated_request_state: self.isolated_request_state,
@@ -1091,12 +1076,7 @@ impl DeepSeekClient {
         if api_provider == ApiProvider::OpencodeGo {
             validate_route(api_provider, &default_model).map_err(anyhow::Error::msg)?;
         }
-        let (api_key, codex_account_id) = if api_provider == ApiProvider::OpenaiCodex {
-            let credentials = config.codex_credentials()?;
-            (credentials.access_token, credentials.account_id)
-        } else {
-            (config.deepseek_api_key()?, None)
-        };
+        let api_key = config.deepseek_api_key()?;
         let model_bound_secret_values =
             Arc::new(configured_model_bound_secret_values(config, &api_key));
         validate_base_url_security(&base_url)?;
@@ -1182,7 +1162,6 @@ impl DeepSeekClient {
             billing_surface,
             billing_mode,
             route_limits,
-            codex_account_id,
             wire_format,
             retry,
             isolated_request_state: false,
@@ -1687,7 +1666,7 @@ pub async fn verify_provider_api_key(
         .user_agent(concat!(
             "Mozilla/5.0 (compatible; hakus/",
             env!("CARGO_PKG_VERSION"),
-            "; +https://github.com/Hmbown/CodeWhale)"
+            "; +https://github.com/modemneko/HakusAgent)"
         ))
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(15))
@@ -1948,15 +1927,8 @@ impl DeepSeekClient {
             WireFormat::Responses => {
                 let body =
                     responses::build_responses_body_for_provider(&request, self.api_provider);
-                let is_codex = self.api_provider == ApiProvider::OpenaiCodex;
-                let url = if is_codex {
-                    format!("{}{}", self.base_url, responses::CODEX_RESPONSES_PATH)
-                } else {
-                    responses_api_url(&self.base_url, self.api_provider)
-                };
-                let shape = if is_codex {
-                    RouteShape::CodexResponses
-                } else if self.api_provider == ApiProvider::OpencodeZen {
+                let url = responses_api_url(&self.base_url, self.api_provider);
+                let shape = if self.api_provider == ApiProvider::OpencodeZen {
                     RouteShape::OpencodeZen
                 } else if self.api_provider == ApiProvider::Custom {
                     RouteShape::CustomCompatible
@@ -3352,9 +3324,6 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::ModelstudioTokenPlanAnthropic
             | ApiProvider::ModelstudioCodingPlan
             | ApiProvider::ModelstudioCodingPlanAnthropic => {}
-            ApiProvider::OpenaiCodex => {
-                // OpenAI Codex uses Responses API — thinking handled differently
-            }
             ApiProvider::Fireworks => {}
             // vLLM is an OpenAI-protocol server, not an Anthropic-protocol one.
             // For Qwen3 / DeepSeek-R1 / other reasoning models hosted via vLLM,
@@ -3485,7 +3454,6 @@ pub(super) fn apply_reasoning_effort(
             ApiProvider::Openai
             | ApiProvider::WanjieArk
             | ApiProvider::Qianfan
-            | ApiProvider::OpenaiCodex
             | ApiProvider::Custom => {}
             ApiProvider::Moonshot => {
                 // #3024: Kimi models accept thinking enable.
@@ -3582,7 +3550,6 @@ pub(super) fn apply_reasoning_effort(
             ApiProvider::Openai
             | ApiProvider::WanjieArk
             | ApiProvider::Qianfan
-            | ApiProvider::OpenaiCodex
             | ApiProvider::Custom => {}
             ApiProvider::Moonshot => {
                 // #3024: Kimi models accept thinking enable.
@@ -5843,66 +5810,6 @@ mod tests {
         "sakana-config-secret-008",
     ];
 
-    #[test]
-    fn codex_client_uses_one_coherent_external_credential_snapshot() {
-        let _env = crate::test_support::lock_test_env();
-        let temp = tempfile::tempdir().expect("credential fixture");
-        let path = temp
-            .path()
-            .canonicalize()
-            .expect("canonical temp root")
-            .join("auth.json");
-        let token_a = crate::test_support::future_test_jwt("a");
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&serde_json::json!({
-                "tokens": {"access_token": token_a.clone(), "account_id": "account-a"}
-            }))
-            .expect("serialize fixture"),
-        )
-        .expect("write fixture");
-        let _auth_path = crate::test_support::EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &path);
-        let _access = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _legacy_access = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let config = Config {
-            provider: Some(ApiProvider::OpenaiCodex.as_str().to_string()),
-            providers: Some(ProvidersConfig {
-                openai_codex: ProviderConfig {
-                    auth_mode: Some("oauth".to_string()),
-                    external_credentials: Some(
-                        hakus_config::ExternalCredentialConsentToml::read_only(
-                            hakus_config::ProviderKind::OpenaiCodex,
-                            hakus_config::ExternalCredentialSource::CodexCli,
-                            path.clone(),
-                        ),
-                    ),
-                    ..ProviderConfig::default()
-                },
-                ..ProvidersConfig::default()
-            }),
-            ..Config::default()
-        };
-
-        crate::external_credentials::reset_side_effect_trap();
-        let client = DeepSeekClient::new(&config).expect("Codex client");
-        assert_eq!(client.api_key, token_a);
-        assert_eq!(client.codex_account_id.as_deref(), Some("account-a"));
-        assert_eq!(
-            crate::external_credentials::side_effect_trap_counts(),
-            (1, 1),
-            "bearer and account id must come from one secure open/read"
-        );
-
-        // An owner rotation after construction cannot splice account B into
-        // the already-resolved bearer snapshot.
-        std::fs::write(
-            &path,
-            serde_json::to_string(&serde_json::json!({"tokens": {"access_token": crate::test_support::future_test_jwt("b"), "account_id": "account-b"}})).expect("serialize rotated fixture"),
-        )
-        .expect("rotate fixture");
-        assert_eq!(client.api_key, token_a);
-        assert_eq!(client.codex_account_id.as_deref(), Some("account-a"));
-    }
 
     fn client_with_config_secret_sentinels() -> DeepSeekClient {
         let _ = rustls::crypto::ring::default_provider().install_default();

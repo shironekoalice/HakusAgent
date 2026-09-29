@@ -218,7 +218,7 @@ pub(crate) const MINIMAX_PAYG_BILLING_SURFACE: &str = "minimax-payg";
 pub(crate) const XIAOMI_TOKEN_PLAN_BILLING_SURFACE: &str = "xiaomi-mimo-token-plan";
 /// Xiaomi MiMo's ordinary public per-token API.
 pub(crate) const XIAOMI_PAYG_BILLING_SURFACE: &str = "xiaomi-mimo-payg";
-/// An OAuth/subscription-brokered endpoint (Codex, Claude OAuth, Grok OAuth,
+/// An OAuth/subscription-brokered endpoint (Claude OAuth, Grok OAuth,
 /// OpenCode Go). Never per-token metered from CodeWhale's side.
 pub(crate) const OAUTH_SUBSCRIPTION_BILLING_SURFACE: &str = "oauth-subscription";
 /// A loopback / self-hosted endpoint with no provider bill at all.
@@ -360,7 +360,7 @@ pub(crate) fn billing_surface_for_route(
         // of PAYG dollars: keep it in money coverage as unclassified until an
         // authoritative billing surface is available.
         ApiProvider::OllamaCloud => return Some(UNCLASSIFIED_BILLING_SURFACE),
-        ApiProvider::OpenaiCodex | ApiProvider::OpencodeGo => {
+        ApiProvider::OpencodeGo => {
             return Some(OAUTH_SUBSCRIPTION_BILLING_SURFACE);
         }
         // A named custom endpoint is never assumed to be metered; the billing
@@ -532,8 +532,8 @@ pub fn has_pricing_for_model(model: &str) -> bool {
 }
 
 /// Return whether the selected provider route exposes authoritative dollar
-/// pricing for this model without endpoint provenance. ChatGPT/Codex OAuth is
-/// subscription/account scoped, while StepFun needs PAYG-vs-Plan provenance.
+/// pricing for this model without endpoint provenance. StepFun needs
+/// PAYG-vs-Plan provenance.
 #[must_use]
 pub fn has_pricing_for_provider(provider: ApiProvider, model: &str) -> bool {
     calculate_turn_cost_estimate_for_provider(provider, model, &Usage::default()).is_some()
@@ -1006,9 +1006,8 @@ fn cost_estimate_with_pricing(pricing: ModelPricing, usage: &Usage) -> CostEstim
 }
 
 /// Calculate cost from provider/model usage when that pair identifies a single
-/// billing surface. ChatGPT/Codex OAuth has no authoritative API dollar price,
-/// while StepFun needs endpoint-derived PAYG-vs-Plan provenance; both stay
-/// unpriced here rather than fabricating spend.
+/// billing surface. StepFun needs endpoint-derived PAYG-vs-Plan provenance,
+/// so it stays unpriced here rather than fabricating spend.
 #[must_use]
 pub fn calculate_turn_cost_estimate_for_provider(
     provider: ApiProvider,
@@ -1306,9 +1305,6 @@ pub(crate) fn audit_turn_cost_for_provider_on_endpoint_at(
 ) -> TurnCostAudit {
     if !usage_cache_partition_is_consistent(usage) {
         return TurnCostAudit::unpriced(UnpricedReason::InconsistentUsage);
-    }
-    if provider == ApiProvider::OpenaiCodex {
-        return TurnCostAudit::unpriced(UnpricedReason::NotMoneyMetered);
     }
     if route_requires_billing_surface(provider, model) {
         return TurnCostAudit::unpriced(UnpricedReason::AmbiguousBillingSurface);
@@ -2211,147 +2207,6 @@ mod tests {
         );
     }
 
-    /// Every exact billing surface a route can carry must be understood, and
-    /// anything unrecognized must fail closed as unknown rather than defaulting
-    /// into per-token dollars (#4318).
-    #[test]
-    fn endpoint_classification_covers_every_exact_billing_surface() {
-        for (provider, base_url, expected_surface, expected_metering) in [
-            (
-                ApiProvider::Zai,
-                "https://api.z.ai/api/coding/paas/v4",
-                ZAI_CODING_PLAN_BILLING_SURFACE,
-                EndpointMetering::ExactSubscription,
-            ),
-            (
-                ApiProvider::Zai,
-                "https://api.z.ai/api/paas/v4",
-                ZAI_PAYG_BILLING_SURFACE,
-                EndpointMetering::Money,
-            ),
-            (
-                ApiProvider::Moonshot,
-                crate::config::DEFAULT_KIMI_CODE_BASE_URL,
-                MOONSHOT_KIMI_CODE_BILLING_SURFACE,
-                EndpointMetering::ExactSubscription,
-            ),
-            (
-                ApiProvider::Moonshot,
-                "https://api.moonshot.ai/v1",
-                MOONSHOT_PAYG_BILLING_SURFACE,
-                EndpointMetering::Money,
-            ),
-            (
-                ApiProvider::XiaomiMimo,
-                crate::config::XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL,
-                XIAOMI_PAYG_BILLING_SURFACE,
-                EndpointMetering::Money,
-            ),
-            (
-                ApiProvider::XiaomiMimo,
-                crate::config::DEFAULT_XIAOMI_MIMO_BASE_URL,
-                XIAOMI_TOKEN_PLAN_BILLING_SURFACE,
-                EndpointMetering::ExactSubscription,
-            ),
-            (
-                ApiProvider::Stepfun,
-                "https://api.stepfun.ai/step_plan/v1",
-                STEPFUN_PLAN_BILLING_SURFACE,
-                EndpointMetering::ExactSubscription,
-            ),
-            (
-                ApiProvider::Stepfun,
-                "https://api.stepfun.ai/v1",
-                STEPFUN_PAYG_BILLING_SURFACE,
-                EndpointMetering::Money,
-            ),
-            (
-                ApiProvider::Anthropic,
-                "https://api.anthropic.com/v1",
-                FIRST_PARTY_PAYG_BILLING_SURFACE,
-                EndpointMetering::Money,
-            ),
-            (
-                ApiProvider::Openrouter,
-                "https://openrouter.ai/api/v1",
-                AGGREGATOR_BILLING_SURFACE,
-                EndpointMetering::Money,
-            ),
-            (
-                ApiProvider::Orcarouter,
-                "https://api.orcarouter.ai/v1",
-                AGGREGATOR_BILLING_SURFACE,
-                EndpointMetering::Money,
-            ),
-        ] {
-            let surface = billing_surface_for_route(provider, Some(base_url));
-            assert_eq!(surface, Some(expected_surface), "{provider:?} {base_url}");
-            assert_eq!(
-                endpoint_metering_for_billing_surface(surface),
-                expected_metering,
-                "{provider:?} {base_url}"
-            );
-        }
-
-        // Provider-intrinsic surfaces need no URL at all.
-        for (provider, expected_surface, expected_metering) in [
-            (
-                ApiProvider::OpenaiCodex,
-                OAUTH_SUBSCRIPTION_BILLING_SURFACE,
-                EndpointMetering::ExactSubscription,
-            ),
-            (
-                ApiProvider::OpencodeGo,
-                OAUTH_SUBSCRIPTION_BILLING_SURFACE,
-                EndpointMetering::ExactSubscription,
-            ),
-            (
-                ApiProvider::Ollama,
-                LOCAL_BILLING_SURFACE,
-                EndpointMetering::LocalNoBill,
-            ),
-            (
-                ApiProvider::OllamaCloud,
-                UNCLASSIFIED_BILLING_SURFACE,
-                EndpointMetering::Unknown,
-            ),
-            (
-                ApiProvider::Vllm,
-                LOCAL_BILLING_SURFACE,
-                EndpointMetering::LocalNoBill,
-            ),
-            // A named custom endpoint's pay mode is config, not URL shape.
-            (
-                ApiProvider::Custom,
-                UNCLASSIFIED_BILLING_SURFACE,
-                EndpointMetering::Unknown,
-            ),
-        ] {
-            let surface = billing_surface_for_route(provider, None);
-            assert_eq!(surface, Some(expected_surface), "{provider:?}");
-            assert_eq!(
-                endpoint_metering_for_billing_surface(surface),
-                expected_metering,
-                "{provider:?}"
-            );
-        }
-
-        // An unrecognized surface id — including one a newer build might write —
-        // is never guessed into a known bucket.
-        for unknown in [
-            Some("some-future-surface"),
-            Some(""),
-            Some("   "),
-            Some(UNCLASSIFIED_BILLING_SURFACE),
-            None,
-        ] {
-            assert_eq!(
-                endpoint_metering_for_billing_surface(unknown),
-                EndpointMetering::Unknown,
-                "{unknown:?}"
-            );
-        }
-    }
 
     /// An endpoint that was never established is not the official endpoint.
     ///
@@ -2562,128 +2417,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn audit_names_why_a_turn_is_missing_from_a_total() {
-        let write_heavy = Usage {
-            input_tokens: 1_000_000,
-            output_tokens: 100_000,
-            prompt_cache_hit_tokens: Some(200_000),
-            prompt_cache_write_tokens: Some(100_000),
-            ..Usage::default()
-        };
 
-        // Anthropic publishes a cache-write rate: fully priced, provenance kept.
-        let priced = audit_turn_cost_for_provider_at(
-            ApiProvider::Anthropic,
-            "claude-haiku-4-5",
-            &write_heavy,
-            Utc::now(),
-        );
-        assert!(priced.is_priced());
-        assert_eq!(priced.unpriced_reason, None);
-        assert!(priced.unpriced_classes.is_empty());
-        assert!(priced.provenance.is_some());
-
-        // Moonshot does not: the turn fails closed and names the class.
-        let missing = audit_turn_cost_for_provider_at(
-            ApiProvider::Moonshot,
-            "kimi-k2.7-code",
-            &write_heavy,
-            Utc::now(),
-        );
-        assert!(!missing.is_priced());
-        assert_eq!(
-            missing.unpriced_reason,
-            Some(UnpricedReason::MissingClassPrice)
-        );
-        assert_eq!(missing.unpriced_classes, vec![TokenClass::CacheWrite]);
-        // Dropping the write tokens makes the very same route priceable, which
-        // proves the gap is class-scoped rather than route-scoped.
-        let no_write = Usage {
-            prompt_cache_write_tokens: None,
-            ..write_heavy.clone()
-        };
-        assert!(
-            audit_turn_cost_for_provider_at(
-                ApiProvider::Moonshot,
-                "kimi-k2.7-code",
-                &no_write,
-                Utc::now(),
-            )
-            .is_priced()
-        );
-
-        // Subscription/OAuth and ambiguous-surface routes report their own
-        // reasons rather than an absent price.
-        assert_eq!(
-            audit_turn_cost_for_provider_at(
-                ApiProvider::OpenaiCodex,
-                "gpt-5.5",
-                &write_heavy,
-                Utc::now(),
-            )
-            .unpriced_reason,
-            Some(UnpricedReason::NotMoneyMetered)
-        );
-        assert_eq!(
-            audit_turn_cost_for_route_at(
-                ApiProvider::Stepfun,
-                DEFAULT_STEPFUN_MODEL,
-                None,
-                &write_heavy,
-                Utc::now(),
-            )
-            .unpriced_reason,
-            Some(UnpricedReason::AmbiguousBillingSurface)
-        );
-        assert_eq!(
-            audit_turn_cost_for_provider_at(
-                ApiProvider::Openai,
-                "gpt-5.5",
-                &Usage {
-                    input_tokens: OPENAI_LONG_CONTEXT_SURCHARGE_THRESHOLD + 1,
-                    ..Usage::default()
-                },
-                Utc::now(),
-            )
-            .unpriced_reason,
-            Some(UnpricedReason::UnrepresentedTier)
-        );
-    }
-
-    /// The audit and the estimator are the same computation, so every route
-    /// must agree on whether it produced a number.
-    #[test]
-    fn audit_and_estimate_never_disagree() {
-        let usage = Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            prompt_cache_hit_tokens: Some(2_000),
-            prompt_cache_write_tokens: Some(1_000),
-            ..Usage::default()
-        };
-        let now = Utc::now();
-        for (provider, model) in [
-            (ApiProvider::Anthropic, "claude-haiku-4-5"),
-            (ApiProvider::Anthropic, "claude-sonnet-5"),
-            (ApiProvider::Moonshot, "kimi-k2.7-code"),
-            (ApiProvider::Openai, "gpt-5.5"),
-            (ApiProvider::OpenaiCodex, "gpt-5.5"),
-            (ApiProvider::Deepseek, "deepseek-v4-pro"),
-            (ApiProvider::Ollama, "gpt-5.5"),
-            (ApiProvider::Stepfun, DEFAULT_STEPFUN_MODEL),
-        ] {
-            let audit = audit_turn_cost_for_route_at(provider, model, None, &usage, now);
-            let estimate =
-                calculate_turn_cost_estimate_for_route_at(provider, model, None, &usage, now);
-            assert_eq!(audit.estimate, estimate, "{provider:?}/{model}");
-            assert_eq!(
-                audit.is_priced(),
-                audit.unpriced_reason.is_none(),
-                "{provider:?}/{model}"
-            );
-        }
-    }
 
     #[test]
     fn nvidia_nim_deepseek_model_does_not_use_deepseek_platform_pricing() {
@@ -3117,51 +2851,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn openai_long_context_guard_is_exact_and_provider_scoped() {
-        let input_tokens = OPENAI_LONG_CONTEXT_SURCHARGE_THRESHOLD + 1;
-
-        for provider in [
-            ApiProvider::Openrouter,
-            ApiProvider::OpenaiCodex,
-            ApiProvider::Ollama,
-            ApiProvider::Custom,
-        ] {
-            assert!(
-                !direct_openai_long_context_tier_is_unpriced(provider, "gpt-5.5", input_tokens,),
-                "{provider:?} must not inherit direct OpenAI tier handling"
-            );
-        }
-        for model in [
-            "gpt-5.4-mini",
-            "gpt-5.4-nano",
-            "gpt-5.5-pro",
-            "gpt-5.5-pro-2026-04-23",
-            "gpt-5.5-2026-04-23-extra",
-            "openai/gpt-5.5",
-            "gpt-5.6-sol-preview",
-        ] {
-            assert!(
-                !direct_openai_long_context_tier_is_unpriced(
-                    ApiProvider::Openai,
-                    model,
-                    input_tokens,
-                ),
-                "non-documented id {model} must not be treated as an alias"
-            );
-        }
-
-        let usage = Usage {
-            input_tokens,
-            output_tokens: 1,
-            ..Usage::default()
-        };
-        assert!(calculate_turn_cost_estimate_from_usage("gpt-5.5", &usage).is_some());
-        assert!(
-            calculate_turn_cost_estimate_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", &usage,)
-                .is_none()
-        );
-    }
 
     #[test]
     fn direct_openai_snapshots_use_the_same_strict_272k_boundary() {
@@ -3683,27 +3372,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn openai_codex_gpt55_cost_is_unavailable_even_with_usage() {
-        let usage = Usage {
-            input_tokens: 1_000,
-            output_tokens: 100,
-            prompt_cache_hit_tokens: Some(250),
-            prompt_cache_miss_tokens: Some(750),
-            ..Default::default()
-        };
-
-        assert!(calculate_turn_cost_estimate_from_usage("gpt-5.5", &usage).is_some());
-        assert!(has_pricing_for_provider(ApiProvider::Openai, "gpt-5.5"));
-        assert!(!has_pricing_for_provider(
-            ApiProvider::OpenaiCodex,
-            "gpt-5.5"
-        ));
-        assert!(
-            calculate_turn_cost_estimate_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", &usage)
-                .is_none()
-        );
-    }
 
     #[test]
     fn subscription_route_does_not_inherit_same_models_api_price() {

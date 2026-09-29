@@ -1,5 +1,5 @@
 /**
- * Worktree + handoff panel — Codex workbench chrome.
+ * Worktree + handoff panel.
  */
 
 import { useEffect, useState } from 'react'

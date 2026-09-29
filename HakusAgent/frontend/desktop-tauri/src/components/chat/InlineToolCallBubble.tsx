@@ -27,7 +27,7 @@ interface InlineToolCallBubbleProps {
 }
 
 /**
- * InlineToolCallBubble — ChatGPT/Codex 桌面端风格的工具调用披露行。
+ * InlineToolCallBubble — 工具调用披露行。
  *
  * 折叠态是一行紧凑摘要：图标 + 工具名 + 截断的参数摘要 + 耗时 + 状态，
  * 绝不平铺 raw JSON。点击整行展开参数与结果的格式化 JSON（缩进、
@@ -57,7 +57,7 @@ const TOOL_LABELS: Record<string, string> = {
   task: '创建子任务',
   tool_search: '搜索工具',
   code_execution: '执行代码',
-  // 线程即工具（Codex-style thread ops）
+  // 线程即工具
   create_thread: '创建子会话',
   fork_thread: '派生会话',
   send_message_to_thread: '发送到子会话',
@@ -242,7 +242,7 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({ toolCal
 
   return (
     <div className="chat-tool-call w-full min-w-0 py-0.5" data-tool-call={toolCall.call_id}>
-      {/* 折叠态：单行紧凑摘要（Codex agent-activity 风格） */}
+      {/* 折叠态：单行紧凑摘要 */}
       <button
         type="button"
         onClick={() => hasDetails && setExpanded((v) => !v)}

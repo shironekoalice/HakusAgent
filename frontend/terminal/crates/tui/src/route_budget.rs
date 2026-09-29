@@ -122,11 +122,6 @@ const UNCATALOGUED_COMPAT_MAX_OUTPUT_TOKENS: u32 = 8_192;
 /// fact, so it clamps under an `unverified` label.
 const ANTHROPIC_UNKNOWN_MAX_OUTPUT_TOKENS: u32 = 64_000;
 
-/// Assumed output ceiling for the ChatGPT/Codex OAuth route, which publishes
-/// no output ceiling of its own (#5440). Same clamp as the long-standing 4K
-/// policy — relabeled, not revalued.
-const CODEX_OAUTH_MAX_OUTPUT_TOKENS: u32 = 4_096;
-
 /// Why a route's compatibility output ceiling has the value it does.
 ///
 /// Carried so a clamp is always attributable: "unknown" is only allowed to
@@ -145,8 +140,7 @@ pub(crate) enum OutputCeilingSource {
     Uncatalogued(u32),
     /// The route publishes no ceiling we can stand behind, but a defensible
     /// floor is still applied: an Anthropic-family model the catalogue does
-    /// not describe (64K Messages floor) and the Codex OAuth route (4K
-    /// policy). Clamping trades late provider failure for early truncation;
+    /// not describe (64K Messages floor). Clamping trades late provider failure for early truncation;
     /// lying about why is not part of that trade, so receipts and pickers
     /// must render this as an assumption, never as "documented" (#5440).
     Unverified(u32),
@@ -201,9 +195,6 @@ pub(crate) fn output_ceiling_source(provider: ApiProvider, model: &str) -> Outpu
     // #5440: two routes clamp to a number the route itself never documented.
     // The clamps stay (see `OutputCeilingSource::Unverified`); the labels must
     // not borrow the documented rung's authority.
-    if provider == ApiProvider::OpenaiCodex {
-        return OutputCeilingSource::Unverified(CODEX_OAUTH_MAX_OUTPUT_TOKENS);
-    }
     if matches!(
         provider,
         ApiProvider::Anthropic | ApiProvider::MinimaxAnthropic | ApiProvider::Openmodel
@@ -478,44 +469,7 @@ mod tests {
         assert_eq!(source.clamp_tokens(), Some(128_000));
     }
 
-    /// #5440: the Codex OAuth route clamps every response to 4K by policy,
-    /// because the OAuth cache publishes no ceiling. The clamp stands; the
-    /// receipt must call the number what it is.
-    #[test]
-    fn codex_oauth_ceiling_clamps_but_never_claims_documented() {
-        let source = output_ceiling_source(ApiProvider::OpenaiCodex, "gpt-5.5");
-        assert_eq!(source, OutputCeilingSource::Unverified(4_096));
-        assert_eq!(source.as_str(), "unverified");
-        assert_eq!(source.clamp_tokens(), Some(4_096));
-        assert_eq!(
-            effective_max_output_tokens_for_route(ApiProvider::OpenaiCodex, "gpt-5.5", None),
-            4_096,
-            "the honesty relabel must not revalue the long-standing clamp"
-        );
-    }
 
-    #[test]
-    fn codex_missing_route_metadata_uses_provider_context_floor() {
-        assert_eq!(
-            route_context_window_tokens(ApiProvider::OpenaiCodex, "gpt-5.5", None),
-            128_000
-        );
-        // 80% of the 128K window (102_400) fits under the input ceiling.
-        assert_eq!(
-            compaction_threshold_for_route_at_percent(
-                ApiProvider::OpenaiCodex,
-                "gpt-5.5",
-                None,
-                80.0,
-            ),
-            102_400
-        );
-        assert!(auto_compact_default_for_route(
-            ApiProvider::OpenaiCodex,
-            "gpt-5.5",
-            None,
-        ));
-    }
 
     #[test]
     fn v4_trigger_uses_window_percent_when_it_fits_spendable_input() {

@@ -23,6 +23,7 @@ export type RightPanelTab =
   | 'flow'
   | 'session_log'
   | 'terminal'
+  | 'browser'
   | 'logs'
   | 'artifact'
 export type SettingsCategory =
@@ -57,7 +58,7 @@ interface AppStore {
   sidebarCompact: boolean
   setSidebarCompact: (compact: boolean) => void
 
-  // Right panel (Codex-style review/terminal pane + opened artifacts)
+  // Right panel (review/terminal pane + opened artifacts)
   rightPanelOpen: boolean
   rightPanelTab: RightPanelTab
   /** Last artifact opened from AI output; shown in the 'artifact' tab. */

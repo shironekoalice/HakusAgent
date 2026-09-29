@@ -1,4 +1,4 @@
-//! OpenAI Responses API bridge for the OpenAI Codex / ChatGPT provider.
+//! Provider-neutral OpenAI Responses API bridge.
 //!
 //! Implements a dedicated Responses API client that maps CodeWhale's internal
 //! message/tool types to the Responses wire format and parses streaming SSE
@@ -24,13 +24,10 @@ use super::{
     system_to_instructions, to_api_tool_name,
 };
 
-/// Base URL path for the Codex Responses endpoint.
-pub(super) const CODEX_RESPONSES_PATH: &str = "/codex/responses";
-
 /// Build the Responses API request body from a `MessageRequest`.
 #[cfg(test)]
 pub(super) fn build_responses_body(request: &MessageRequest) -> Value {
-    build_responses_body_for_provider(request, ApiProvider::OpenaiCodex)
+    build_responses_body_for_provider(request, ApiProvider::Openai)
 }
 
 /// Build a provider-aware Responses API request body.
@@ -68,8 +65,7 @@ pub(super) fn build_responses_body_for_provider(
         }
     }
 
-    // Instructions (system prompt). The Codex Responses backend rejects
-    // requests without instructions, so fall back to a minimal system
+    // Responses requests require instructions, so provide a minimal system
     // prompt when the caller did not supply one.
     let instructions = system_to_instructions(request.system.clone())
         .filter(|text| !text.trim().is_empty())
@@ -90,13 +86,9 @@ pub(super) fn build_responses_body_for_provider(
         }
     }
 
-    // Reasoning configuration. The Codex Responses backend accepts
-    // low/medium/high/xhigh, so provider-aware callers normalize inherited
-    // DeepSeek-only values before request construction: "off" becomes
-    // "low", and CodeWhale's "auto" falls back to "medium". DeepSeek's
-    // Responses API documents `reasoning.effort: "none"` to disable
-    // thinking, so its branch sends "none" for the off tier instead of
-    // collapsing it into low (see `responses_reasoning_effort`).
+    // Provider-aware callers normalize effort labels before request
+    // construction. DeepSeek documents `reasoning.effort: "none"` to disable
+    // thinking, so its branch sends "none" for the off tier.
     if let Some(raw) = request.reasoning_effort.as_deref()
         && let Some(effort) = responses_reasoning_effort(raw, is_deepseek)
     {
@@ -110,8 +102,7 @@ pub(super) fn build_responses_body_for_provider(
         };
     }
 
-    // OpenAI Codex can replay encrypted reasoning. DeepSeek exposes plain
-    // `reasoning_text` and does not support `include`.
+    // DeepSeek exposes plain `reasoning_text` and does not support `include`.
     if !is_deepseek {
         body["include"] = json!(["reasoning.encrypted_content"]);
     }
@@ -120,7 +111,7 @@ pub(super) fn build_responses_body_for_provider(
 }
 
 impl DeepSeekClient {
-    /// Handle a streaming Responses API request for the OpenAI Codex provider.
+    /// Handle a streaming Responses API request.
     pub(super) async fn handle_responses_stream(
         &self,
         prepared: &super::PreparedOutboundRequest,
@@ -128,7 +119,6 @@ impl DeepSeekClient {
         // Body, endpoint, and route shape all come from the shared
         // prepared-request seam (`prepare_outbound_request`).
         let body = &prepared.body;
-        let is_codex = prepared.endpoint.shape == super::RouteShape::CodexResponses;
         let url = prepared.endpoint.url.clone();
         // The synthetic MessageStart below is emitted from inside the stream
         // closure, which outlives `prepared`. Clone the wire model — the id
@@ -136,21 +126,16 @@ impl DeepSeekClient {
         // remapping — rather than borrowing the request that no longer exists
         // at this layer.
         let wire_model = prepared.wire_model.clone();
-        let reasoning_origin = (self.api_provider == ApiProvider::OpenaiCodex)
-            .then(|| (self.api_provider.as_str().to_string(), wire_model.clone()));
-
-        // The bearer Authorization header is already installed as a default
-        // header on both the dual and the HTTP/1.1 twin client (resolved from
-        // the Codex OAuth access token), so it must not be set again here or
-        // it would be duplicated. The ChatGPT backend additionally requires
-        // the account id and the experimental Responses beta opt-in.
-        //
         // The open itself goes through the shared stream-entry transport
         // policy: bounded header wait, policy-selected client, and at most
         // one HTTP/1.1 fallback retry on a classified H2 header stall. The
         // pre-existing provider retry loop (rate limit / transient upstream)
         // stays inside each open attempt, before any stream body exists.
-        let account_id = self.codex_account_id.clone();
+        let reasoning_origin = (!matches!(
+            self.api_provider,
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN
+        ))
+        .then(|| (self.api_provider.as_str().to_string(), wire_model.clone()));
         let request_body =
             serde_json::to_vec(&body).context("Failed to serialize Responses API request body")?;
         let open_req = super::stream_entry::StreamOpenRequest::new(
@@ -159,7 +144,6 @@ impl DeepSeekClient {
         );
         let response = super::stream_entry::open_sse_response(&open_req, |policy| {
             let url = url.clone();
-            let account_id = account_id.clone();
             let request_body = request_body.clone();
             async move {
                 let client = super::stream_entry::client_for_policy(
@@ -168,18 +152,10 @@ impl DeepSeekClient {
                     policy,
                 );
                 self.send_with_retry(|| {
-                    let mut builder = client
+                    let builder = client
                         .post(&url)
                         .header("Content-Type", "application/json")
                         .header("Accept", "text/event-stream");
-                    if is_codex {
-                        builder = builder
-                            .header("OpenAI-Beta", "responses=experimental")
-                            .header("originator", "codex_cli_rs");
-                        if let Some(account_id) = &account_id {
-                            builder = builder.header("chatgpt-account-id", account_id);
-                        }
-                    }
                     builder.body(request_body.clone())
                 })
                 .await

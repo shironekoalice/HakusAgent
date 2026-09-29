@@ -760,13 +760,10 @@ fn tier_of(effort: ReasoningEffort) -> Option<ReasoningTier> {
 /// The **provider-facing** reasoning value for one tier on one exact route.
 ///
 /// A tier label (`off`, `max`) is a selector concept; what a request may carry
-/// is a provider concept, and the two are not the same string. OpenAI Codex
-/// routes spell the top tier `xhigh` and cannot express `off` at all, so
-/// placing a bare tier label on a Codex request either sends a value the
-/// provider does not accept or silently sends nothing and takes the provider
-/// default while the receipt claims the tier. Reading the value back out of the
-/// same route normalizer the client uses is what keeps the request and the
-/// receipt describing each other.
+/// is a provider concept, and the two are not the same string. Each route's
+/// normalizer maps selector tiers to values accepted by that endpoint. Reading
+/// the value back out of the same route normalizer the client uses keeps the
+/// request and receipt describing each other.
 #[must_use]
 pub(crate) fn route_reasoning_setting(
     provider: ApiProvider,
@@ -3270,51 +3267,6 @@ call_reasoning = "low"
         );
     }
 
-    /// A tier label is a selector concept; what a request may carry is a
-    /// provider concept. The value placed on a call must come from the route
-    /// normalizer the client actually uses, or a Codex-routed Router is called
-    /// at the provider default while its receipt claims a tier.
-    #[test]
-    fn a_call_reasoning_value_is_shaped_by_the_configured_route_not_a_tier_label() {
-        // A tiered non-Codex route spells the tiers the ordinary way, after
-        // the same route normalization the client performs (first-party
-        // DeepSeek keeps a real `low`; medium still rounds up to high).
-        for (tier, expected) in [
-            (ReasoningTier::Off, "off"),
-            (ReasoningTier::High, "high"),
-            (ReasoningTier::Max, "max"),
-        ] {
-            assert_eq!(
-                route_reasoning_setting(
-                    ApiProvider::Deepseek,
-                    crate::config::DEFAULT_DEEPSEEK_BASE_URL,
-                    "deepseek-v4-pro",
-                    tier,
-                ),
-                expected,
-                "{tier:?} on a deepseek route"
-            );
-        }
-
-        // Codex is the case a bare tier label gets wrong in both directions:
-        // it has no `off`, and its top tier is spelled `xhigh`.
-        let codex = |tier| {
-            route_reasoning_setting(
-                ApiProvider::OpenaiCodex,
-                "https://chatgpt.com/backend-api/codex",
-                "gpt-5.6-codex",
-                tier,
-            )
-        };
-        assert_eq!(codex(ReasoningTier::Max), "xhigh");
-        assert_eq!(codex(ReasoningTier::Low), "low");
-        assert_ne!(
-            codex(ReasoningTier::Off),
-            "off",
-            "an always-thinking route cannot be asked for `off`; sending the label \
-             would take the provider default while the receipt claimed a tier"
-        );
-    }
 
     /// An unresolvable provider fails preflight rather than reaching a launch.
     #[test]

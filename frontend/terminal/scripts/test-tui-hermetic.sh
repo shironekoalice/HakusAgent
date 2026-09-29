@@ -26,7 +26,7 @@ while [ "$run" -le "$runs" ]; do
   root=$(mktemp -d "${TMPDIR:-/tmp}/hakus-tui-test.XXXXXX")
   cleanup_roots="$cleanup_roots $root"
   mkdir -p "$root/home" "$root/hakus-home" "$root/xdg"
-  mkdir -p "$root/codex" "$root/grok" "$root/kimi-code" "$root/kimi-share" "$root/claude"
+  mkdir -p "$root/grok" "$root/kimi-code" "$root/kimi-share" "$root/claude"
   printf '%s\n' "hermetic TUI run $run/$runs: $root"
   (
     cd "$repo_root"
@@ -35,7 +35,6 @@ while [ "$run" -le "$runs" ]; do
     HAKUS_HOME="$root/hakus-home" \
     XDG_CONFIG_HOME="$root/xdg" \
     HAKUS_CONFIG_PATH="$root/hakus-home/config.toml" \
-    CODEX_HOME="$root/codex" \
     GROK_HOME="$root/grok" \
     GROK_AUTH_PATH="$root/grok/auth.json" \
     KIMI_CODE_HOME="$root/kimi-code" \

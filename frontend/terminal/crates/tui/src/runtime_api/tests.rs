@@ -6,6 +6,7 @@ use crate::runtime_threads::RuntimeEventRecord;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use anyhow::{Context, bail};
 use futures_util::StreamExt;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -41,13 +42,13 @@ fn runtime_session_fallback_retains_non_unicode_explicit_home_boundary() {
     let _lock = lock_test_env();
     let tmp = tempfile::tempdir().expect("temporary root");
     let home = tmp.path().join("home");
-    let explicit = tmp.path().join(std::ffi::OsString::from_vec(
-        b"hakus-\xff-home".to_vec(),
-    ));
+    let explicit = tmp
+        .path()
+        .join(std::ffi::OsString::from_vec(b"hakus-\xff-home".to_vec()));
     let _home = EnvVarGuard::set("HOME", &home);
     let _hakus_home = EnvVarGuard::set("HAKUS_HOME", &explicit);
 
-    assert_eq!(fallback_sessions_dir(), explicit.join("sessions"));
+    assert_eq!(default_sessions_dir().expect("sessions dir"), explicit.join("sessions"));
 }
 
 #[test]
@@ -57,6 +58,28 @@ fn thread_route_credential_error_is_bad_request_not_not_found() {
 
     let missing = map_thread_err(anyhow::anyhow!("thread 'thr_missing' not found"));
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn wechat_command_parser_recognizes_menu_commands_and_preserves_plain_messages() {
+    assert_eq!(parse_wechat_command("/帮助"), Some(WechatCommand::Help));
+    assert_eq!(parse_wechat_command("/clear"), Some(WechatCommand::New));
+    assert_eq!(
+        parse_wechat_command("/项目 HakusAgent"),
+        Some(WechatCommand::Project(Some("HakusAgent".to_string())))
+    );
+    assert_eq!(
+        parse_wechat_command("/mode code"),
+        Some(WechatCommand::Mode(Some("code".to_string())))
+    );
+    for command in [
+        "/帮助", "/状态", "/新建", "/clear", "/项目", "/模型", "/模式", "/思考", "/回复",
+        "/bind",
+    ] {
+        assert!(parse_wechat_command(command).is_some(), "{command}");
+    }
+    assert_eq!(parse_wechat_command("请帮我看看这个项目"), None);
+    assert!(wechat_help_text().contains("/状态"));
 }
 
 #[test]
@@ -936,6 +959,10 @@ async fn spawn_test_server_with_root_token_mobile_workspace_and_overrides(
         wechat: Arc::new(Mutex::new(WechatRuntimeState {
             client: hakus_wechat::IlLinkClient::new(root.join("wechat")),
             login: None,
+            auto_reply: false,
+            poll_lock: Arc::new(Mutex::new(())),
+            threads: HashMap::new(),
+            users: HashMap::new(),
         })),
         started_at: Instant::now(),
     };
@@ -3796,10 +3823,8 @@ async fn session_resume_thread_returns_404_for_missing_session() -> Result<()> {
 
 #[tokio::test]
 async fn session_resume_thread_returns_400_when_saved_custom_provider_was_removed() -> Result<()> {
-    let root = std::env::temp_dir().join(format!(
-        "hakus-session-removed-provider-{}",
-        Uuid::new_v4()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("hakus-session-removed-provider-{}", Uuid::new_v4()));
     let sessions_dir = root.join("sessions");
     fs::create_dir_all(&sessions_dir)?;
     let session = json!({
@@ -6094,8 +6119,7 @@ async fn set_config_validates_subagents_max_depth_input() -> Result<()> {
 async fn set_config_with_config_path_writes_to_specified_file() -> Result<()> {
     // Fix #2: when the server is started with --config, set_config must
     // persist to that specific file rather than the default discovery path.
-    let root =
-        std::env::temp_dir().join(format!("hakus-config-path-persist-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("hakus-config-path-persist-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(&config_file, "# initial\n")?;
@@ -6232,10 +6256,8 @@ async fn get_provider_models(
 
 #[tokio::test]
 async fn get_config_returns_active_provider_model() -> Result<()> {
-    let root = std::env::temp_dir().join(format!(
-        "hakus-config-active-provider-{}",
-        Uuid::new_v4()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("hakus-config-active-provider-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(
@@ -6504,8 +6526,7 @@ async fn reload_config_reads_from_config_path_and_updates_in_memory_state() -> R
     // If Fix #2 is reverted (reload uses Config::load(None, None) instead of
     // state.config_path), the reload will read an empty/default config and
     // the persisted value will NOT appear in GET /v1/config → test fails.
-    let root =
-        std::env::temp_dir().join(format!("hakus-config-reload-path-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("hakus-config-reload-path-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(&config_file, "# initial\n")?;
@@ -6818,10 +6839,7 @@ async fn switch_provider_with_deepseek_and_explicit_model_updates_default_text_m
     // endpoint must persist `default_text_model` (the DeepSeek-specific
     // root key) in addition to the provider change, mirroring
     // `switch_provider` in ui.rs which pins `default_model` for DeepSeek.
-    let root = std::env::temp_dir().join(format!(
-        "hakus-switch-deepseek-model-{}",
-        Uuid::new_v4()
-    ));
+    let root = std::env::temp_dir().join(format!("hakus-switch-deepseek-model-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(
@@ -6879,8 +6897,7 @@ async fn switch_provider_empty_model_string_treated_as_no_override() -> Result<(
     // An empty string model (`{ "model": "" }`) must be treated the same
     // as no model at all — the endpoint should NOT persist a model key,
     // matching the TUI's behavior where a blank model arg is ignored.
-    let root =
-        std::env::temp_dir().join(format!("hakus-switch-empty-model-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("hakus-switch-empty-model-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(
@@ -6931,8 +6948,7 @@ model = "glm-2"
 async fn switch_provider_persists_provider_key_on_disk() -> Result<()> {
     // Verify that the root `provider = "..."` key is correctly written to
     // the config file on disk, not just in the response body.
-    let root =
-        std::env::temp_dir().join(format!("hakus-switch-provider-disk-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("hakus-switch-provider-disk-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(
@@ -6970,10 +6986,8 @@ model = "glm-2"
 
 #[tokio::test]
 async fn zai_model_update_is_provider_scoped_and_preserves_deepseek_fallback() -> Result<()> {
-    let root = std::env::temp_dir().join(format!(
-        "hakus-config-zai-model-scope-{}",
-        Uuid::new_v4()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("hakus-config-zai-model-scope-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(
@@ -7040,10 +7054,7 @@ model = "GLM-5.2"
 
 #[tokio::test]
 async fn reload_config_preserves_profile_selected_named_custom_route() -> Result<()> {
-    let root = std::env::temp_dir().join(format!(
-        "hakus-config-reload-profile-{}",
-        Uuid::new_v4()
-    ));
+    let root = std::env::temp_dir().join(format!("hakus-config-reload-profile-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(
@@ -7099,8 +7110,7 @@ async fn reload_config_refreshes_mcp_config_path() -> Result<()> {
     // this test would fail because the old field wouldn't update. Since we
     // removed the stale field and read directly from config, this test also
     // validates that architectural decision.
-    let root =
-        std::env::temp_dir().join(format!("hakus-config-mcp-refresh-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("hakus-config-mcp-refresh-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(&config_file, "# initial\n")?;
@@ -7217,8 +7227,7 @@ async fn set_config_subagents_max_depth_below_ceiling_not_clamped() -> Result<()
     // Verify that values at and below the ceiling pass through unchanged.
     // The existing clamping test only verifies over-ceiling clamping; this
     // test ensures legitimate values are not accidentally modified.
-    let root =
-        std::env::temp_dir().join(format!("hakus-config-depth-noclamp-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("hakus-config-depth-noclamp-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(&config_file, "# initial\n")?;
@@ -7351,10 +7360,7 @@ async fn reload_config_with_malformed_file_returns_error() -> Result<()> {
 
 #[tokio::test]
 async fn set_config_model_follows_persisted_provider_before_reload() -> Result<()> {
-    let root = std::env::temp_dir().join(format!(
-        "hakus-config-provider-model-{}",
-        Uuid::new_v4()
-    ));
+    let root = std::env::temp_dir().join(format!("hakus-config-provider-model-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");
     fs::write(
@@ -7949,9 +7955,7 @@ fn fleet_receipt_json_pass_result_has_no_failure_fields() {
 
 #[test]
 fn fleet_receipt_json_verifier_failure_is_not_retry_eligible() {
-    use hakus_protocol::fleet::{
-        FleetReceipt, FleetRunId, FleetTaskFailureKind, FleetTaskResult,
-    };
+    use hakus_protocol::fleet::{FleetReceipt, FleetRunId, FleetTaskFailureKind, FleetTaskResult};
     let receipt = FleetReceipt {
         run_id: FleetRunId::from("run-v"),
         task_id: "task-v".to_string(),
@@ -7980,9 +7984,7 @@ fn fleet_receipt_json_verifier_failure_is_not_retry_eligible() {
 
 #[test]
 fn fleet_receipt_json_transport_failure_is_retry_eligible() {
-    use hakus_protocol::fleet::{
-        FleetReceipt, FleetRunId, FleetTaskFailureKind, FleetTaskResult,
-    };
+    use hakus_protocol::fleet::{FleetReceipt, FleetRunId, FleetTaskFailureKind, FleetTaskResult};
     let receipt = FleetReceipt {
         run_id: FleetRunId::from("run-t"),
         task_id: "task-t".to_string(),
@@ -8729,8 +8731,7 @@ async fn mcp_server_management_crud() -> Result<()> {
 
 #[tokio::test]
 async fn mcp_server_management_create_requires_command_or_url() -> Result<()> {
-    let root =
-        std::env::temp_dir().join(format!("hakus-mcp-mgmt-validation-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("hakus-mcp-mgmt-validation-{}", Uuid::new_v4()));
     let sessions_dir = root.join("sessions");
     fs::create_dir_all(&root)?;
 

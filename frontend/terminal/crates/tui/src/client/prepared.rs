@@ -86,8 +86,6 @@ pub(crate) enum RouteShape {
     KimiCodeK3,
     /// The exact pay-as-you-go Moonshot K3 route (fixed sampling).
     DirectMoonshotK3,
-    /// The ChatGPT backend Responses path used by the Codex provider.
-    CodexResponses,
     /// OpenCode Zen, whose model route re-resolves the wire model per request.
     OpencodeZen,
     /// A user-configured custom/compatible endpoint on a standard dialect.
@@ -103,7 +101,6 @@ impl RouteShape {
             Self::DeepseekBetaStrictTools => "deepseek-beta-strict-tools",
             Self::KimiCodeK3 => "kimi-code-k3",
             Self::DirectMoonshotK3 => "direct-moonshot-k3",
-            Self::CodexResponses => "codex-responses",
             Self::OpencodeZen => "opencode-zen",
             Self::CustomCompatible => "custom-compatible",
             Self::CloudCode => "cloud-code",
@@ -1457,53 +1454,6 @@ mod dialect_seam_tests {
         }
     }
 
-    /// Codex resolves its bearer through OAuth, so the test pins a token the
-    /// same way the Responses adapter's own tests do.
-    fn codex_client() -> DeepSeekClient {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _codex_token =
-            crate::test_support::EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "test-token");
-        let _legacy_codex_token = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        client("openai-codex", |providers| {
-            providers.openai_codex = configured("", None, "gpt-5-codex");
-        })
-    }
-
-    #[test]
-    fn responses_preview_matches_the_production_responses_builder() {
-        let client = codex_client();
-        let prepared = client
-            .prepare_outbound_request(request("gpt-5-codex"), true)
-            .expect("responses request prepares");
-
-        assert_eq!(prepared.dialect, WireDialect::OpenAiResponses);
-        assert_eq!(prepared.endpoint.shape, RouteShape::CodexResponses);
-
-        let reference = super::super::responses::build_responses_body(&preprocessed(
-            &client,
-            request("gpt-5-codex"),
-        ));
-        assert_eq!(prepared.body_sha256(), sha256(&canonical_json(&reference)));
-        assert_eq!(prepared.body.get("tool_choice"), Some(&json!("auto")));
-    }
-
-    #[test]
-    fn every_dialect_reports_a_distinct_body_hash_for_the_same_logical_request() {
-        // Guards against the reviewed failure mode: projecting every route
-        // through the Chat builder would make these collide.
-        let chat = client("deepseek", |providers| {
-            providers.deepseek = configured("sk-test-deepseek", None, "deepseek-chat");
-        })
-        .prepare_outbound_request(request("deepseek-chat"), true)
-        .expect("chat prepares");
-        let codex = codex_client();
-        let responses = codex
-            .prepare_outbound_request(request("gpt-5-codex"), true)
-            .expect("responses prepares");
-
-        assert_ne!(chat.dialect, responses.dialect);
-        assert_ne!(chat.body_sha256(), responses.body_sha256());
-    }
 
     #[test]
     fn streaming_and_blocking_bodies_are_distinguished_not_conflated() {
@@ -1530,32 +1480,6 @@ mod dialect_seam_tests {
     /// stream and folds it into one response, so its body says
     /// `"stream": true` while the caller mode is blocking. The manifest must
     /// read the body, never the caller mode.
-    #[test]
-    fn responses_wire_streaming_is_read_from_the_body_not_the_caller_mode() {
-        let client = codex_client();
-        let blocking = client
-            .prepare_outbound_request(request("gpt-5-codex"), false)
-            .expect("blocking responses prepares");
-
-        assert_eq!(blocking.entrypoint, CallerStreamMode::Blocking);
-        assert_eq!(
-            blocking.wire_stream_field(),
-            Some(true),
-            "the Responses blocking path genuinely sends an SSE body"
-        );
-
-        let streaming = client
-            .prepare_outbound_request(request("gpt-5-codex"), true)
-            .expect("streaming responses prepares");
-        assert_eq!(streaming.wire_stream_field(), Some(true));
-        assert_eq!(
-            streaming.body_sha256(),
-            blocking.body_sha256(),
-            "the two Responses entry points send the same bytes; only the \
-             caller mode differs"
-        );
-    }
-
     #[test]
     fn preparation_is_deterministic_across_repeated_calls() {
         let client = client("deepseek", |providers| {

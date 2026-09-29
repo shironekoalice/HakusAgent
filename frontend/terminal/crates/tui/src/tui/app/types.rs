@@ -83,12 +83,11 @@ impl AppModeUi for AppMode {
     }
 }
 
-/// Reasoning-effort tier, mirrored across DeepSeek and Codex effort pickers.
+/// Reasoning-effort tier shared across provider pickers.
 ///
 /// The config file accepts every supported string value for forward-compat with
 /// providers that expose the full spectrum; DeepSeek currently collapses
-/// `Low`/`Medium` → `high`. OpenAI Codex normalizes inherited DeepSeek-only
-/// `Off` to `Low` and displays/sends `Max` as `xhigh` at the provider
+/// `Low`/`Medium` → `high`. Provider-aware normalization happens at the route
 /// boundary. The default keyboard cycler walks the three DeepSeek-distinct
 /// tiers: `Off` → `High` → `Max` → `Off`; provider-aware callers should use
 /// [`ReasoningEffort::cycle_next_for_provider`]. Auto routing has no concrete
@@ -275,11 +274,6 @@ impl ReasoningEffort {
     #[must_use]
     pub fn display_label_for_provider(self, provider: ApiProvider) -> &'static str {
         match (provider, self.normalize_for_provider(provider)) {
-            (ApiProvider::OpenaiCodex, Self::Minimal) => "low",
-            (ApiProvider::OpenaiCodex, Self::Low) => "low",
-            (ApiProvider::OpenaiCodex, Self::Medium) => "medium",
-            (ApiProvider::OpenaiCodex, Self::High) => "high",
-            (ApiProvider::OpenaiCodex, Self::XHigh | Self::Ultra | Self::Max) => "xhigh",
             (ApiProvider::Xai, Self::XHigh) => "xhigh",
             (_, effort) => effort.short_label(),
         }
@@ -294,15 +288,8 @@ impl ReasoningEffort {
     }
 
     #[must_use]
-    pub fn normalize_for_provider(self, provider: ApiProvider) -> Self {
-        if provider != ApiProvider::OpenaiCodex {
-            return self;
-        }
-        match self {
-            Self::Off => Self::Low,
-            Self::Auto => Self::Medium,
-            other => other,
-        }
+    pub fn normalize_for_provider(self, _provider: ApiProvider) -> Self {
+        self
     }
 
     /// Resolve an effort against the exact provider route that will receive
@@ -313,7 +300,7 @@ impl ReasoningEffort {
     /// low/high/max) while rounding `medium` up to `high`. Models that publish
     /// a Models.dev `reasoning_options` effort list keep that vocabulary
     /// instead of the historic Low/Medium collapse. Generic Moonshot and
-    /// every other non-Codex route retain the historic high coercion.
+    /// other routes retain their documented or conservative coercion.
     /// This intentionally does not change [`Self::normalize_for_provider`],
     /// whose generic wire semantics are used by older callers that do not yet
     /// have a route receipt.
@@ -337,9 +324,6 @@ impl ReasoningEffort {
                 Self::Medium => Self::High,
                 other => other,
             };
-        }
-        if provider == ApiProvider::OpenaiCodex {
-            return normalized;
         }
         // First-party DeepSeek routes document `reasoning_effort` low/high/max
         // on the wire (no medium), so `low` is a real, cheaper tier there and
@@ -452,21 +436,8 @@ impl ReasoningEffort {
     }
 
     #[must_use]
-    pub fn api_value_for_provider(self, provider: ApiProvider) -> Option<&'static str> {
-        if provider != ApiProvider::OpenaiCodex {
-            return self.api_value();
-        }
-        Some(match self.normalize_for_provider(provider) {
-            Self::Minimal => "low",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::XHigh => "xhigh",
-            Self::Ultra => "xhigh",
-            Self::Max => "xhigh",
-            Self::Off => "low",
-            Self::Auto => "medium",
-        })
+    pub fn api_value_for_provider(self, _provider: ApiProvider) -> Option<&'static str> {
+        self.api_value()
     }
 
     /// Provider-facing value after exact-route normalization.
@@ -514,20 +485,8 @@ impl ReasoningEffort {
 
     #[must_use]
     #[allow(dead_code)]
-    pub fn cycle_next_for_provider(self, provider: ApiProvider) -> Self {
-        if provider != ApiProvider::OpenaiCodex {
-            return self.cycle_next();
-        }
-        match self.normalize_for_provider(provider) {
-            Self::Minimal => Self::Low,
-            Self::Low => Self::Medium,
-            Self::Medium => Self::High,
-            Self::High => Self::Max,
-            Self::XHigh => Self::Low,
-            Self::Ultra => Self::Low,
-            Self::Max => Self::Low,
-            Self::Off | Self::Auto => Self::Low,
-        }
+    pub fn cycle_next_for_provider(self, _provider: ApiProvider) -> Self {
+        self.cycle_next()
     }
 
     /// Advance through an exact-route effort list. Unknown current values

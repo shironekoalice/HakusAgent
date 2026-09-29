@@ -1,5 +1,5 @@
 /**
- * Usage / cost breakdown panel — Codex "Usage in this chat" chrome.
+ * Usage / cost breakdown panel.
  */
 
 import { useEffect } from 'react'

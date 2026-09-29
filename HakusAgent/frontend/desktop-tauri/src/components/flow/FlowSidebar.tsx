@@ -83,10 +83,10 @@ export function FlowSidebar() {
         </button>
       </div>
 
-      <div className="flow-search">
+      <div className="flow-search search-composite">
         <Search className="h-3 w-3 shrink-0 opacity-60" />
         <input
-          className="flow-search-input"
+          className="flow-search-input search-composite-input"
           value={query}
           placeholder={zh ? '搜索工作流…' : 'Search workflows…'}
           onChange={(e) => setQuery(e.target.value)}

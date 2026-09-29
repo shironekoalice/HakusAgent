@@ -351,11 +351,6 @@ impl SetupRuntimeFacts {
             crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
         ) {
             format!("{}; retry or open /provider", readiness.label())
-        } else if app.api_provider == crate::config::ApiProvider::OpenaiCodex {
-            format!(
-                "{}; run codex login, then grant exact read-only access with `hakus auth external-consent --provider openai-codex --mode read-only`, or open /provider",
-                readiness.label()
-            )
         } else if let Some(url) = crate::config::credential_help_for_provider_route(
             app.api_provider,
             &config.deepseek_base_url(),

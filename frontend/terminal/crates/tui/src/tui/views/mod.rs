@@ -1338,11 +1338,7 @@ impl SettingsRegistry {
             &self.model,
             self.auto_model,
         ) {
-            let label = if self.provider == ApiProvider::OpenaiCodex {
-                effort.display_label_for_provider(self.provider)
-            } else {
-                effort.as_setting()
-            };
+            let label = effort.as_setting();
             if !values.iter().any(|value| value == label) {
                 values.push(label.to_string());
             }
@@ -2117,7 +2113,7 @@ impl ConfigView {
                 scope: ConfigScope::Saved,
             });
         }
-        let external_status_rows = [ApiProvider::OpenaiCodex, ApiProvider::Xai]
+        let external_status_rows = [ApiProvider::Xai]
             .into_iter()
             .filter_map(|provider| {
                 config
@@ -3214,9 +3210,6 @@ fn config_choice_values(key: &str, provider: ApiProvider) -> Option<Vec<String>>
         "permission_posture" => vec!["ask", "auto-review", "full-access"],
         "approval_policy" => vec!["use-tui-default", "ask", "auto-review", "full-access"],
         "default_mode" => vec!["agent", "plan", "operate"],
-        "reasoning_effort" if provider == ApiProvider::OpenaiCodex => {
-            vec!["default", "low", "medium", "high", "xhigh"]
-        }
         "reasoning_effort" if provider == ApiProvider::Xai => {
             vec!["default", "auto", "low", "medium", "high", "xhigh"]
         }
@@ -5621,162 +5614,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn config_view_includes_expected_editable_rows() {
-        let app = create_test_app();
-        let view = ConfigView::new_for_app(&app);
-        let keys = view
-            .rows
-            .iter()
-            .map(|row| row.key.as_str())
-            .collect::<Vec<_>>();
-        assert!(keys.contains(&"provider"));
-        assert!(keys.contains(&"provider_templates"));
-        assert!(keys.contains(&"model"));
-        assert!(keys.contains(&"reasoning_effort"));
-        assert!(keys.contains(&"base_url"));
-        assert!(keys.contains(&"external_credentials.openai-codex"));
-        assert!(keys.contains(&"external_credentials.xai"));
-        assert!(keys.contains(&"approval_mode"));
-        assert!(keys.contains(&"permission_posture"));
-        assert!(keys.contains(&"allow_shell"));
-        assert!(keys.contains(&"stream_chunk_timeout_secs"));
-        assert!(keys.contains(&"theme"));
-        assert!(keys.contains(&"locale"));
-        assert!(keys.contains(&"background_color"));
-        assert!(keys.contains(&"fancy_animations"));
-        assert!(keys.contains(&"thinking_default_expanded"));
-        assert!(keys.contains(&"status_indicator"));
-        assert!(keys.contains(&"synchronized_output"));
-        assert!(keys.contains(&"auto_compact"));
-        assert!(keys.contains(&"tool_collapse"));
-        assert!(keys.contains(&"composer_border"));
-        assert!(keys.contains(&"composer_multiline_mode"));
-        assert!(keys.contains(&"composer_vim_mode"));
-        assert!(keys.contains(&"bracketed_paste"));
-        assert!(keys.contains(&"context_panel"));
-        assert!(keys.contains(&"cost_currency"));
-        assert!(keys.contains(&"mcp_config_path"));
-        assert!(keys.contains(&"fleet.exec.max_spawn_depth"));
-        assert!(keys.contains(&"features.vision_model"));
-        assert!(keys.contains(&"goal_command"));
-        assert!(keys.contains(&"workflow"));
-        assert!(!keys.contains(&"features.subagents"));
-        assert!(!keys.contains(&"features.web_search"));
-        assert!(!keys.contains(&"features.apply_patch"));
-        assert!(!keys.contains(&"features.mcp"));
-        assert!(!keys.contains(&"features.exec_policy"));
-        assert!(!keys.contains(&"whaleflow"));
-        // Diagnostic-only model rows and managed permission rows are not
-        // editable; everything else outside Experimental/Fleet should be.
-        const DIAGNOSTIC_ONLY: &[&str] = &[
-            "fast_model",
-            "default_model",
-            "context_window",
-            "effective_context_window",
-            "effective_auto_compact",
-            "external_credentials.openai-codex",
-            "external_credentials.xai",
-        ];
-        assert!(
-            view.rows
-                .iter()
-                .filter(|row| {
-                    !matches!(
-                        row.section,
-                        super::ConfigSection::Experimental
-                            | super::ConfigSection::Fleet
-                            | super::ConfigSection::Workflow
-                            | super::ConfigSection::Session
-                            | super::ConfigSection::Legacy
-                    ) && !DIAGNOSTIC_ONLY.contains(&row.key.as_str())
-                        && !row.key.starts_with("managed_")
-                })
-                .all(|row| row.editable)
-        );
-        assert!(
-            view.rows
-                .iter()
-                .filter(|row| {
-                    matches!(
-                        row.section,
-                        super::ConfigSection::Experimental
-                            | super::ConfigSection::Fleet
-                            | super::ConfigSection::Workflow
-                            | super::ConfigSection::Session
-                            | super::ConfigSection::Legacy
-                    )
-                })
-                .all(|row| !row.editable)
-        );
-        for key in DIAGNOSTIC_ONLY {
-            assert!(
-                view.rows.iter().any(|row| row.key == *key && !row.editable),
-                "{key} must remain diagnostic-only"
-            );
-        }
-    }
 
-    #[test]
-    fn config_view_surfaces_structural_external_consent_without_io() {
-        let _env = crate::test_support::lock_test_env();
-        let temp = tempfile::tempdir().expect("config view fixture");
-        let config_path = temp.path().join("config.toml");
-        let auth_path = temp.path().join("codex-auth.json");
-        fs::write(&auth_path, "external-secret-must-not-be-read").expect("auth trap");
-        fs::write(
-            &config_path,
-            format!(
-                r#"provider = "openai-codex"
-[providers.openai_codex]
-auth_mode = "oauth"
-[providers.openai_codex.external_credentials]
-access = "read_only"
-provider = "openai-codex"
-source = "codex_cli"
-path = {:?}
-consent_version = 1
-"#,
-                auth_path.display().to_string()
-            ),
-        )
-        .expect("config fixture");
-        let ambient_path = temp.path().join("new-ambient-codex-auth.json");
-        let _path = crate::test_support::EnvVarGuard::set("OPENAI_CODEX_AUTH_FILE", &ambient_path);
-        let mut app = create_test_app();
-        app.config_path = Some(config_path);
-        crate::external_credentials::reset_side_effect_trap();
-        let view = ConfigView::new_for_app(&app);
-        let row = view
-            .rows
-            .iter()
-            .find(|row| row.key == "external_credentials.openai-codex")
-            .expect("structural consent row");
-        assert!(row.value.contains("access=read_only"), "{}", row.value);
-        assert!(row.value.contains("source=codex_cli"), "{}", row.value);
-        assert!(row.value.contains("version=1"), "{}", row.value);
-        assert!(row.value.contains("active"), "{}", row.value);
-        assert!(row.value.contains("remains pinned"), "{}", row.value);
-        assert!(
-            row.value
-                .contains(&hakus_config::quote_os_path(&auth_path)),
-            "{}",
-            row.value
-        );
-        assert!(
-            !row.value.contains(&ambient_path.display().to_string()),
-            "{}",
-            row.value
-        );
-        assert!(
-            row.value
-                .contains("external-revoke --provider openai-codex")
-        );
-        assert_eq!(
-            crate::external_credentials::complete_side_effect_trap_counts(),
-            (0, 0, 0, 0, 0)
-        );
-    }
 
     #[test]
     fn config_view_permission_row_tracks_the_controlling_saved_source() {
@@ -6402,21 +6240,6 @@ context_window = 262144
         assert_eq!(effective.value, "262144 tokens · configured");
     }
 
-    #[test]
-    fn config_view_displays_saved_codex_reasoning_effort_label() {
-        let _guard = ConfigSettingsEnvGuard::new("reasoning_effort = \"max\"\n");
-        let mut app = create_test_app();
-        app.api_provider = crate::config::ApiProvider::OpenaiCodex;
-
-        let view = ConfigView::new_for_app(&app);
-        let row = view
-            .rows
-            .iter()
-            .find(|row| row.key == "reasoning_effort")
-            .expect("reasoning_effort row");
-
-        assert_eq!(row.value, "xhigh");
-    }
 
     #[test]
     fn config_view_editing_localized_default_placeholders_starts_blank() {

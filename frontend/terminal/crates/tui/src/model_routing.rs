@@ -54,7 +54,7 @@ fn catalog_family_candidates(
     let lower = normalized.to_ascii_lowercase();
 
     let cheap = match provider {
-        ApiProvider::Openai | ApiProvider::OpenaiCodex
+        ApiProvider::Openai
             if matches!(lower.as_str(), "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra") =>
         {
             Some("gpt-5.6-luna".to_string())
@@ -527,12 +527,9 @@ fn parse_auto_route_reasoning_effort(effort: &str) -> Option<ReasoningEffort> {
 
 #[must_use]
 pub(crate) fn normalize_auto_route_effort_for_provider(
-    provider: ApiProvider,
+    _provider: ApiProvider,
     effort: ReasoningEffort,
 ) -> ReasoningEffort {
-    if provider == ApiProvider::OpenaiCodex {
-        return effort.normalize_for_provider(provider);
-    }
     match effort {
         ReasoningEffort::Low | ReasoningEffort::Medium => ReasoningEffort::High,
         other => other,
@@ -1354,41 +1351,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn auto_route_effort_normalization_is_provider_aware() {
-        assert_eq!(
-            normalize_auto_route_effort_for_provider(ApiProvider::Deepseek, ReasoningEffort::Low),
-            ReasoningEffort::High
-        );
-        assert_eq!(
-            normalize_auto_route_effort_for_provider(
-                ApiProvider::Deepseek,
-                ReasoningEffort::Medium
-            ),
-            ReasoningEffort::High
-        );
-        assert_eq!(
-            normalize_auto_route_effort_for_provider(
-                ApiProvider::OpenaiCodex,
-                ReasoningEffort::Low
-            ),
-            ReasoningEffort::Low
-        );
-        assert_eq!(
-            normalize_auto_route_effort_for_provider(
-                ApiProvider::OpenaiCodex,
-                ReasoningEffort::Medium
-            ),
-            ReasoningEffort::Medium
-        );
-        assert_eq!(
-            normalize_auto_route_effort_for_provider(
-                ApiProvider::OpenaiCodex,
-                ReasoningEffort::Off
-            ),
-            ReasoningEffort::Low
-        );
-    }
 
     #[test]
     fn configured_route_effort_normalizer_keeps_kimi_code_low_medium_local() {
@@ -2151,57 +2113,6 @@ mod tests {
         assert_eq!(moonshot.cheap, None);
     }
 
-    #[test]
-    fn provider_router_candidates_cover_catalog_fast_siblings() {
-        use crate::config::ApiProvider;
-
-        let cases = [
-            (ApiProvider::OpenaiCodex, "gpt-5.6-sol", "gpt-5.6-luna"),
-            (
-                ApiProvider::Anthropic,
-                "claude-sonnet-4-6",
-                "claude-haiku-4-5",
-            ),
-            (ApiProvider::XiaomiMimo, "mimo-v2.5-pro", "mimo-v2.5"),
-            (ApiProvider::Arcee, "trinity-large-thinking", "trinity-mini"),
-            (ApiProvider::Moonshot, "kimi-k2.7-code", "kimi-k2.6"),
-            (
-                ApiProvider::Minimax,
-                "MiniMax-M2.7",
-                "MiniMax-M2.7-highspeed",
-            ),
-            (ApiProvider::OpencodeGo, "kimi-k3", "kimi-k2.7-code"),
-            (
-                ApiProvider::Openrouter,
-                "qwen/qwen3.6-max-preview",
-                "qwen/qwen3.6-flash",
-            ),
-            (
-                ApiProvider::Openrouter,
-                "anthropic/claude-sonnet-4-6",
-                "anthropic/claude-haiku-4-5",
-            ),
-        ];
-
-        for (provider, strong, fast) in cases {
-            let candidates = provider_router_candidates(provider, strong);
-            assert_eq!(candidates.big, strong);
-            assert_eq!(candidates.cheap.as_deref(), Some(fast));
-            assert_eq!(
-                provider_router_candidates(provider, fast).cheap,
-                None,
-                "already-fast model must not downgrade again: {provider:?}/{fast}"
-            );
-        }
-
-        for (provider, model) in [
-            (ApiProvider::Ollama, "qwen3:32b"),
-            (ApiProvider::Custom, "gpt-5.6-sol"),
-            (ApiProvider::OpenaiCodex, "gpt-5.6-luna"),
-        ] {
-            assert_eq!(provider_router_candidates(provider, model).cheap, None);
-        }
-    }
 
     #[test]
     fn heuristic_without_cheap_tier_always_returns_current_model() {

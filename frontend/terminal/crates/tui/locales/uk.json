@@ -420,7 +420,7 @@
   "CmdModelsDescription": "Отримати актуальні ID моделей з активного API",
   "CmdModelDbDescription": "Переглянути вбудовану базу моделей",
   "CmdNetworkDescription": "Керувати мережевими правилами дозволу та заборони",
-  "CmdUpdateDescription": "Перевірити та встановити новий випуск CodeWhale",
+  "CmdUpdateDescription": "Перевірити та встановити новий випуск HakusCLI",
   "CmdNoteDescription": "Додати, показати, змінити або видалити нотатки робочої області",
   "CmdThemeDescription": "Змінити тему або відкрити вибір теми",
   "CmdProviderDescription": "Змінити активного провайдера та/або модель",
@@ -493,7 +493,7 @@
   "TranslationFailed": "Переклад не вдався",
   "CmdTrustDescription": "Керувати довірою до робочої області та списком дозволених шляхів",
   "CmdWorkspaceDescription": "Показати або змінити поточну робочу область",
-  "CmdWechatDescription": "Підключитися до WeChat: QR-вхід, статус, надсилання та опитування повідомлень",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "Видалити останню пару повідомлень",
   "CmdVerboseDescription": "Перемкнути повні живі міркування в транскрипті",
   "CmdCacheAdvice": "Частка влучань/промахів понад ~70% після третього кроку вказує на стабільний префікс кешу; \n нижча на довгих сеансах свідчить про зміну префікса, яку варто дослідити (#263).",
@@ -908,7 +908,7 @@
   "ApprovalChooseAction": "Enter — вибрати опцію, або натисніть y/a/d напряму",
   "ApprovalIntentLabel": "Намір: ",
   "ApprovalMoreLines": "  … (+{count} рядків)",
-  "ApprovalAutoDeniedSession": "Автоматично відхилено {tool}: подібний запит уже було відхилено під час цього запуску CodeWhale. Перезапустіть CodeWhale, щоб переглянути рішення.",
+  "ApprovalAutoDeniedSession": "Автоматично відхилено {tool}: подібний запит уже було відхилено під час цього запуску HakusCLI. Перезапустіть HakusCLI, щоб переглянути рішення.",
   "ElevationTitleSandboxDenied": "  ⚠, Пісочниця відхилена ",
   "ElevationTitleRequired": " Потрібне підвищення прав пісочниці ",
   "ElevationFieldTool": "  Інструмент: ",
@@ -1255,7 +1255,6 @@
   "ProviderExternalActionRevoke": "відкликати зовнішній",
   "ProviderExternalActionChoices": "варіанти зовнішнього доступу",
   "ProviderExternalActionReuseGrok": "повторне використання зовнішнього Grok",
-  "ProviderExternalHintCodexReview": "Після {login} натисніть Enter, щоб переглянути варіанти доступу: вимкнено/лише читання/керований.",
   "ProviderExternalHintXaiReview": "Натисніть Enter для входу з пристрою від HakusCLI; натисніть E, щоб переглянути наявне повторне використання Grok CLI.",
   "ProviderExternalHintXaiApiKey": "Або використайте XAI_API_KEY і знову відкрийте цей вибір.",
   "XaiAuthChoiceTitle": " Автентифікація xAI ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "У {provider} немає кінцевої точки /models; досяжність не зондувалась.",
   "ProviderTemplateOpened": "Відкрито шаблон провайдера '{id}'. Введіть лише API-ключ.",
   "ProviderTemplateUnknown": "Невідомий шаблон провайдера '{id}'.",
-  "ProviderTemplateOpenedEnvOnly": "Відкрито вбудований шаблон '{id}'. Введіть ім’я змінної середовища API-ключа і збережіть. Не вставляйте сирий ключ.",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "Відкрито вбудований шаблон '{id}'. Введіть ім’я змінної середовища API-ключа і збережіть. Не вставляйте сирий ключ."
 }

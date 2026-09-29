@@ -29,7 +29,7 @@ const mobileCopy = (zh: string, en: string) => detectSystemLocale() === "zh-CN" 
 // class instead of media queries alone, because some Android WebViews
 // report a legacy ~980px layout viewport that would silently opt the
 // phone out of media-query-driven rules.
-if (typeof __TAURI_INTERNALS__ !== "undefined" && !isAndroidRuntime) {
+if (!isAndroidRuntime) {
   document.documentElement.classList.add("is-rounded-window");
 }
 const syncPhoneClass = () => {
@@ -140,23 +140,13 @@ window.addEventListener("unhandledrejection", (event) => {
   recordCrash(`unhandled rejection: ${reason?.message || String(event.reason)}`);
 });
 
-// ── Disable the Chromium WebView context menu (Refresh / Back / Inspect) ──
-// Desktop shells should not show a browser menu. Keep native text editing
-// affordances in inputs/textareas/contenteditable (copy / paste / select).
+// ── Disable Chromium's native WebView context menu ───────────────────
+// The application provides its own text-editing context menu.
 if (typeof __TAURI_INTERNALS__ !== "undefined" && !isAndroidRuntime) {
   window.addEventListener(
     "contextmenu",
     (event) => {
-      const target = event.target as HTMLElement | null;
-      const editable =
-        !!target &&
-        (target instanceof HTMLInputElement ||
-          target instanceof HTMLTextAreaElement ||
-          target.isContentEditable ||
-          !!target.closest("input, textarea, [contenteditable='true']"));
-      if (!editable) {
-        event.preventDefault();
-      }
+      event.preventDefault();
     },
     true,
   );

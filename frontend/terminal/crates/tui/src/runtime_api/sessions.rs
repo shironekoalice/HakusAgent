@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use chrono::Utc;
 
 use crate::models::{ContentBlock, Message};
 use crate::runtime_threads::{
@@ -214,7 +214,10 @@ pub(super) async fn migrate_sessions(
             .runtime_threads
             .create_thread(CreateThreadRequest {
                 mode: Some("agent".to_string()),
-                archived: session.get("archived").and_then(Value::as_bool).unwrap_or(false),
+                archived: session
+                    .get("archived")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 ..Default::default()
             })
             .await
@@ -259,7 +262,9 @@ pub(super) async fn migrate_sessions(
                 .runtime_threads
                 .seed_thread_from_messages(&thread.id, &history)
                 .await
-                .map_err(|error| ApiError::internal(format!("Failed to import session history: {error}")))?;
+                .map_err(|error| {
+                    ApiError::internal(format!("Failed to import session history: {error}"))
+                })?;
         }
         imported_sessions = imported_sessions.saturating_add(1);
     }

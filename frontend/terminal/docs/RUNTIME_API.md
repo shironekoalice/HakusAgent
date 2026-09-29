@@ -177,7 +177,7 @@ The matrix discovers configured providers from `hakuscli auth list`, skips
 unconfigured providers, and maps a provider to a cheap sentinel model only when
 it has a built-in cheap default. That built-in set is deliberately conservative
 (currently `deepseek`, `zai`, `moonshot`, and `openai`); every other provider —
-including `arcee`, `openrouter`, `xiaomi-mimo`, and `openai-codex` — is left
+including `arcee`, `openrouter`, and `xiaomi-mimo` — is left
 unmapped on purpose and must be given a model per run via `SMOKE_MODEL_<SLUG>`
 rather than a guessed default (#3205). Any configured-but-unmapped provider
 fails loudly in `--real` mode. `auth list` reports presence flags only and exec

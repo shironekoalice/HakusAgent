@@ -1,5 +1,5 @@
 /**
- * SubagentsPanel — Codex 风格「子代理」悬浮按钮 + 状态卡片流。
+ * SubagentsPanel — 「子代理」悬浮按钮 + 状态卡片流。
  *
  * 从会话事件日志（apiClient.getSessionLog）归纳子代理活动：
  *   - `subagent_spawned` 事件（Python sidecar / Deep 模式编排器）

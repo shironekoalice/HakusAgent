@@ -1,26 +1,28 @@
-# HakusAgent 文档
+# HakusAI 公开文档
 
-## 面向用户
+这里提供面向使用者的产品说明、安装指南和安全边界。文档描述可从应用中直接使用的能力，不展开源码结构、内部接口或发布流程。
 
-| 文档 | 内容 |
-| --- | --- |
-| [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) | 产品形态、平台选择、数据位置和文档导航 |
-| [INSTALL.md](INSTALL.md) | Python/Rust CLI 的安装与运行 |
-| [SKILLS.md](SKILLS.md) | Skills 安装、启停、删除和 `@` 调用 |
-| [CLI 安装](../frontend/terminal/docs/INSTALL.md) | Rust HakusCLI 的平台安装说明 |
-| [CLI 配置](../frontend/terminal/docs/CONFIGURATION.md) | Provider、环境变量和配置文件 |
-| [CLI 键位](../frontend/terminal/docs/KEYBINDINGS.md) | TUI 操作与快捷键 |
-
-## 面向开发者
+## 开始使用
 
 | 文档 | 内容 |
 | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 组件边界、运行链路、数据流和技术约束 |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | 环境搭建、启动、测试、构建和修改路径 |
-| [CLI 架构](../frontend/terminal/docs/ARCHITECTURE.md) | Rust Runtime/TUI 内部架构 |
-| [CLI Skills](../frontend/terminal/docs/SKILLS.md) | Rust CLI 的 Skills 命令与兼容目录 |
+| [项目总览](PROJECT_OVERVIEW.md) | 产品形态、工作区、数据归属和平台选择 |
+| [安装与首次配置](INSTALL.md) | 桌面端、终端程序和首次启动 |
+| [Skills 管理](SKILLS.md) | 安装、启用、停用和审查扩展能力 |
+| [终端使用指南](../frontend/terminal/docs/README.md) | 终端程序的配置、模型、快捷键和外部工具 |
 
-## 历史与设计记录
+## 技术说明
 
-`doc/` 下的文件是阶段性计划、工作日志和经验记录。它们可以帮助理解演进过程，但不作为
-当前行为的权威说明；发生冲突时，以本目录文档和代码为准。
+| 文档 | 内容 |
+| --- | --- |
+| [运行边界与安全模型](ARCHITECTURE.md) | 客户端、运行时、工作区和外部服务之间的边界 |
+| [权限与执行安全](../frontend/terminal/docs/SANDBOX.md) | 文件、命令、网络和审批的基本原则 |
+| [MCP 外部工具](../frontend/terminal/docs/MCP.md) | 外部工具服务的连接方式与权限提示 |
+
+## 阅读约定
+
+- 模型服务、远程连接和第三方扩展都有自己的网络与隐私边界。
+- 文档中的示例值均为占位内容，不要把真实密钥写入项目文件或公开仓库。
+- 版本相关行为以应用当前版本和 Release 说明为准。
+
+仓库中的阶段记录、实验方案和维护资料不属于公开使用手册，也不会从本索引进入用户文档。

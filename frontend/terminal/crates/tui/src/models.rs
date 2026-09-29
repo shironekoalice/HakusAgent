@@ -152,44 +152,33 @@ pub struct Usage {
     pub server_tool_use: Option<ServerToolUsage>,
 }
 
-/// Map known models to their approximate context window sizes.
-///
-/// Lookup order:
-/// 1. An explicit `_Nk` suffix in the model name, for **any** vendor. This
-///    lets self-hosted deployments advertise their window through the served
-///    model name (e.g. a vLLM `--served-model-name qwen3-32b-256k`), which is
-///    the only signal we have for non-DeepSeek/Claude models. The 1000-token
-///    approximation is fine for compaction-threshold math.
-/// 2. DeepSeek vendor heuristics (V4 family -> 1M, legacy -> 128K).
-/// 3. Claude -> 200K.
+/// Map known model ids to their approximate context window sizes.
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     if let Some(window) = crate::model_catalog::resolved_context_window(model) {
         return Some(window);
     }
     let lower = model.to_lowercase();
-    if let Some(explicit_window) = explicit_context_window_hint(&lower) {
-        return Some(explicit_window);
+    if let Some(window) = explicit_context_window_hint(&lower) {
+        return Some(window);
     }
     if lower.contains("deepseek") {
-        if lower.contains("v4") {
-            return Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
-        }
-        return Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
+        return Some(if lower.contains("v4") {
+            DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        } else {
+            LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS
+        });
     }
     if is_openai_gpt_55_api_model(&lower) || is_openai_gpt_56_api_model(&lower) {
         return Some(1_050_000);
     }
-    if is_openai_codex_model(&lower) {
+    if is_openai_coding_model(&lower) {
         return Some(400_000);
     }
     if let Some(window) = known_context_window_for_model(&lower) {
         return Some(window);
     }
-    if lower.contains("claude") {
-        return Some(200_000);
-    }
-    None
+    lower.contains("claude").then_some(200_000)
 }
 
 fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
@@ -198,7 +187,7 @@ fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
         // https://developers.openai.com/api/docs/models/gpt-5.5
         // Family aliases and snapshots are handled by
         // `is_openai_gpt_55_api_model` before this table.
-        // OpenAI Codex model docs, verified 2026-06-12:
+        // OpenAI API coding-model docs, verified 2026-06-12:
         // https://developers.openai.com/api/docs/models/gpt-5-codex
         // https://developers.openai.com/api/docs/models/gpt-5.3-codex
         "gpt-5-codex" | "gpt-5.3-codex" => Some(400_000),
@@ -339,68 +328,35 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
         return Some(max_output);
     }
     let lower = model.to_lowercase();
-    if lower.contains("deepseek") && lower.contains("v4") {
-        return Some(384_000);
-    }
-    if is_openai_gpt_55_api_model(&lower)
+    if (lower.contains("deepseek") && lower.contains("v4"))
+        || is_openai_gpt_55_api_model(&lower)
         || is_openai_gpt_56_api_model(&lower)
-        || is_openai_codex_model(&lower)
+        || is_openai_coding_model(&lower)
     {
-        return Some(128_000);
+        return Some(if lower.contains("deepseek") { 384_000 } else { 128_000 });
     }
     match lower.as_str() {
-        "gpt-5-codex" | "gpt-5.3-codex" => Some(128_000),
-        // claude-sonnet-4-6 max output raised 64K -> 128K per
-        // https://platform.claude.com/docs/en/about-claude/models/overview
-        // (2026-07-09 audit).
         "claude-opus-4-8" | "claude-opus-5" | "claude-sonnet-4-6" | "claude-sonnet-5"
         | "claude-fable-5" => Some(128_000),
         "claude-haiku-4-5" => Some(64_000),
         "arcee-ai/trinity-large-thinking" | "trinity-large-thinking" => Some(262_144),
-        // Keep the generic/model-id lookup at K3's conservative documented
-        // default generation ceiling. The exact direct route's 1M maximum is
-        // applied later with endpoint-aware provenance; membership and
-        // neighboring routes must not inherit it.
         "moonshotai/kimi-k3" | "kimi-k3" | "k3" | "opencode-go/kimi-k3" => {
             Some(KIMI_K3_DEFAULT_MAX_COMPLETION_TOKENS)
         }
-        // Kimi K2.7 Code has a 256K context window but its documented default
-        // maximum generation is 32K. Keeping those separate prevents the
-        // input budget from collapsing to the 1K emergency floor (#4368). The
-        // direct-platform value matches the provider-reported bundled
-        // catalog. The Kimi Code membership ids (`kimi-for-coding` family)
-        // are deliberately absent here: the membership catalog is the source
-        // of truth for their limits and no client-side output ceiling is
-        // claimed, so they fall back to the generic default.
-        "moonshotai/kimi-k2.7-code"
-        | "moonshotai/kimi-k2.7-code-highspeed"
-        | "moonshotai/kimi-k2.6"
-        | "kimi-k2.7-code"
-        | "kimi-k2.7-code-highspeed"
+        "moonshotai/kimi-k2.7-code" | "moonshotai/kimi-k2.7-code-highspeed"
+        | "moonshotai/kimi-k2.6" | "kimi-k2.7-code" | "kimi-k2.7-code-highspeed"
         | "kimi-k2.6" => Some(32_768),
         "minimax/minimax-m3" | "minimax-m3" => Some(524_288),
-        // Alibaba's published limit is 65,536 output tokens; the earlier
-        // 262,140 mirrored the context window (data-entry smell flagged by
-        // MODEL_PROVIDER_AUDIT A2/D-7, vendor-verified 2026-07-12).
-        "qwen/qwen3.6-35b-a3b"
-        | "qwen/qwen3.6-27b"
-        | "qwen/qwen3.6-flash"
-        | "qwen/qwen3.6-max-preview"
-        | "qwen/qwen3.6-plus" => Some(65_536),
-        // Model Studio: 128K is the generation ceiling, not the context window.
+        "qwen/qwen3.6-35b-a3b" | "qwen/qwen3.6-27b" | "qwen/qwen3.6-flash"
+        | "qwen/qwen3.6-max-preview" | "qwen/qwen3.6-plus" => Some(65_536),
         "qwen3.8-max" | "qwen3.8-max-preview" => Some(131_072),
         "qwen3.7-plus" | "qwen3.7-max" | "qwen3.6-flash" => Some(65_536),
-        "z-ai/glm-5.1" | "z-ai/glm-5.2" | "z-ai/glm-5.3" | "z-ai/glm-5-turbo" | "glm-5.1"
-        | "glm-5.2" | "glm-5.3" | "glm-5-turbo" => Some(131_072),
-        "xiaomi/mimo-v2.5-pro"
-        | "xiaomi/mimo-v2.5"
-        | "mimo-v2.5-pro"
-        | "mimo-v2.5-pro-ultraspeed"
-        | "mimo-v2.5" => Some(131_072),
+        "z-ai/glm-5.1" | "z-ai/glm-5.2" | "z-ai/glm-5.3" | "z-ai/glm-5-turbo"
+        | "glm-5.1" | "glm-5.2" | "glm-5.3" | "glm-5-turbo" => Some(131_072),
+        "xiaomi/mimo-v2.5-pro" | "xiaomi/mimo-v2.5" | "mimo-v2.5-pro"
+        | "mimo-v2.5-pro-ultraspeed" | "mimo-v2.5" => Some(131_072),
         "mimo-v2.5-asr" => Some(2_048),
-        "mimo-v2.5-tts"
-        | "mimo-v2.5-tts-voicedesign"
-        | "mimo-v2.5-tts-voiceclone"
+        "mimo-v2.5-tts" | "mimo-v2.5-tts-voicedesign" | "mimo-v2.5-tts-voiceclone"
         | "mimo-v2-tts" => Some(8_192),
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" => Some(65_536),
         "nvidia/nemotron-3-ultra-550b-a55b" => Some(16_384),
@@ -408,15 +364,9 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
         "google/gemma-4-31b-it" => Some(16_384),
         "google/gemma-4-31b-it:free" | "google/gemma-4-26b-a4b-it:free" => Some(32_768),
         "muse-spark-1.1" | "muse-spark-1.2" | "muse-spark-1.2-contributor" => Some(32_000),
-        // Gemini API output token limit (see `known_context_window_for_model`).
-        "gemini-3.7-flash"
-        | "gemini-3.6-flash"
-        | "gemini-3.5-flash"
-        | "gemini-3.5-flash-lite"
-        | "gemini-3.1-pro-preview"
-        | "gemini-3-pro-preview"
-        | "gemini-2.5-pro"
-        | "gemini-2.5-flash" => Some(65_536),
+        "gemini-3.7-flash" | "gemini-3.6-flash" | "gemini-3.5-flash"
+        | "gemini-3.5-flash-lite" | "gemini-3.1-pro-preview" | "gemini-3-pro-preview"
+        | "gemini-2.5-pro" | "gemini-2.5-flash" => Some(65_536),
         "dots-studio/dots-3-note-preview:free" => Some(512_000),
         _ => None,
     }
@@ -424,20 +374,13 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
 
 #[must_use]
 pub fn model_supports_reasoning(model: &str) -> bool {
-    if let Some(supports_reasoning) = crate::model_catalog::resolved_supports_reasoning(model) {
-        return supports_reasoning;
+    if let Some(supported) = crate::model_catalog::resolved_supports_reasoning(model) {
+        return supported;
     }
     let lower = model.to_lowercase();
-    if lower.contains("deepseek") && lower.contains("v4") {
-        return true;
-    }
-    // #3016 plus the 2026 Kimi Code K2.7 update: Moonshot-native Kimi IDs,
-    // including the stable `kimi-for-coding` coding route, emit
-    // reasoning_content that must stay out of answer prose.
-    if lower.starts_with("kimi-") {
-        return true;
-    }
-    if lower.starts_with("mistral-medium")
+    if (lower.contains("deepseek") && lower.contains("v4"))
+        || lower.starts_with("kimi-")
+        || lower.starts_with("mistral-medium")
         || lower.starts_with("mistral-small")
         || lower.starts_with("magistral")
     {
@@ -445,87 +388,33 @@ pub fn model_supports_reasoning(model: &str) -> bool {
     }
     matches!(
         lower.as_str(),
-        "claude-opus-4-8"
-            | "claude-opus-5"
-            | "claude-sonnet-4-6"
-            | "claude-sonnet-5"
-            | "claude-fable-5"
-            | "gpt-5-codex"
-            | "gpt-5.3-codex"
-            | "trinity-mini"
-            | "arcee-ai/trinity-large-thinking"
-            | "trinity-large-thinking"
-            | "thinkingmachines/inkling"
-            | "google/gemma-4-31b-it"
-            | "google/gemma-4-31b-it:free"
-            | "google/gemma-4-26b-a4b-it"
-            | "google/gemma-4-26b-a4b-it:free"
-            | "moonshotai/kimi-k2.7-code"
-            | "moonshotai/kimi-k2.7-code-highspeed"
-            | "moonshotai/kimi-k2.6"
-            | "moonshotai/kimi-k2.6:free"
-            | "kimi-k2.7-code"
-            | "kimi-k2.6"
-            | "kimi-for-coding"
-            | "minimax/minimax-m3"
-            | "minimax/minimax-m2.7"
-            | "minimax-m3"
-            | "minimax-m2.7"
-            | "minimax-m2.7-highspeed"
-            | "minimax-m2.5"
-            | "minimax-m2.5-highspeed"
-            | "minimax-m2.1"
-            | "minimax-m2.1-highspeed"
-            | "minimax-m2"
-            | "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
-            | "nvidia/nemotron-3-ultra-550b-a55b"
-            | "nvidia/nemotron-3-ultra-550b-a55b:free"
-            | "qwen/qwen3.6-flash"
-            | "qwen/qwen3.6-35b-a3b"
-            | "qwen/qwen3.6-max-preview"
-            | "qwen/qwen3.6-27b"
-            | "qwen/qwen3.6-plus"
-            | "qwen/qwen3.7-plus"
-            // Bare qwen3.x ids are Alibaba Cloud Model Studio's own model ids
-            // (Token Plan / Coding Plan catalogs). Per Model Studio's
-            // deep-thinking docs these are hybrid-thinking models that stream
-            // `reasoning_content` (OpenAI dialect) or thinking blocks
-            // (Anthropic dialect); qwen3.7/3.6/3.5 families default thinking
-            // ON server-side.
-            | "qwen3.8-max"
-            | "qwen3.8-max-preview"
-            | "qwen3.7-max"
-            | "qwen3.7-plus"
-            | "qwen3.6-plus"
-            | "qwen3.6-flash"
-            | "qwen3.5-plus"
-            | "qwen3.5-flash"
-            | "tencent/hy3-preview"
-            | "xiaomi/mimo-v2.5-pro"
-            | "xiaomi/mimo-v2.5"
-            | "mimo-v2.5-pro"
-            | "mimo-v2.5-pro-ultraspeed"
-            | "mimo-v2.5"
-            | "z-ai/glm-5.1"
-            | "z-ai/glm-5.2"
-            | "z-ai/glm-5.3"
-            | "z-ai/glm-5-turbo"
-            | "glm-5.1"
-            | "glm-5.2"
-            | "glm-5.3"
-            | "glm-5-turbo"
-            | "grok-4.6"
-            | "grok-4.5"
-            | "grok-4.3"
-            | "grok-build"
-            | "grok-4.20-0309-reasoning"
-            | "muse-spark-1.1"
-            | "muse-spark-1.2"
-            | "muse-spark-1.2-contributor"
+        "claude-opus-4-8" | "claude-opus-5" | "claude-sonnet-4-6" | "claude-sonnet-5"
+        | "claude-fable-5" | "gpt-5-codex" | "gpt-5.3-codex" | "trinity-mini"
+        | "arcee-ai/trinity-large-thinking" | "trinity-large-thinking" | "thinkingmachines/inkling"
+        | "google/gemma-4-31b-it" | "google/gemma-4-31b-it:free"
+        | "google/gemma-4-26b-a4b-it" | "google/gemma-4-26b-a4b-it:free"
+        | "moonshotai/kimi-k2.7-code" | "moonshotai/kimi-k2.7-code-highspeed"
+        | "moonshotai/kimi-k2.6" | "moonshotai/kimi-k2.6:free" | "kimi-k2.7-code"
+        | "kimi-k2.6" | "kimi-for-coding" | "minimax/minimax-m3" | "minimax/minimax-m2.7"
+        | "minimax-m3" | "minimax-m2.7" | "minimax-m2.7-highspeed" | "minimax-m2.5"
+        | "minimax-m2.5-highspeed" | "minimax-m2.1" | "minimax-m2.1-highspeed"
+        | "minimax-m2" | "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+        | "nvidia/nemotron-3-ultra-550b-a55b" | "nvidia/nemotron-3-ultra-550b-a55b:free"
+        | "qwen/qwen3.6-flash" | "qwen/qwen3.6-35b-a3b" | "qwen/qwen3.6-max-preview"
+        | "qwen/qwen3.6-27b" | "qwen/qwen3.6-plus" | "qwen3.8-max" | "qwen3.8-max-preview"
+        | "qwen3.7-max" | "qwen3.7-plus" | "qwen3.6-plus" | "qwen3.6-flash"
+        | "qwen3.5-plus" | "qwen3.5-flash" | "tencent/hy3-preview"
+        | "xiaomi/mimo-v2.5-pro" | "xiaomi/mimo-v2.5" | "mimo-v2.5-pro"
+        | "mimo-v2.5-pro-ultraspeed" | "mimo-v2.5" | "z-ai/glm-5.1" | "z-ai/glm-5.2"
+        | "z-ai/glm-5.3" | "z-ai/glm-5-turbo" | "glm-5.1" | "glm-5.2" | "glm-5.3"
+        | "glm-5-turbo" | "grok-4.6" | "grok-4.5" | "grok-4.3" | "grok-build"
+        | "grok-4.20-0309-reasoning" | "muse-spark-1.1" | "muse-spark-1.2"
+        | "muse-spark-1.2-contributor"
     ) || is_openai_gpt_55_api_model(&lower)
         || is_openai_gpt_56_api_model(&lower)
-        || is_openai_codex_model(&lower)
+        || is_openai_coding_model(&lower)
 }
+
 
 /// Contributor tier of Muse Spark 1.2 is a distinct selectable id with
 /// its own wire model (`muse-spark-1.2-contributor`) and cheaper billing in
@@ -535,13 +424,6 @@ pub fn effective_muse_wire_id(model: &str) -> &str {
     model
 }
 
-#[must_use]
-pub(crate) fn model_is_openai_reasoning_family(model: &str) -> bool {
-    let lower = model.to_lowercase();
-    is_openai_gpt_55_api_model(&lower)
-        || is_openai_gpt_56_api_model(&lower)
-        || is_openai_codex_model(&lower)
-}
 
 fn is_openai_gpt_55_api_model(model_lower: &str) -> bool {
     matches!(model_lower, "gpt-5.5" | "gpt-5.5-pro")
@@ -556,20 +438,20 @@ pub(crate) fn is_openai_gpt_56_api_model(model_lower: &str) -> bool {
     )
 }
 
-fn is_openai_codex_model(model_lower: &str) -> bool {
+#[must_use]
+pub(crate) fn model_is_openai_reasoning_family(model: &str) -> bool {
+    let lower = model.to_lowercase();
+    is_openai_gpt_55_api_model(&lower)
+        || is_openai_gpt_56_api_model(&lower)
+        || is_openai_coding_model(&lower)
+}
+
+fn is_openai_coding_model(model_lower: &str) -> bool {
     matches!(
         model_lower,
-        "gpt-5-codex"
-            | "gpt-5.1-codex"
-            | "gpt-5.1-codex-mini"
-            | "gpt-5.1-codex-max"
-            | "gpt-5.2-codex"
-            | "gpt-5.3-codex"
-            | "codex-gpt-5.5"
-            | "chatgpt-gpt-5.5"
-            | "gpt-5.5-codex"
-            | "gpt-5.5-codex-preview"
-            | "codex-gpt-5.5-preview"
+        "gpt-5-codex" | "gpt-5.1-codex" | "gpt-5.1-codex-mini" | "gpt-5.1-codex-max"
+            | "gpt-5.2-codex" | "gpt-5.3-codex" | "codex-gpt-5.5" | "chatgpt-gpt-5.5"
+            | "gpt-5.5-codex" | "gpt-5.5-codex-preview" | "codex-gpt-5.5-preview"
             | "chatgpt-gpt-5.5-preview"
     )
 }
@@ -905,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_api_and_codex_models_have_verified_context_metadata() {
+    fn openai_api_models_have_verified_context_metadata() {
         for model in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
             assert_eq!(context_window_for_model(model), Some(1_050_000));
             assert_eq!(max_output_tokens_for_model(model), Some(128_000));

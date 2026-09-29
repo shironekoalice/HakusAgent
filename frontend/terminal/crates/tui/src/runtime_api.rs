@@ -1,6 +1,6 @@
 //! Runtime HTTP/SSE API for local Hakus automation.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::fs;
 use std::net::{SocketAddr, UdpSocket};
@@ -62,10 +62,9 @@ pub(super) use crate::models::{ContentBlock, Message};
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, ExternalApprovalDecision,
     MAX_RUNTIME_EVENT_REPLAY_TAIL, RuntimeThreadManager, RuntimeThreadManagerConfig,
-    SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail, ThreadListFilter,
-    ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest, UsageGroupBy,
+    SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail,
+    ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest, UsageGroupBy,
 };
-#[cfg(test)]
 pub(super) use crate::runtime_threads::{RuntimeTurnStatus, TurnItemLifecycleStatus};
 use crate::session_manager::default_sessions_dir;
 #[cfg(test)]
@@ -88,6 +87,8 @@ use hakus_protocol::fleet::{
 mod auth;
 mod projects;
 mod sessions;
+#[cfg(all(not(target_os = "android"), not(target_env = "ohos")))]
+mod terminal;
 mod web;
 mod workspace;
 #[cfg(test)]
@@ -211,11 +212,20 @@ impl Default for McpGlobalConfig {
 struct WechatRuntimeState {
     client: IlLinkClient,
     login: Option<LoginHandle>,
+    /// Whether ordinary inbound messages should be sent to the Runtime agent.
+    /// Slash commands are handled locally even when this is disabled.
+    auto_reply: bool,
+    /// Serializes long-poll calls from the background bot and the manual API.
+    poll_lock: Arc<Mutex<()>>,
+    /// One Runtime thread per WeChat user for conversation continuity.
+    threads: HashMap<String, String>,
+    users: HashMap<String, hakus_wechat::WechatUserSettings>,
 }
 
 #[derive(Debug, Serialize)]
 struct WechatStatusResponse {
     status: &'static str,
+    auto_reply: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     qrcode_base64: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -226,6 +236,11 @@ struct WechatStatusResponse {
 struct WechatSendRequest {
     user_id: String,
     text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WechatSettingsRequest {
+    enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1076,15 +1091,22 @@ pub async fn run_http_server(
     plugin_discovery: Arc<crate::plugins::PluginDiscoveryContext>,
     options: RuntimeApiOptions,
 ) -> Result<()> {
-    if options.port == 0 {
-        bail!("Port must be > 0");
-    }
     if options.web && options.host != "127.0.0.1" {
         bail!("Hakus web is loopback-only and must bind to 127.0.0.1");
     }
     if options.web && options.insecure_no_auth {
         bail!("Hakus web requires Runtime authentication; remove --insecure");
     }
+
+    let addr: SocketAddr = format!("{}:{}", options.host, options.port)
+        .parse()
+        .with_context(|| format!("Invalid bind address '{}:{}'", options.host, options.port))?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("Failed to bind {addr}"))?;
+    let bound_addr = listener
+        .local_addr()
+        .context("Failed to read Runtime API listener address")?;
 
     let task_cfg = TaskManagerConfig::from_runtime(
         &config,
@@ -1136,6 +1158,12 @@ pub async fn run_http_server(
     let sub_agent_manager = runtime_api_sub_agent_manager(&workspace, options.workers);
     let mcp_global_config = load_mcp_global_config(&config)
         .context("load persistent MCP UI configuration")?;
+    let wechat_client = IlLinkClient::new(hakus_wechat::WechatState::default_dir());
+    let wechat_settings = wechat_client
+        .state()
+        .load_settings()
+        .ok()
+        .unwrap_or_default();
     let state = RuntimeApiState {
         config: Arc::new(parking_lot::RwLock::new(config.clone())),
         workspace,
@@ -1152,32 +1180,27 @@ pub async fn run_http_server(
         skill_state: Arc::new(Mutex::new(skill_state)),
         auth_required: auth_enabled,
         bind_host: options.host.clone(),
-        bind_port: options.port,
+        bind_port: bound_addr.port(),
         mobile_enabled: options.mobile,
         web,
         fleet_hakus_binary: configured_hakus_binary(),
         mcp_pool: Arc::new(Mutex::new(None)),
         mcp_global_config: Arc::new(Mutex::new(mcp_global_config)),
         wechat: Arc::new(Mutex::new(WechatRuntimeState {
-            client: IlLinkClient::new(hakus_wechat::WechatState::default_dir()),
+            client: wechat_client,
             login: None,
+            auto_reply: wechat_settings.auto_reply,
+            poll_lock: Arc::new(Mutex::new(())),
+            threads: HashMap::new(),
+            users: wechat_settings.users,
         })),
         started_at: Instant::now(),
         #[cfg(test)]
         compat_stream_test_hook: None,
     };
+    let wechat_bot = tokio::spawn(run_wechat_bot(state.clone()));
     let app = build_router(state);
 
-    let addr: SocketAddr = format!("{}:{}", options.host, options.port)
-        .parse()
-        .with_context(|| format!("Invalid bind address '{}:{}'", options.host, options.port))?;
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("Failed to bind {addr}"))?;
-
-    let bound_addr = listener
-        .local_addr()
-        .context("Failed to read Runtime API listener address")?;
     println!("Runtime API listening on http://{bound_addr}");
     for line in runtime_auth_status_lines(&resolved_auth) {
         println!("{line}");
@@ -1220,7 +1243,7 @@ pub async fn run_http_server(
         println!(
             "  /v1/runtime/info reports bind_host={host:?}, port={port}, auth_required={auth}.",
             host = options.host,
-            port = options.port,
+            port = bound_addr.port(),
             auth = auth_enabled,
         );
     }
@@ -1232,6 +1255,7 @@ pub async fn run_http_server(
     .map_err(|e| anyhow!("Runtime API server error: {e}"));
     scheduler_cancel.cancel();
     scheduler_handle.abort();
+    wechat_bot.abort();
     serve_result
 }
 
@@ -1589,6 +1613,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/wechat/status", get(get_wechat_status))
         .route("/v1/wechat/login", post(wechat_login))
         .route("/v1/wechat/logout", post(wechat_logout))
+        .route("/v1/wechat/settings", patch(update_wechat_settings))
         .route("/v1/wechat/send", post(wechat_send))
         .route("/v1/wechat/poll", post(wechat_poll))
         .route("/v1/metrics", get(get_metrics))
@@ -1605,7 +1630,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             require_runtime_token,
         ));
 
-    Router::new()
+    let router = Router::new()
         .route("/", get(web::web_page))
         .route("/assets/hakus-web.css", get(web::web_styles))
         .route("/assets/hakus-web.js", get(web::web_script))
@@ -1619,8 +1644,12 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/mobile/", get(mobile_page))
         .route("/v1/runtime/info", get(runtime_info))
         .merge(api_routes)
-        .layer(cors_layer(&state.cors_origins))
-        .with_state(state)
+        .layer(cors_layer(&state.cors_origins));
+
+    #[cfg(all(not(target_os = "android"), not(target_env = "ohos")))]
+    let router = router.route("/ws/terminal", get(terminal::terminal_ws));
+
+    router.with_state(state)
 }
 
 async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Response {
@@ -1716,6 +1745,7 @@ async fn get_wechat_status(
 ) -> Result<Json<WechatStatusResponse>, ApiError> {
     let guard = state.wechat.lock().await;
     let client = guard.client.clone();
+    let auto_reply = guard.auto_reply;
     let qrcode_base64 = guard
         .login
         .as_ref()
@@ -1730,6 +1760,7 @@ async fn get_wechat_status(
         let account_id = client.account_snapshot().await.map(|account| account.account_id);
         return Ok(Json(WechatStatusResponse {
             status: "connected",
+            auto_reply,
             qrcode_base64: None,
             account_id,
         }));
@@ -1745,6 +1776,7 @@ async fn get_wechat_status(
     };
     Ok(Json(WechatStatusResponse {
         status,
+        auto_reply,
         qrcode_base64: if status == "disconnected" || status == "expired" {
             None
         } else {
@@ -1770,6 +1802,7 @@ async fn wechat_login(
             };
             return Ok(Json(WechatStatusResponse {
                 status,
+                auto_reply: guard.auto_reply,
                 qrcode_base64: Some(handle.qr_image_b64.clone()),
                 account_id: None,
             }));
@@ -1786,6 +1819,7 @@ async fn wechat_login(
     guard.login = Some(handle);
     Ok(Json(WechatStatusResponse {
         status: "waiting",
+        auto_reply: guard.auto_reply,
         qrcode_base64: Some(qrcode_base64),
         account_id: None,
     }))
@@ -1808,6 +1842,23 @@ async fn wechat_logout(
     Ok(Json(json!({ "ok": true })))
 }
 
+async fn update_wechat_settings(
+    State(state): State<RuntimeApiState>,
+    Json(request): Json<WechatSettingsRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let mut guard = state.wechat.lock().await;
+    guard
+        .client
+        .state()
+        .save_settings(&hakus_wechat::WechatSettings {
+            auto_reply: request.enabled,
+            users: guard.users.clone(),
+        })
+        .map_err(|error| ApiError::internal(format!("Failed to save WeChat settings: {error}")))?;
+    guard.auto_reply = request.enabled;
+    Ok(Json(json!({ "enabled": request.enabled })))
+}
+
 async fn wechat_send(
     State(state): State<RuntimeApiState>,
     Json(request): Json<WechatSendRequest>,
@@ -1826,7 +1877,11 @@ async fn wechat_send(
 async fn wechat_poll(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<WechatMessagesResponse>, ApiError> {
-    let client = state.wechat.lock().await.client.clone();
+    let (client, poll_lock) = {
+        let guard = state.wechat.lock().await;
+        (guard.client.clone(), guard.poll_lock.clone())
+    };
+    let _poll = poll_lock.lock().await;
     let messages = client
         .poll_text_messages()
         .await
@@ -1835,6 +1890,619 @@ async fn wechat_poll(
         .map(|(user_id, text, id)| WechatMessageEntry { user_id, text, id })
         .collect();
     Ok(Json(WechatMessagesResponse { messages }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WechatCommand {
+    Help,
+    Status,
+    New,
+    Project(Option<String>),
+    Model(Option<String>),
+    Mode(Option<String>),
+    Thinking(Option<String>),
+    Reply(Option<String>),
+    Bind(Option<String>),
+    Unknown(String),
+}
+
+fn parse_wechat_command(text: &str) -> Option<WechatCommand> {
+    let mut tokens = text.trim().split_whitespace();
+    let name = tokens.next()?.strip_prefix('/')?;
+    if name.is_empty() {
+        return None;
+    }
+    let argument = tokens.collect::<Vec<_>>().join(" ");
+    let argument = (!argument.is_empty()).then_some(argument);
+    let normalized = name.to_ascii_lowercase();
+
+    Some(match normalized.as_str() {
+        "help" | "帮助" => WechatCommand::Help,
+        "status" | "状态" => WechatCommand::Status,
+        "new" | "新建" | "clear" => WechatCommand::New,
+        "project" | "项目" => WechatCommand::Project(argument),
+        "model" | "模型" => WechatCommand::Model(argument),
+        "mode" | "模式" => WechatCommand::Mode(argument),
+        "think" | "thinking" | "思考" => WechatCommand::Thinking(argument),
+        "reply" | "回复" => WechatCommand::Reply(argument),
+        "bind" => WechatCommand::Bind(argument),
+        _ => WechatCommand::Unknown(name.to_string()),
+    })
+}
+
+fn wechat_help_text() -> String {
+    [
+        "机器人命令：",
+        "/帮助 — 查看这份说明",
+        "/状态 — 查看工作区、模型和任务状态",
+        "/新建 或 /clear — 开始新的对话",
+        "/项目 [名称] — 查看或切换工作区",
+        "/模型 [名称] — 查看或切换模型",
+        "/模式 [工作|编码|计划] — 查看或切换运行模式",
+        "/思考 [auto|low|medium|high|max] — 查看或切换思考级别",
+        "/回复 [normal|concise] — 查看或切换回复详细程度",
+        "/bind — 查看当前聊天关联状态",
+    ]
+    .join("\n")
+}
+
+fn wechat_workspace_name(workspace: &FsPath) -> String {
+    workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("当前工作区")
+        .to_string()
+}
+
+fn wechat_task_status(status: crate::task_manager::TaskStatus) -> &'static str {
+    match status {
+        crate::task_manager::TaskStatus::Queued => "排队中",
+        crate::task_manager::TaskStatus::Running => "运行中",
+        crate::task_manager::TaskStatus::Completed => "已完成",
+        crate::task_manager::TaskStatus::Failed => "失败",
+        crate::task_manager::TaskStatus::Canceled => "已取消",
+    }
+}
+
+async fn wechat_status_text(state: &RuntimeApiState, user_id: &str) -> String {
+    let user_settings = state
+        .wechat
+        .lock()
+        .await
+        .users
+        .get(user_id)
+        .cloned()
+        .unwrap_or_default();
+    let thread_id = wechat_thread_for_user(state, user_id).await;
+    let thread = if let Some(thread_id) = thread_id {
+        state.runtime_threads.get_thread(&thread_id).await.ok()
+    } else {
+        None
+    };
+    let (model, reasoning) = {
+        let config = state.config.read();
+        (
+            thread
+                .as_ref()
+                .map(|thread| thread.model.clone())
+                .or(user_settings.model.clone())
+                .unwrap_or_else(|| config.default_model()),
+            user_settings
+                .reasoning_effort
+                .clone()
+                .unwrap_or_else(|| config.reasoning_effort().unwrap_or("auto").to_string()),
+        )
+    };
+    let workspace = if let Some(thread) = thread.as_ref() {
+        thread.workspace.clone()
+    } else {
+        user_settings.workspace.clone()
+            .unwrap_or_else(|| state.workspace.clone())
+    };
+    let tasks = state
+        .task_manager
+        .list_tasks_scoped(Some(1), Some(workspace.as_path()))
+        .await;
+    let (task, status) = tasks
+        .first()
+        .map(|task| {
+            (
+                if task.prompt_summary.trim().is_empty() {
+                    "草稿".to_string()
+                } else {
+                    task.prompt_summary.clone()
+                },
+                wechat_task_status(task.status).to_string(),
+            )
+        })
+        .unwrap_or_else(|| ("草稿".to_string(), "草稿".to_string()));
+
+    format!(
+        "工作区: {}\n模型: {}\n思考: {}\n\n任务: {}\n状态: {}",
+        wechat_workspace_name(&workspace),
+        model,
+        reasoning,
+        task,
+        status,
+    )
+}
+
+async fn wechat_thread_for_user(state: &RuntimeApiState, user_id: &str) -> Option<String> {
+    state
+        .wechat
+        .lock()
+        .await
+        .threads
+        .get(user_id)
+        .cloned()
+}
+
+async fn ensure_wechat_thread(state: &RuntimeApiState, user_id: &str) -> Result<String> {
+    if let Some(thread_id) = wechat_thread_for_user(state, user_id).await {
+        if state.runtime_threads.get_thread(&thread_id).await.is_ok() {
+            return Ok(thread_id);
+        }
+    }
+
+    let preferences = state
+        .wechat
+        .lock()
+        .await
+        .users
+        .get(user_id)
+        .cloned()
+        .unwrap_or_default();
+    let thread = state
+        .runtime_threads
+        .create_thread(CreateThreadRequest {
+            model: preferences.model,
+            workspace: Some(
+                preferences
+                    .workspace
+                    .unwrap_or_else(|| state.workspace.clone()),
+            ),
+            mode: Some(preferences.mode.unwrap_or_else(|| "act".to_string())),
+            permission_posture: Some("auto-review".to_string()),
+            allow_shell: Some(false),
+            trust_mode: Some(false),
+            auto_approve: None,
+            ..Default::default()
+        })
+        .await?;
+    let _ = state
+        .runtime_threads
+        .update_thread(
+            &thread.id,
+            UpdateThreadRequest {
+                title: Some(format!("微信 {}", user_id)),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .wechat
+        .lock()
+        .await
+        .threads
+        .insert(user_id.to_string(), thread.id.clone());
+    Ok(thread.id)
+}
+
+async fn reset_wechat_thread(state: &RuntimeApiState, user_id: &str) -> Result<()> {
+    let old_thread = state.wechat.lock().await.threads.remove(user_id);
+    if let Some(thread_id) = old_thread {
+        let _ = state
+            .runtime_threads
+            .update_thread(
+                &thread_id,
+                UpdateThreadRequest {
+                    archived: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await;
+    }
+    Ok(())
+}
+
+async fn switch_wechat_project(
+    state: &RuntimeApiState,
+    user_id: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let projects = crate::runtime_api::projects::project_records(state)
+        .map_err(|error| anyhow!(error.message))?;
+    let Some(project) = projects.iter().find(|project| {
+        project.name.eq_ignore_ascii_case(name.trim())
+            || project.path.eq_ignore_ascii_case(name.trim())
+    }) else {
+        return Ok(None);
+    };
+    let workspace = PathBuf::from(&project.path);
+    if let Some(thread_id) = wechat_thread_for_user(state, user_id).await {
+        state
+            .runtime_threads
+            .update_thread(
+                &thread_id,
+                UpdateThreadRequest {
+                    workspace: Some(workspace.clone()),
+                    title: Some(format!("微信 {} · {}", user_id, project.name)),
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+    update_wechat_user_settings(state, user_id, |settings| {
+        settings.workspace = Some(workspace.clone());
+    })
+    .await?;
+    Ok(Some(project.name.clone()))
+}
+
+async fn update_wechat_user_settings(
+    state: &RuntimeApiState,
+    user_id: &str,
+    update: impl FnOnce(&mut hakus_wechat::WechatUserSettings),
+) -> Result<hakus_wechat::WechatUserSettings> {
+    let mut guard = state.wechat.lock().await;
+    let mut users = guard.users.clone();
+    let mut settings = users.get(user_id).cloned().unwrap_or_default();
+    update(&mut settings);
+    users.insert(user_id.to_string(), settings.clone());
+    guard
+        .client
+        .state()
+        .save_settings(&hakus_wechat::WechatSettings {
+            auto_reply: guard.auto_reply,
+            users: users.clone(),
+        })?;
+    guard.users = users;
+    Ok(settings)
+}
+
+async fn wait_for_wechat_turn(
+    state: &RuntimeApiState,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let detail = state.runtime_threads.get_thread_detail(thread_id).await?;
+        if let Some(turn) = detail.turns.iter().find(|turn| turn.id == turn_id) {
+            if matches!(
+                turn.status,
+                RuntimeTurnStatus::Completed
+                    | RuntimeTurnStatus::Failed
+                    | RuntimeTurnStatus::Interrupted
+                    | RuntimeTurnStatus::Canceled
+            ) {
+                if turn.status != RuntimeTurnStatus::Completed {
+                    return Err(anyhow!(
+                        turn.error
+                            .clone()
+                            .unwrap_or_else(|| "Runtime turn did not complete".to_string())
+                    ));
+                }
+                let response = detail
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        item.turn_id == turn_id
+                            && item.kind == TurnItemKind::AgentMessage
+                            && item.status == crate::runtime_threads::TurnItemLifecycleStatus::Completed
+                    })
+                    .filter_map(|item| item.detail.as_deref())
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !response.is_empty() {
+                    return Ok(response);
+                }
+                return Err(anyhow!("Runtime returned an empty response"));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!("Runtime response timed out"));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wechat_command_reply(
+    state: &RuntimeApiState,
+    user_id: &str,
+    command: WechatCommand,
+) -> Result<String> {
+    match command {
+        WechatCommand::Help => Ok(wechat_help_text()),
+        WechatCommand::Status => Ok(wechat_status_text(state, user_id).await),
+        WechatCommand::New => {
+            reset_wechat_thread(state, user_id).await?;
+            Ok("已开始新的对话。发送 /帮助 查看可用命令。".to_string())
+        }
+        WechatCommand::Project(project) => {
+            match project {
+                Some(name) => match switch_wechat_project(state, user_id, &name).await? {
+                    Some(name) => Ok(format!(
+                        "已切换工作区: {name}\n\n{}",
+                        wechat_status_text(state, user_id).await
+                    )),
+                    None => Ok(format!(
+                        "没有找到项目: {name}\n发送 /项目 查看可用项目。"
+                    )),
+                },
+                None => {
+                    let projects = crate::runtime_api::projects::project_records(state)
+                        .map_err(|error| anyhow!(error.message))?;
+                    let workspace = wechat_status_text(state, user_id)
+                        .await
+                        .lines()
+                        .next()
+                        .and_then(|line| line.strip_prefix("工作区: "))
+                        .unwrap_or("当前工作区")
+                        .to_string();
+                    let mut lines = vec![format!("当前工作区: {workspace}")];
+                    if projects.is_empty() {
+                        lines.push("尚无已登记项目。".to_string());
+                    } else {
+                        lines.push("可用项目:".to_string());
+                        lines.extend(projects.into_iter().map(|project| {
+                            format!("/项目 {}", project.name)
+                        }));
+                    }
+                    Ok(lines.join("\n"))
+                }
+            }
+        }
+        WechatCommand::Model(model) => {
+            if let Some(model) = model {
+                if model.trim().is_empty() {
+                    return Ok("用法: /模型 <名称>".to_string());
+                }
+                let model = model.trim().to_string();
+                if let Some(thread_id) = wechat_thread_for_user(state, user_id).await {
+                    state
+                        .runtime_threads
+                        .update_thread(
+                            &thread_id,
+                            UpdateThreadRequest {
+                                model: Some(model.clone()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                }
+                update_wechat_user_settings(state, user_id, |settings| {
+                    settings.model = Some(model.clone());
+                })
+                .await?;
+                Ok(format!("已切换模型: {model}"))
+            } else {
+                let model = wechat_status_text(state, user_id)
+                    .await
+                    .lines()
+                    .find_map(|line| line.strip_prefix("模型: "))
+                    .unwrap_or("未设置")
+                    .to_string();
+                Ok(format!("当前模型: {model}"))
+            }
+        }
+        WechatCommand::Mode(mode) => {
+            let changed = mode.is_some();
+            let selected = if let Some(mode) = mode {
+                let mode = match mode.trim().to_ascii_lowercase().as_str() {
+                    "work" | "工作" | "act" => "act",
+                    "code" | "编码" | "operate" => "operate",
+                    "plan" | "计划" => "plan",
+                    _ => return Ok("用法: /模式 工作|编码|计划".to_string()),
+                }
+                .to_string();
+                if let Some(thread_id) = wechat_thread_for_user(state, user_id).await {
+                    state
+                        .runtime_threads
+                        .update_thread(
+                            &thread_id,
+                            UpdateThreadRequest {
+                                mode: Some(mode.clone()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                }
+                update_wechat_user_settings(state, user_id, |settings| {
+                    settings.mode = Some(mode.clone());
+                })
+                .await?;
+                mode
+            } else {
+                let preferences = state
+                    .wechat
+                    .lock()
+                    .await
+                    .users
+                    .get(user_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let thread_id = wechat_thread_for_user(state, user_id).await;
+                match thread_id {
+                Some(thread_id) => state
+                    .runtime_threads
+                    .get_thread(&thread_id)
+                    .await
+                    .map(|thread| thread.mode)
+                    .unwrap_or_else(|_| preferences.mode.unwrap_or_else(|| "act".to_string())),
+                None => preferences.mode.unwrap_or_else(|| "act".to_string()),
+                }
+            };
+            let label = match selected.as_str() {
+                "act" => "工作",
+                "operate" => "编码",
+                "plan" => "计划",
+                other => other,
+            };
+            if changed {
+                Ok(format!("已切换模式: {label}"))
+            } else {
+                Ok(format!("当前模式: {label}"))
+            }
+        }
+        WechatCommand::Thinking(effort) => {
+            if let Some(effort) = effort {
+                let effort = effort.trim().to_ascii_lowercase();
+                if !matches!(effort.as_str(), "auto" | "low" | "medium" | "high" | "max") {
+                    return Ok("用法: /思考 auto|low|medium|high|max".to_string());
+                }
+                update_wechat_user_settings(state, user_id, |settings| {
+                    settings.reasoning_effort = Some(effort.clone());
+                })
+                .await?;
+                Ok(format!("已切换思考级别: {effort}"))
+            } else {
+                let effort = state
+                    .wechat
+                    .lock()
+                    .await
+                    .users
+                    .get(user_id)
+                    .and_then(|settings| settings.reasoning_effort.clone())
+                    .unwrap_or_else(|| {
+                        state
+                            .config
+                            .read()
+                            .reasoning_effort()
+                            .unwrap_or("auto")
+                            .to_string()
+                    });
+                Ok(format!("当前思考级别: {effort}"))
+            }
+        }
+        WechatCommand::Reply(verbosity) => {
+            if let Some(verbosity) = verbosity {
+                let verbosity = match verbosity.trim().to_ascii_lowercase().as_str() {
+                    "normal" | "标准" => "normal",
+                    "concise" | "简洁" => "concise",
+                    _ => return Ok("用法: /回复 normal|concise".to_string()),
+                }
+                .to_string();
+                update_wechat_user_settings(state, user_id, |settings| {
+                    settings.verbosity = Some(verbosity.clone());
+                })
+                .await?;
+                Ok(format!("已切换回复详细程度: {verbosity}"))
+            } else {
+                let verbosity = state
+                    .wechat
+                    .lock()
+                    .await
+                    .users
+                    .get(user_id)
+                    .and_then(|settings| settings.verbosity.clone())
+                    .unwrap_or_else(|| "normal".to_string());
+                Ok(format!("当前回复详细程度: {verbosity}"))
+            }
+        }
+        WechatCommand::Bind(_code) => Ok(
+            "当前微信聊天已自动关联本地会话，无需绑定码。".to_string(),
+        ),
+        WechatCommand::Unknown(name) => Ok(format!(
+            "未识别命令: /{name}\n\n{}",
+            wechat_help_text()
+        )),
+    }
+}
+
+async fn handle_wechat_message(
+    state: &RuntimeApiState,
+    user_id: &str,
+    text: &str,
+) -> Result<Option<String>> {
+    if let Some(command) = parse_wechat_command(text) {
+        return Ok(Some(wechat_command_reply(state, user_id, command).await?));
+    }
+
+    let enabled = state.wechat.lock().await.auto_reply;
+    if !enabled {
+        return Ok(None);
+    }
+
+    let preferences = state
+        .wechat
+        .lock()
+        .await
+        .users
+        .get(user_id)
+        .cloned()
+        .unwrap_or_default();
+    let prompt = if preferences.verbosity.as_deref() == Some("concise") {
+        format!("请用简洁的方式回复，不省略完成任务所需的关键信息。\n\n{}", text.trim())
+    } else {
+        text.trim().to_string()
+    };
+    let thread_id = ensure_wechat_thread(state, user_id).await?;
+    let turn = state
+        .runtime_threads
+        .start_turn(
+            &thread_id,
+            StartTurnRequest {
+                prompt,
+                mode: preferences.mode,
+                permission_posture: Some("auto-review".to_string()),
+                allow_shell: Some(false),
+                trust_mode: Some(false),
+                auto_approve: None,
+                reasoning_effort: preferences.reasoning_effort,
+                ..Default::default()
+            },
+        )
+        .await?;
+    Ok(Some(
+        wait_for_wechat_turn(state, &thread_id, &turn.id)
+            .await
+            .unwrap_or_else(|error| format!("暂时无法完成回复: {error}")),
+    ))
+}
+
+async fn run_wechat_bot(state: RuntimeApiState) {
+    loop {
+        let (client, poll_lock) = {
+            let guard = state.wechat.lock().await;
+            (guard.client.clone(), guard.poll_lock.clone())
+        };
+        if !client.is_logged_in().await {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+
+        let messages = {
+            let _poll = poll_lock.lock().await;
+            client.poll_text_messages().await
+        };
+        let messages = match messages {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::warn!("WeChat background poll failed: {error}");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+
+        for (user_id, text, _message_id) in messages {
+            if user_id.trim().is_empty() || text.trim().is_empty() {
+                continue;
+            }
+            match handle_wechat_message(&state, &user_id, &text).await {
+                Ok(Some(reply)) => {
+                    if let Err(error) = client.send_text(&user_id, &reply).await {
+                        tracing::warn!(user_id = %user_id, "WeChat reply failed: {error}");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(user_id = %user_id, "WeChat message handling failed: {error}"),
+            }
+        }
+    }
 }
 
 async fn get_metrics(
@@ -6889,8 +7557,7 @@ fn provider_group(provider: ApiProvider) -> &'static str {
         | ApiProvider::Anthropic
         | ApiProvider::Xai
         | ApiProvider::Google
-        | ApiProvider::Mistral
-        | ApiProvider::OpenaiCodex => "国际服务",
+        | ApiProvider::Mistral => "国际服务",
         ApiProvider::NvidiaNim
         | ApiProvider::Openrouter
         | ApiProvider::Orcarouter

@@ -423,7 +423,7 @@
   "CmdModelsDescription": "工具箱：从当前 API 获取实时模型 ID",
   "CmdModelDbDescription": "参考：浏览内置的模型数据库",
   "CmdNetworkDescription": "管理网络允许和拒绝规则",
-  "CmdUpdateDescription": "检查并安装新的 CodeWhale 版本",
+  "CmdUpdateDescription": "检查并安装新的 HakusCLI 版本",
   "CmdNoteDescription": "添加、列出、编辑或删除工作区笔记",
   "CmdThemeDescription": "切换主题或打开主题选择器",
   "CmdProviderDescription": "切换当前提供商 和/或 模型（deepseek | nvidia-nim | ollama）",
@@ -497,7 +497,7 @@
   "TranslationFailed": "翻译失败",
   "CmdTrustDescription": "管理工作区信任与按路径的白名单",
   "CmdWorkspaceDescription": "显示或切换当前工作空间",
-  "CmdWechatDescription": "连接微信：扫码登录、状态、发送、消息轮询",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "移除最后一组消息对",
   "CmdVerboseDescription": "切换实时思考内容的完整显示",
   "CmdCacheAdvice": "第 3 轮起命中率稳定在 ~70% 以上即表示前缀缓存稳定；\n长会话中明显偏低则意味着前缀有抖动，值得排查（#263）。",
@@ -929,7 +929,7 @@
   "ApprovalChooseAction": "Enter 执行选中项，或直接按 y/a/d",
   "ApprovalIntentLabel": "意图：",
   "ApprovalMoreLines": "  … (还有 {count} 行)",
-  "ApprovalAutoDeniedSession": "已自动拒绝 {tool}：在本次 CodeWhale 运行期间，已有匹配请求被拒绝。若要重新考虑，请重启 CodeWhale。",
+  "ApprovalAutoDeniedSession": "已自动拒绝 {tool}：在本次 HakusCLI 运行期间，已有匹配请求被拒绝。若要重新考虑，请重启 HakusCLI。",
   "ElevationTitleSandboxDenied": "  ⚠ 沙箱拒绝 ",
   "ElevationTitleRequired": " 沙箱提权 ",
   "ElevationFieldTool": "  工具：",
@@ -1278,7 +1278,6 @@
   "ProviderExternalActionRevoke": "撤销外部访问",
   "ProviderExternalActionChoices": "外部访问选项",
   "ProviderExternalActionReuseGrok": "复用外部Grok凭据",
-  "ProviderExternalHintCodexReview": "完成 {login} 后，按Enter查看禁用、只读和托管访问选项。",
   "ProviderExternalHintXaiReview": "按Enter使用HakusCLI自有的设备登录；按E查看现有Grok CLI凭据复用。",
   "ProviderExternalHintXaiApiKey": "也可以使用XAI_API_KEY，然后重新打开此选择器。",
   "XaiAuthChoiceTitle": " xAI 身份验证 ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} 没有 /models 端点，因此未探测可达性。",
   "ProviderTemplateOpened": "已打开提供商模板 '{id}'。只需输入 API 密钥。",
   "ProviderTemplateUnknown": "未知提供商模板 '{id}'。",
-  "ProviderTemplateOpenedEnvOnly": "已打开内置模板 '{id}'。请填写 API 密钥环境变量名后保存，不要粘贴原始密钥。",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "已打开内置模板 '{id}'。请填写 API 密钥环境变量名后保存，不要粘贴原始密钥。"
 }

@@ -109,9 +109,6 @@ pub(crate) fn auth_class_for_provider(
         return ProviderAuthClass::NoAuth;
     }
     let official_endpoint = !config.provider_uses_custom_endpoint(provider);
-    if provider == ApiProvider::OpenaiCodex && official_endpoint {
-        return ProviderAuthClass::OAuth;
-    }
     if provider == ApiProvider::Moonshot
         && official_endpoint
         && auth_mode
@@ -253,20 +250,6 @@ pub(crate) fn credential_state_for_provider(
         // Kimi remains API-key-only until Hakus has its own registered
         // OAuth client identity. Never inspect Kimi CLI storage here.
         return CredentialState::MissingKey;
-    }
-    if provider == ApiProvider::OpenaiCodex && official_endpoint {
-        return if crate::config::has_api_key_for(config, provider) {
-            CredentialState::Saved
-        } else if provider != config.api_provider()
-            && config.external_credential_read_consent_configured(
-                provider,
-                hakus_config::ExternalCredentialSource::CodexCli,
-            )
-        {
-            CredentialState::ExternalConsent
-        } else {
-            CredentialState::MissingLogin
-        };
     }
     let xai_oauth_selected = provider == ApiProvider::Xai
         && official_endpoint
@@ -819,27 +802,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn external_consent_with_passed_check_becomes_ready() {
-        let config = crate::config::Config::default();
-        let mut checks = ProviderReadinessSnapshot::default();
-        checks.record_success(
-            &config,
-            ApiProvider::OpenaiCodex,
-            crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-        );
-        assert_eq!(
-            resolve_test_route(
-                &config,
-                ApiProvider::OpenaiCodex,
-                crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-                CredentialState::ExternalConsent,
-                true,
-                &checks,
-            ),
-            ResolvedProviderReadiness::Ready
-        );
-    }
 
     #[test]
     fn external_consent_with_failed_check_surfaces_reason() {
@@ -869,22 +831,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn external_consent_without_check_stays_pending_selection() {
-        let config = crate::config::Config::default();
-        let checks = ProviderReadinessSnapshot::default();
-        assert_eq!(
-            resolve_test_route(
-                &config,
-                ApiProvider::OpenaiCodex,
-                crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-                CredentialState::ExternalConsent,
-                true,
-                &checks,
-            ),
-            ResolvedProviderReadiness::ExternalConsentPendingSelection
-        );
-    }
 
     #[test]
     fn models_probe_success_marks_connection_checked_not_ready() {
@@ -986,37 +932,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn route_and_missing_auth_states_dominate_health() {
-        let config = crate::config::Config {
-            provider: Some("openai-codex".to_string()),
-            ..Default::default()
-        };
-        let mut checks = ProviderReadinessSnapshot::default();
-        checks.record_success(&config, ApiProvider::OpenaiCodex, "gpt-5.5");
-        assert_eq!(
-            resolve_test_route(
-                &config,
-                ApiProvider::OpenaiCodex,
-                "gpt-5.5",
-                CredentialState::MissingLogin,
-                true,
-                &checks
-            ),
-            ResolvedProviderReadiness::MissingLogin
-        );
-        assert_eq!(
-            resolve_test_route(
-                &config,
-                ApiProvider::OpenaiCodex,
-                "gpt-5.5",
-                CredentialState::Saved,
-                false,
-                &checks
-            ),
-            ResolvedProviderReadiness::InvalidRoute
-        );
-    }
 
     #[test]
     fn api_key_success_does_not_verify_new_xai_oauth_route() {
@@ -1520,78 +1435,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn oauth_readiness_is_limited_to_official_endpoints() {
-        let _lock = crate::test_support::lock_test_env();
-        let temp = tempfile::tempdir().expect("isolated oauth home");
-        let missing_grok_auth = temp.path().join("missing-grok-auth.json");
-        let _grok_auth =
-            crate::test_support::EnvVarGuard::set("GROK_AUTH_PATH", &missing_grok_auth);
-        let _xai_key = crate::test_support::EnvVarGuard::remove("XAI_API_KEY");
-        let _codex_key = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _legacy_codex_key = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-
-        let custom_xai = crate::config::Config {
-            provider: Some("xai".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                xai: crate::config::ProviderConfig {
-                    base_url: Some("https://gateway.example.test/v1".to_string()),
-                    auth_mode: Some("oauth".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(
-            auth_class_for_provider(&custom_xai, ApiProvider::Xai),
-            ProviderAuthClass::ApiKey
-        );
-        assert_eq!(
-            credential_state_for_provider(&custom_xai, ApiProvider::Xai),
-            CredentialState::MissingKey
-        );
-
-        let official_xai = crate::config::Config {
-            provider: Some("xai".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                xai: crate::config::ProviderConfig {
-                    auth_mode: Some("oauth".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(
-            auth_class_for_provider(&official_xai, ApiProvider::Xai),
-            ProviderAuthClass::OAuth
-        );
-        assert_eq!(
-            credential_state_for_provider(&official_xai, ApiProvider::Xai),
-            CredentialState::MissingLogin
-        );
-
-        let custom_codex = crate::config::Config {
-            provider: Some("openai-codex".to_string()),
-            providers: Some(crate::config::ProvidersConfig {
-                openai_codex: crate::config::ProviderConfig {
-                    base_url: Some("https://gateway.example.test/v1".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(
-            auth_class_for_provider(&custom_codex, ApiProvider::OpenaiCodex),
-            ProviderAuthClass::ApiKey
-        );
-        assert_eq!(
-            credential_state_for_provider(&custom_codex, ApiProvider::OpenaiCodex),
-            CredentialState::MissingKey
-        );
-    }
 
     #[test]
     fn xai_custom_endpoint_does_not_count_ambient_official_key() {

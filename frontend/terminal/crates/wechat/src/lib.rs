@@ -25,7 +25,7 @@ pub mod state;
 pub use client::IlLinkClient;
 pub use login::LoginHandle;
 pub use models::*;
-pub use state::WechatState;
+pub use state::{WechatSettings, WechatState, WechatUserSettings};
 
 /// iLink protocol base URL.
 pub const ILINK_BASE: &str = "https://ilinkai.weixin.qq.com";

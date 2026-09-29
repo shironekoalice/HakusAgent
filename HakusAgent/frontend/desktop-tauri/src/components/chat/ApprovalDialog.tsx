@@ -1,5 +1,5 @@
 /**
- * ApprovalDialog — Codex-style approval card (glass effect).
+ * ApprovalDialog — approval card (glass effect).
  *
  * Rendered when the agent's five-mode permission engine requires user
  * confirmation (guardian / granular / ask flows). Receives the
@@ -8,6 +8,7 @@
  *   - 本会话允许   → POST /api/approvals/{id}/approve  {scope:'session'}
  *   - 拒绝         → POST /api/approvals/{id}/deny
  */
+import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { ShieldAlert, Check, X, Loader2, Terminal, FilePen, Globe, Wrench } from 'lucide-react'
 import { apiClient } from '@/api/client'
@@ -74,8 +75,8 @@ export function ApprovalDialog({ approval, onClose }: ApprovalDialogProps) {
 
   const risk = riskLevel(approval.tool)
 
-  return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[520] flex items-center justify-center p-4" data-hakus-overlay="approval-dialog">
       {/* glass backdrop */}
       <div
         className="absolute inset-0 bg-black/30 backdrop-blur-sm"
@@ -155,6 +156,7 @@ export function ApprovalDialog({ approval, onClose }: ApprovalDialogProps) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

@@ -89,11 +89,11 @@ export function FlowNodePicker({ open, at, onClose, onPick }: Props) {
       className="flow-picker"
       style={{ left: Math.max(8, at.x), top: Math.max(8, at.y) }}
     >
-      <div className="flow-picker-search">
+      <div className="flow-picker-search search-composite">
         <Search className="h-3 w-3 shrink-0 opacity-60" />
         <input
           ref={inputRef}
-          className="flow-picker-input"
+          className="flow-picker-input search-composite-input"
           value={query}
           placeholder={zh ? '搜索节点…' : 'Search nodes…'}
           onChange={(e) => {

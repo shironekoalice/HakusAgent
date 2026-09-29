@@ -860,7 +860,6 @@ pub(crate) fn mirror_saved_api_key_in_config(
         ApiProvider::Deepinfra => &mut providers.deepinfra,
         ApiProvider::Together => &mut providers.together,
         ApiProvider::Qianfan => &mut providers.qianfan,
-        ApiProvider::OpenaiCodex => &mut providers.openai_codex,
         ApiProvider::Anthropic => &mut providers.anthropic,
         ApiProvider::Openmodel => &mut providers.openmodel,
         ApiProvider::Zai => &mut providers.zai,

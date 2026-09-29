@@ -63,7 +63,6 @@ enum ProviderArg {
     OllamaCloud,
     Huggingface,
     Together,
-    OpenaiCodex,
     Anthropic,
     #[value(alias = "open-model", alias = "open_model")]
     Openmodel,
@@ -142,7 +141,6 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::OllamaCloud => ProviderKind::OllamaCloud,
             ProviderArg::Huggingface => ProviderKind::Huggingface,
             ProviderArg::Together => ProviderKind::Together,
-            ProviderArg::OpenaiCodex => ProviderKind::OpenaiCodex,
             ProviderArg::Anthropic => ProviderKind::Anthropic,
             ProviderArg::Openmodel => ProviderKind::Openmodel,
             ProviderArg::Zai => ProviderKind::Zai,
@@ -2363,25 +2361,6 @@ fn provider_env_value(provider: ProviderKind) -> Option<(&'static str, String)> 
     })
 }
 
-fn openai_codex_auth_file_path() -> PathBuf {
-    if let Ok(path) = std::env::var("OPENAI_CODEX_AUTH_FILE") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return hakus_config::resolve_external_credential_path(&path).unwrap_or(path);
-        }
-    }
-
-    let codex_home = std::env::var("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".codex")
-        });
-    let path = codex_home.join("auth.json");
-    hakus_config::resolve_external_credential_path(&path).unwrap_or(path)
-}
-
 fn grok_auth_file_path() -> PathBuf {
     for key in ["GROK_AUTH_PATH", "XAI_AUTH_PATH"] {
         if let Ok(path) = std::env::var(key) {
@@ -2410,10 +2389,6 @@ fn external_credential_target(
     path_override: Option<PathBuf>,
 ) -> Result<(hakus_config::ExternalCredentialSource, PathBuf)> {
     let (source, default_path) = match provider {
-        ProviderKind::OpenaiCodex => (
-            hakus_config::ExternalCredentialSource::CodexCli,
-            openai_codex_auth_file_path(),
-        ),
         ProviderKind::Xai => (
             hakus_config::ExternalCredentialSource::GrokCli,
             grok_auth_file_path(),
@@ -2519,13 +2494,8 @@ fn external_read_consent(
 }
 
 fn external_oauth_selected(store: &ConfigStore, provider: ProviderKind) -> bool {
-    if external_read_consent(store, provider).is_none() {
-        return false;
-    }
-    if provider == ProviderKind::OpenaiCodex {
-        return true;
-    }
     provider == ProviderKind::Xai
+        && external_read_consent(store, provider).is_some()
         && xai_oauth_mode_selected(store.config.providers.xai.auth_mode.as_deref())
 }
 
@@ -2995,18 +2965,7 @@ fn auth_status_all_providers_with_runtime(
         let keyring_status = keyring_key.as_ref().map(|_| "set").unwrap_or("-");
         let env_status = env_key.as_ref().map(|_| "set").unwrap_or("-");
 
-        let source = if provider == ProviderKind::OpenaiCodex {
-            // Keep the summary consistent with `auth status`: Codex auth is
-            // OAuth-file (or env token) based — config/keyring keys are not
-            // consulted for it.
-            if env_key.is_some() {
-                "env".to_string()
-            } else if external_selected {
-                "external consent (not probed)".to_string()
-            } else {
-                "unset".to_string()
-            }
-        } else if external_selected {
+        let source = if external_selected {
             "external consent (not probed)".to_string()
         } else if config_key.is_some() {
             "config".to_string()
@@ -3225,15 +3184,7 @@ fn auth_list_lines_with_runtime(
         let keyring = (!file).then(|| provider_keyring_set(secrets, provider));
         let env = provider_env_set(provider);
         let external_selected = external_oauth_selected(store, provider);
-        let active = if provider == ProviderKind::OpenaiCodex {
-            if env {
-                "env"
-            } else if external_selected {
-                "external-consent"
-            } else {
-                "missing"
-            }
-        } else if external_selected {
+        let active = if external_selected {
             "external-consent"
         } else if file {
             "config"
@@ -3285,15 +3236,7 @@ fn auth_status_lines_for_provider_with_runtime(
     let external_selected = external_oauth_selected(store, provider);
 
     let active_label = {
-        let active_source = if provider == ProviderKind::OpenaiCodex {
-            if env_key.is_some() {
-                "env"
-            } else if external_selected {
-                "external read-only consent (availability not probed)"
-            } else {
-                "missing"
-            }
-        } else if external_selected {
+        let active_source = if external_selected {
             "external read-only consent (availability not probed)"
         } else if config_key.is_some() {
             "config"
@@ -3304,14 +3247,10 @@ fn auth_status_lines_for_provider_with_runtime(
         } else {
             "missing"
         };
-        let active_last4 = if provider == ProviderKind::OpenaiCodex {
-            env_key.as_ref().map(|(_, value)| last4_label(value))
-        } else {
-            config_key
-                .map(last4_label)
-                .or_else(|| keyring_key.as_deref().map(last4_label))
-                .or_else(|| env_key.as_ref().map(|(_, value)| last4_label(value)))
-        };
+        let active_last4 = config_key
+            .map(last4_label)
+            .or_else(|| keyring_key.as_deref().map(last4_label))
+            .or_else(|| env_key.as_ref().map(|(_, value)| last4_label(value)));
         active_last4
             .map(|last4| format!("{active_source} (last4: {last4})"))
             .unwrap_or_else(|| active_source.to_string())
@@ -3333,21 +3272,13 @@ fn auth_status_lines_for_provider_with_runtime(
     let base_url = provider_cfg.base_url.as_deref().unwrap_or("(default)");
     let model = provider_cfg.model.as_deref().unwrap_or("(default)");
 
-    let lookup_order = if provider == ProviderKind::OpenaiCodex {
-        "lookup order: env -> consent-gated exact Codex CLI file".to_string()
-    } else {
-        "lookup order: config -> secret store -> env".to_string()
-    };
-    let auth_mode = if provider == ProviderKind::OpenaiCodex {
-        "codex_oauth".to_string()
-    } else {
-        provider_cfg
-            .auth_mode
-            .as_deref()
-            .or(store.config.auth_mode.as_deref())
-            .unwrap_or("api_key")
-            .to_string()
-    };
+    let lookup_order = "lookup order: config -> secret store -> env".to_string();
+    let auth_mode = provider_cfg
+        .auth_mode
+        .as_deref()
+        .or(store.config.auth_mode.as_deref())
+        .unwrap_or("api_key")
+        .to_string();
 
     let mut lines = vec![
         format!("provider: {}{}", provider.as_str(), active_marker),
@@ -3640,7 +3571,7 @@ fn run_auth_command_with_secrets_and_runtime(
             )?;
             let provider_key = provider.provider().provider_config_key();
             hakus_config::mutate_config_document(store.path(), |document| {
-                if matches!(provider, ProviderKind::OpenaiCodex | ProviderKind::Xai) {
+                if provider == ProviderKind::Xai {
                     hakus_config::set_config_document_value(
                         document,
                         &["providers", provider_key, "auth_mode"],
@@ -5992,281 +5923,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parses_auth_subcommand_matrix() {
-        let cli = parse_ok(&["deepseek", "auth", "xai-device"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::XaiDevice
-            }))
-        ));
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "auth",
-            "external-consent",
-            "--provider",
-            "openai-codex",
-            "--mode",
-            "read-only",
-            "--path",
-            "/tmp/codex-auth.json",
-            "--yes",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::ExternalConsent {
-                    provider: ProviderArg::OpenaiCodex,
-                    mode: ExternalCredentialModeArg::ReadOnly,
-                    path: Some(_),
-                    yes: true,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "external-revoke", "--provider", "xai"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::ExternalRevoke {
-                    provider: ProviderArg::Xai,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "deepseek"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Deepseek,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "auth",
-            "set",
-            "--provider",
-            "openrouter",
-            "--api-key-stdin",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Openrouter,
-                    api_key: None,
-                    api_key_stdin: true,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "novita"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Get {
-                    provider: ProviderArg::Novita
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "clear", "--provider", "nvidia-nim"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Clear {
-                    provider: ProviderArg::NvidiaNim
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "fireworks"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Fireworks,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "siliconflow"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Siliconflow,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "arcee"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Arcee,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "moonshot"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Moonshot,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "wanjie-ark"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::WanjieArk,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "sglang"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Get {
-                    provider: ProviderArg::Sglang
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "vllm"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Get {
-                    provider: ProviderArg::Vllm
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "ollama"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Set {
-                    provider: ProviderArg::Ollama,
-                    api_key: None,
-                    api_key_stdin: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "status", "--provider", "openai-codex"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Status {
-                    provider: Some(ProviderArg::OpenaiCodex),
-                    diagnostic: false,
-                }
-            }))
-        ));
-
-        let cli = parse_ok(&[
-            "deepseek",
-            "auth",
-            "status",
-            "--diagnostic",
-            "--provider",
-            "deepseek",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Status {
-                    provider: Some(ProviderArg::Deepseek),
-                    diagnostic: true,
-                }
-            }))
-        ));
-
-        for (provider, expected) in [
-            ("anthropic", ProviderArg::Anthropic),
-            ("openmodel", ProviderArg::Openmodel),
-            ("open-model", ProviderArg::Openmodel),
-            ("zai", ProviderArg::Zai),
-            ("stepfun", ProviderArg::Stepfun),
-            ("minimax", ProviderArg::Minimax),
-            ("minimax-anthropic", ProviderArg::MinimaxAnthropic),
-            ("minimax_anthropic", ProviderArg::MinimaxAnthropic),
-            ("deepinfra", ProviderArg::Deepinfra),
-            ("deep-infra", ProviderArg::Deepinfra),
-            ("siliconflow-cn", ProviderArg::SiliconflowCn),
-            ("siliconflow-CN", ProviderArg::SiliconflowCn),
-            ("siliconflow_china", ProviderArg::SiliconflowCn),
-        ] {
-            let cli = parse_ok(&[
-                "deepseek",
-                "auth",
-                "set",
-                "--provider",
-                provider,
-                "--api-key-stdin",
-            ]);
-            assert!(matches!(
-                cli.command,
-                Some(Commands::Auth(AuthArgs {
-                    command: AuthCommand::Set {
-                        provider,
-                        api_key: None,
-                        api_key_stdin: true,
-                    }
-                })) if provider == expected
-            ));
-        }
-
-        let cli = parse_ok(&["deepseek", "auth", "list"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::List
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "migrate"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Migrate { dry_run: false }
-            }))
-        ));
-
-        let cli = parse_ok(&["deepseek", "auth", "migrate", "--dry-run"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthArgs {
-                command: AuthCommand::Migrate { dry_run: true }
-            }))
-        ));
-    }
 
     #[test]
     fn auth_help_describes_runtime_effective_diagnostics() {
@@ -6725,79 +6381,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn auth_status_never_probes_codex_file_and_reports_exact_consent() {
-        use hakus_secrets::InMemoryKeyringStore;
-        use std::sync::Arc;
-
-        let _lock = env_lock();
-        let _access_token = ScopedEnvVar::set("OPENAI_CODEX_ACCESS_TOKEN", "");
-        let _codex_token = ScopedEnvVar::set("CODEX_ACCESS_TOKEN", "");
-
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
-        let auth_path = dir.path().join("auth.json");
-        std::fs::write(&auth_path, r#"{"tokens":{"access_token":"secret-token"}}"#)
-            .expect("write auth file");
-        let auth_path_str = auth_path.to_string_lossy().into_owned();
-        let _auth_file = ScopedEnvVar::set("OPENAI_CODEX_AUTH_FILE", &auth_path_str);
-
-        let mut store = ConfigStore::load(Some(config_path)).expect("store should load");
-        store.config.provider = ProviderKind::OpenaiCodex;
-        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
-
-        let output =
-            auth_status_lines_for_provider(&store, &secrets, ProviderKind::OpenaiCodex).join("\n");
-
-        assert!(output.contains("provider: openai-codex"));
-        assert!(output.contains("auth mode: codex_oauth"));
-        assert!(output.contains("active source: missing"));
-        assert!(output.contains("lookup order: env -> consent-gated exact Codex CLI file"));
-        assert!(output.contains("external credentials: disabled"));
-        assert!(output.contains("scope_valid=false"));
-        assert!(output.contains("disabled; no external-credential probing, reading"));
-        assert!(output.contains("file not probed"));
-        assert!(!output.contains("secret-token"));
-
-        store.config.providers.openai_codex.external_credentials =
-            Some(hakus_config::ExternalCredentialConsentToml::read_only(
-                ProviderKind::OpenaiCodex,
-                hakus_config::ExternalCredentialSource::CodexCli,
-                auth_path.clone(),
-            ));
-        let output =
-            auth_status_lines_for_provider(&store, &secrets, ProviderKind::OpenaiCodex).join("\n");
-        assert!(
-            output.contains("active source: external read-only consent (availability not probed)")
-        );
-        assert!(output.contains("external credentials: read_only"));
-        assert!(output.contains("provider=openai-codex"));
-        assert!(output.contains("source=codex_cli"));
-        assert!(output.contains(&format!(
-            "path={}",
-            hakus_config::quote_os_path(&auth_path)
-        )));
-        assert!(output.contains(&format!(
-            "consent_version={}",
-            hakus_config::EXTERNAL_CREDENTIAL_CONSENT_VERSION
-        )));
-        assert!(output.contains("file not probed"));
-        assert!(!output.contains("secret-token"));
-
-        let ambient_path = dir.path().join("new-ambient-auth.json");
-        let ambient_path_str = ambient_path.to_string_lossy().into_owned();
-        let _ambient_file = ScopedEnvVar::set("OPENAI_CODEX_AUTH_FILE", &ambient_path_str);
-        let changed =
-            auth_status_lines_for_provider(&store, &secrets, ProviderKind::OpenaiCodex).join("\n");
-        assert!(changed.contains("state=active"), "{changed}");
-        assert!(changed.contains("ambient_path_changed=true"), "{changed}");
-        assert!(changed.contains("consent remains pinned"), "{changed}");
-        assert!(
-            changed.contains(&hakus_config::quote_os_path(&auth_path)),
-            "{changed}"
-        );
-        assert!(!changed.contains(&ambient_path_str), "{changed}");
-    }
 
     #[test]
     fn xai_valid_owned_generation_blocks_external_consent_without_storage_probes() {
@@ -7292,41 +6875,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn auth_list_uses_persisted_consent_without_probing_codex_file() {
-        use hakus_secrets::InMemoryKeyringStore;
-        use std::sync::Arc;
-
-        let _lock = env_lock();
-        let _access_token = ScopedEnvVar::set("OPENAI_CODEX_ACCESS_TOKEN", "");
-        let _codex_token = ScopedEnvVar::set("CODEX_ACCESS_TOKEN", "");
-
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
-        let auth_path = dir.path().join("auth.json");
-        std::fs::write(&auth_path, r#"{"tokens":{"access_token":"secret-token"}}"#)
-            .expect("write auth file");
-        let auth_path_str = auth_path.to_string_lossy().into_owned();
-        let _auth_file = ScopedEnvVar::set("OPENAI_CODEX_AUTH_FILE", &auth_path_str);
-
-        let mut store = ConfigStore::load(Some(config_path)).expect("store should load");
-        store.config.provider = ProviderKind::OpenaiCodex;
-        store.config.providers.openai_codex.external_credentials =
-            Some(hakus_config::ExternalCredentialConsentToml::read_only(
-                ProviderKind::OpenaiCodex,
-                hakus_config::ExternalCredentialSource::CodexCli,
-                auth_path,
-            ));
-        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
-
-        let output = auth_list_lines(&store, &secrets).join("\n");
-        let row = output
-            .lines()
-            .find(|line| line.starts_with("openai-codex"))
-            .unwrap_or_else(|| panic!("missing openai-codex row:\n{output}"));
-        assert!(row.ends_with("external-consent"), "{row}");
-        assert!(!output.contains("secret-token"));
-    }
 
     #[test]
     fn external_consent_persists_exact_scope_and_api_key_or_revoke_disables_it() {
@@ -7496,73 +7044,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unsupported_managed_and_kimi_external_consent_fail_closed() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
-        let external_path = dir.path().join("external-auth.json");
-        std::fs::write(&external_path, "must remain unchanged").expect("external fixture");
-        let mut store = ConfigStore::load(Some(config_path.clone())).expect("store should load");
-        let secrets = no_keyring_secrets();
-
-        let managed = run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::ExternalConsent {
-                provider: ProviderArg::OpenaiCodex,
-                mode: ExternalCredentialModeArg::Managed,
-                path: Some(external_path.clone()),
-                yes: true,
-            },
-            &secrets,
-        )
-        .expect_err("managed access must fail without a preservation adapter");
-        assert!(
-            managed
-                .to_string()
-                .contains("schema-safe preservation adapter")
-        );
-
-        let kimi = run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::ExternalConsent {
-                provider: ProviderArg::Moonshot,
-                mode: ExternalCredentialModeArg::ReadOnly,
-                path: Some(external_path.clone()),
-                yes: true,
-            },
-            &secrets,
-        )
-        .expect_err("Kimi must remain API-key-only");
-        assert!(kimi.to_string().contains("API-key-only"));
-        assert!(
-            kimi.to_string()
-                .contains("https://platform.kimi.ai/console/api-keys")
-        );
-        assert!(
-            store
-                .config
-                .providers
-                .openai_codex
-                .external_credentials
-                .is_none()
-        );
-        assert!(
-            store
-                .config
-                .providers
-                .moonshot
-                .external_credentials
-                .is_none()
-        );
-        assert_eq!(
-            std::fs::read_to_string(external_path).expect("external fixture unchanged"),
-            "must remain unchanged"
-        );
-        assert!(
-            !config_path.exists(),
-            "rejected consent must not write config"
-        );
-    }
 
     #[test]
     fn api_key_config_failure_restores_absent_and_existing_secret_state() {

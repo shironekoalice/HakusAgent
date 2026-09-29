@@ -25,7 +25,7 @@ fn read_tray_settings(app: &AppHandle) -> (bool, bool) {
 
 #[tauri::command]
 pub fn window_minimize(app: AppHandle) -> Result<bool, String> {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         window.minimize().map_err(|e| e.to_string())?;
         Ok(true)
     } else {
@@ -35,7 +35,7 @@ pub fn window_minimize(app: AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn window_toggle_maximize(app: AppHandle) -> Result<bool, String> {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let is_max = window.is_maximized().map_err(|e| e.to_string())?;
         if is_max {
             window.unmaximize().map_err(|e| e.to_string())?;
@@ -60,7 +60,7 @@ pub fn window_toggle_maximize(app: AppHandle) -> Result<bool, String> {
 #[tauri::command]
 pub fn window_close(app: AppHandle) -> Result<bool, String> {
     let (tray_enabled, minimize_to_tray) = read_tray_settings(&app);
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         if tray_enabled && minimize_to_tray {
             window.hide().map_err(|e| e.to_string())?;
         } else {
@@ -77,7 +77,7 @@ pub fn window_close(app: AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn window_is_maximized(app: AppHandle) -> Result<bool, String> {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         window.is_maximized().map_err(|e| e.to_string())
     } else {
         Err("No main window".into())
@@ -93,7 +93,7 @@ pub fn window_is_maximized(app: AppHandle) -> Result<bool, String> {
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn finish_splash(app: AppHandle) -> Result<bool, String> {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

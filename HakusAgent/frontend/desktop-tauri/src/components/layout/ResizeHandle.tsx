@@ -168,10 +168,10 @@ export function ResizeHandle({
         style={{
           width: dragging ? 2 : 1,
           backgroundColor: dragging
-            ? 'hsl(var(--primary) / 0.6)'
+            ? 'hsl(var(--foreground) / 0.55)'
             : hovering
-              ? 'hsl(var(--primary) / 0.3)'
-              : 'hsl(var(--border) / 0.5)',
+              ? 'hsl(var(--foreground) / 0.22)'
+              : 'transparent',
           // Keep the hit area stable while avoiding layout-property animation.
           // The visual line still fades between hover/idle colors.
           transition: dragging ? 'none' : 'background-color 0.15s',

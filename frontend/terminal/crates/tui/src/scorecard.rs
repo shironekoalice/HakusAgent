@@ -310,7 +310,7 @@ fn provider_scoped_cost(
         ApiProvider::Ollama | ApiProvider::Sglang | ApiProvider::Vllm => {
             Some(crate::pricing::LOCAL_BILLING_SURFACE)
         }
-        ApiProvider::OpenaiCodex | ApiProvider::OpencodeGo => {
+        ApiProvider::OpencodeGo => {
             Some(crate::pricing::OAUTH_SUBSCRIPTION_BILLING_SURFACE)
         }
         _ => None,
@@ -833,61 +833,6 @@ mod tests {
         assert!(priced_fixture.metrics.cost_complete);
     }
 
-    #[test]
-    fn dual_mode_routes_require_surface_but_intrinsic_routes_override_junk() {
-        let usage = usage(10_000, 1_000, 0);
-        for (provider, model) in [
-            (ApiProvider::Anthropic, "claude-haiku-4-5"),
-            (ApiProvider::Moonshot, "kimi-k2.7-code"),
-            (ApiProvider::Zai, "glm-5.2"),
-            (ApiProvider::Minimax, "minimax-m3"),
-        ] {
-            let cost = provider_scoped_cost(provider, model, &usage, None, None);
-            assert_eq!(
-                cost.unpriced_reason.as_deref(),
-                Some("missing_billing_surface"),
-                "{provider:?}"
-            );
-            assert!(cost.usd.is_none(), "{provider:?}");
-        }
-
-        for provider in [ApiProvider::OpenaiCodex, ApiProvider::OpencodeGo] {
-            let cost = provider_scoped_cost(
-                provider,
-                "gpt-5.5",
-                &usage,
-                None,
-                Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-            );
-            assert_eq!(cost.unpriced_reason.as_deref(), Some("not_money_metered"));
-            assert!(!cost.counts_toward_money_coverage);
-        }
-        let local = provider_scoped_cost(
-            ApiProvider::Ollama,
-            "llama3.2",
-            &usage,
-            None,
-            Some(crate::pricing::UNCLASSIFIED_BILLING_SURFACE),
-        );
-        assert_eq!(local.unpriced_reason.as_deref(), Some("not_money_metered"));
-        assert!(!local.counts_toward_money_coverage);
-
-        let cloud = provider_scoped_cost(
-            ApiProvider::OllamaCloud,
-            crate::config::DEFAULT_OLLAMA_CLOUD_MODEL,
-            &usage,
-            None,
-            Some(crate::pricing::UNCLASSIFIED_BILLING_SURFACE),
-        );
-        assert_eq!(
-            cloud.unpriced_reason.as_deref(),
-            Some("unknown_billing_basis")
-        );
-        assert!(
-            cloud.counts_toward_money_coverage,
-            "hosted Cloud usage must never disappear as local/free"
-        );
-    }
 
     fn cache_write_usage(input: u32, output: u32, cache_hit: u32, cache_write: u32) -> Usage {
         Usage {
@@ -900,126 +845,6 @@ mod tests {
         }
     }
 
-    /// A mixed-route run: one fully-priced cache-write turn, one turn whose
-    /// route publishes no cache-write rate, and one non-metered OAuth turn.
-    /// The priced subtotal stays honest, `cost_complete` fails closed, and the
-    /// audit names the class and provenance behind each gap.
-    #[test]
-    fn mixed_route_run_audits_cache_write_classes_and_fails_closed() {
-        // 1M input of which 200k is a cache read, 100k is a cache write.
-        let priced = cache_write_usage(1_000_000, 100_000, 200_000, 100_000);
-        let unpriced_write = cache_write_usage(1_000_000, 100_000, 200_000, 100_000);
-        let oauth = cache_write_usage(1_000_000, 100_000, 200_000, 100_000);
-        let turns = [
-            TurnInput {
-                turn_id: "anthropic".into(),
-                created_at: None,
-                provider: Some("anthropic"),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-                model: "claude-haiku-4-5".into(),
-                usage: &priced,
-            },
-            TurnInput {
-                turn_id: "moonshot".into(),
-                created_at: None,
-                provider: Some("moonshot"),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-                model: "kimi-k2.7-code".into(),
-                usage: &unpriced_write,
-            },
-            TurnInput {
-                turn_id: "oauth".into(),
-                created_at: None,
-                provider: Some("openai-codex"),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-                model: "gpt-5.5".into(),
-                usage: &oauth,
-            },
-        ];
-
-        let card = Scorecard::from_turns(&turns);
-
-        // Cache-write tokens are their own audited class on every turn.
-        for turn in &card.per_turn {
-            assert_eq!(turn.cache_write_tokens, 100_000, "{}", turn.turn_id);
-            assert_eq!(turn.input_tokens, 700_000, "{}", turn.turn_id);
-            assert_eq!(turn.cache_read_tokens, 200_000, "{}", turn.turn_id);
-            // Reasoning stays informational: never added to billable output.
-            assert_eq!(turn.output_tokens, 100_000, "{}", turn.turn_id);
-            assert_eq!(turn.reasoning_tokens, 50_000, "{}", turn.turn_id);
-        }
-        assert_eq!(card.metrics.total_cache_write_tokens, 300_000);
-        assert_eq!(card.metrics.total_output_tokens, 300_000);
-        assert_eq!(card.metrics.total_reasoning_tokens, 150_000);
-
-        // Anthropic publishes a 1.25/M cache-write rate, so the write premium
-        // is billed rather than silently charged at the input rate.
-        let anthropic = &card.per_turn[0];
-        assert!(!anthropic.cost_unpriced);
-        assert_eq!(anthropic.cost_unpriced_reason, None);
-        assert!(anthropic.unpriced_classes.is_empty());
-        // Provenance is recorded (bundled snapshot offline, live after a
-        // catalog refresh); the point is that it is never absent for a
-        // priced turn.
-        assert!(anthropic.pricing_provenance.is_some());
-        let expected = 0.7 * 1.0 + 0.1 * 5.0 + 0.2 * 0.1 + 0.1 * 1.25;
-        assert!((anthropic.cost_usd - expected).abs() < 1e-9);
-
-        // Moonshot's row has no published cache-write rate: the whole turn
-        // fails closed instead of under-reporting the write tokens.
-        let moonshot = &card.per_turn[1];
-        assert!(moonshot.cost_unpriced);
-        assert_eq!(moonshot.cost_usd, 0.0);
-        assert_eq!(
-            moonshot.cost_unpriced_reason.as_deref(),
-            Some("missing_class_price")
-        );
-        assert_eq!(moonshot.unpriced_classes, vec!["cache_write".to_string()]);
-        assert!(moonshot.pricing_provenance.is_some());
-
-        // A subscription route is not "free"; it is not money-metered.
-        let oauth = &card.per_turn[2];
-        assert!(oauth.cost_unpriced);
-        assert_eq!(
-            oauth.cost_unpriced_reason.as_deref(),
-            Some("not_money_metered")
-        );
-        assert!(oauth.unpriced_classes.is_empty());
-        assert_eq!(oauth.pricing_provenance, None);
-
-        // Aggregates stay honest about what the number covers. Two of the three
-        // turns owe money (Anthropic and Moonshot); the OAuth turn does not, so
-        // it is outside the denominator rather than counted as an unpriced dollar.
-        assert_eq!(card.metrics.turns, 3);
-        assert_eq!(card.metrics.money_metered_turns, 2);
-        assert_eq!(card.metrics.unpriced_turns, 1);
-        assert!(!card.metrics.cost_complete);
-        assert_eq!(
-            card.metrics.unpriced_classes,
-            vec!["cache_write".to_string()]
-        );
-        assert!((card.metrics.total_cost_usd - expected).abs() < 1e-9);
-        assert!(card.per_turn[0].money_metered);
-        assert!(card.per_turn[1].money_metered);
-        assert!(!card.per_turn[2].money_metered);
-
-        let summary = card.to_summary();
-        assert!(summary.contains("priced_cost_subtotal_usd"));
-        assert!(summary.contains("cache_write_tokens: 300000"));
-        assert!(summary.contains("no published price"));
-        // Coverage reads against the money-metered turns, not all three.
-        assert!(summary.contains("money_metered_turns: 2"), "{summary}");
-
-        let json = serde_json::to_value(&card).expect("serialize scorecard");
-        assert_eq!(json["per_turn"][1]["unpriced_classes"][0], "cache_write");
-        assert_eq!(json["metrics"]["total_cache_write_tokens"], 300_000);
-        assert_eq!(json["metrics"]["cost_complete"], false);
-        assert_eq!(json["metrics"]["money_metered_turns"], 2);
-        // Route identity survives serialization, so a re-read scorecard can be
-        // re-explained without the original input file.
-        assert_eq!(json["per_turn"][1]["provider"], "moonshot");
-        assert_eq!(json["per_turn"][2]["money_metered"], false);
-    }
 
     /// Legacy baselines and per-turn records that predate the class audit must
     /// still deserialize; the new fields default rather than fail.
@@ -1178,79 +1003,6 @@ mod tests {
         assert!(card.to_summary().contains("cost_usd: unavailable"));
     }
 
-    #[test]
-    fn same_model_is_priced_only_for_its_authoritative_provider_route() {
-        let u = usage(1000, 500, 0);
-        let turns = [
-            TurnInput {
-                turn_id: "api".into(),
-                created_at: None,
-                provider: Some("openai"),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-                model: "gpt-5.5".into(),
-                usage: &u,
-            },
-            TurnInput {
-                turn_id: "oauth".into(),
-                created_at: None,
-                provider: Some("openai-codex"),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-                model: "gpt-5.5".into(),
-                usage: &u,
-            },
-            TurnInput {
-                turn_id: "local".into(),
-                created_at: None,
-                provider: Some("ollama"),
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-                model: "gpt-5.5".into(),
-                usage: &u,
-            },
-        ];
-
-        let card = Scorecard::from_turns(&turns);
-
-        assert!(!card.per_turn[0].cost_unpriced);
-        assert!(card.per_turn[0].cost_usd > 0.0);
-        assert!(card.per_turn[1].cost_unpriced);
-        assert_eq!(card.per_turn[1].cost_usd, 0.0);
-        assert!(card.per_turn[2].cost_unpriced);
-        assert_eq!(card.per_turn[2].cost_usd, 0.0);
-        // Codex OAuth and Ollama are *exactly* non-metered, so they leave the
-        // money-coverage denominator entirely rather than counting as unpriced
-        // dollars: only the OpenAI turn owes money, and it is priced. The USD
-        // total is therefore genuinely complete for the spend it covers (#4318).
-        assert_eq!(card.metrics.money_metered_turns, 1);
-        assert_eq!(card.metrics.unpriced_turns, 0);
-        assert!(card.metrics.cost_complete);
-        for (index, expected) in [(1_usize, false), (2_usize, false)] {
-            assert_eq!(
-                card.per_turn[index].money_metered, expected,
-                "turn {index} money-metered"
-            );
-            assert_eq!(
-                card.per_turn[index].cost_unpriced_reason.as_deref(),
-                Some("not_money_metered"),
-                "turn {index} reason"
-            );
-        }
-        assert!(card.per_turn[0].money_metered);
-        // CNY is only published by direct DeepSeek, so the single metered turn
-        // still has no authoritative CNY figure.
-        assert_eq!(card.metrics.cny_unpriced_turns, 1);
-        assert!(!card.metrics.cny_cost_complete);
-        assert!(card.to_summary().contains("money_metered_turns: 1"));
-        assert!(card.to_summary().contains("cost_cny: unavailable"));
-
-        let json = serde_json::to_value(&card).expect("serialize scorecard");
-        assert_eq!(json["per_turn"][0]["provider"], "openai");
-        assert_eq!(json["per_turn"][1]["provider"], "openai-codex");
-        assert_eq!(json["per_turn"][2]["provider"], "ollama");
-        assert_eq!(json["metrics"]["money_metered_turns"], 1);
-        assert_eq!(json["metrics"]["unpriced_turns"], 0);
-        assert_eq!(json["metrics"]["cost_complete"], true);
-        assert_eq!(json["metrics"]["cny_cost_complete"], false);
-    }
 
     #[test]
     fn first_party_hand_price_survives_a_missing_catalog_offering() {
@@ -1756,38 +1508,6 @@ mod tests {
         assert!(card.to_summary().contains("cost_usd: unavailable"));
     }
 
-    #[test]
-    fn recorded_turn_accepts_runtime_route_aliases() {
-        let recorded: RecordedTurn = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "runtime-turn",
-            "thread_id": "thread-1",
-            "status": "completed",
-            "input_summary": "score this turn",
-            "created_at": "2026-07-12T10:30:00Z",
-            "effective_provider": "openai-codex",
-            "effective_billing_surface": "account-subscription",
-            "effective_model": "gpt-5.5",
-            "usage": {
-                "input_tokens": 1,
-                "output_tokens": 1
-            }
-        }))
-        .expect("parse runtime scorecard turn");
-
-        assert_eq!(recorded.turn_id, "runtime-turn");
-        assert_eq!(
-            recorded.created_at.as_ref().map(DateTime::to_rfc3339),
-            Some("2026-07-12T10:30:00+00:00".to_string())
-        );
-        assert_eq!(recorded.provider.as_deref(), Some("openai-codex"));
-        assert_eq!(
-            recorded.billing_surface.as_deref(),
-            Some("account-subscription")
-        );
-        assert_eq!(recorded.model, "gpt-5.5");
-        assert!(recorded.contributes_to_scorecard());
-    }
 
     #[test]
     fn runtime_turn_without_usage_is_readable_and_filtered() {

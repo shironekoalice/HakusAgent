@@ -21,7 +21,7 @@
 # `api_key` / `base_url` are
 # still read as DeepSeek defaults when `[providers.deepseek]` is absent
 # (backward compatibility).
-provider = "deepseek" # deepseek | deepseek-cn | deepseek-anthropic | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | orcarouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | zai | stepfun | minimax | sglang | vllm | ollama | huggingface | together | qianfan | openai-codex | anthropic | openmodel | deepinfra | sakana | longcat | opencode-go | opencode-zen | meta | xai | modelstudio-token-plan | modelstudio-coding-plan
+provider = "deepseek" # deepseek | deepseek-cn | deepseek-anthropic | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | orcarouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | zai | stepfun | minimax | sglang | vllm | ollama | huggingface | together | qianfan | anthropic | openmodel | deepinfra | sakana | longcat | opencode-go | opencode-zen | meta | xai | modelstudio-token-plan | modelstudio-coding-plan
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com/beta"
 # provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
@@ -840,27 +840,6 @@ max_subagents = 10 # optional (default 64, clamped to 1-128)
 # api_key = "YOUR_QIANFAN_API_KEY"
 # base_url = "https://api.baiduqianfan.ai/v1"
 # model = "ernie-4.0-turbo-8k"              # or your Qianfan service/model id
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# OpenAI Codex (ChatGPT) Provider — EXPERIMENTAL
-# Run `codex login`, then explicitly grant read-only access to that exact file:
-#   hakus auth external-consent --provider openai-codex --mode read-only
-# Hakus never refreshes or rewrites the Codex CLI file. No API key is
-# stored here. Talks to the OpenAI Responses API at /codex/responses.
-# Env var aliases: OPENAI_CODEX_ACCESS_TOKEN / CODEX_ACCESS_TOKEN (token override),
-#   OPENAI_CODEX_BASE_URL / CODEX_BASE_URL, OPENAI_CODEX_MODEL / CODEX_MODEL,
-#   OPENAI_CODEX_ACCOUNT_ID / CODEX_ACCOUNT_ID, OPENAI_CODEX_AUTH_FILE, CODEX_HOME
-[providers.openai_codex]
-# base_url = "https://chatgpt.com/backend-api"
-# model = "gpt-5.5"
-# The CLI writes this table after informed consent; do not copy it between
-# providers or machines. Absence means disabled.
-# [providers.openai_codex.external_credentials]
-# access = "read_only"
-# provider = "openai-codex"
-# source = "codex_cli"
-# path = "/absolute/path/to/.codex/auth.json"
-# consent_version = 1
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Anthropic Provider (native Messages API)

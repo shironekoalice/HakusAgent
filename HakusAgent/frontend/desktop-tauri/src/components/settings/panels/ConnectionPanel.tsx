@@ -82,6 +82,7 @@ export function ConnectionPanel() {
           <Label htmlFor="server-url">{copy('HakusAI 服务 URL', 'HakusAI server URL')}</Label>
           <Input
             id="server-url"
+            autoComplete="off"
             value={serverUrl}
             onChange={(e) => setServerUrl(e.target.value)}
             placeholder="http://127.0.0.1:48081"
@@ -110,6 +111,7 @@ export function ConnectionPanel() {
           <Label htmlFor="timeout">{copy('请求超时 (ms)', 'Request timeout (ms)')}</Label>
           <Input
             id="timeout"
+            autoComplete="off"
             type="number"
             value={timeout}
             onChange={(e) => setTimeoutValue(Number(e.target.value) || 30000)}

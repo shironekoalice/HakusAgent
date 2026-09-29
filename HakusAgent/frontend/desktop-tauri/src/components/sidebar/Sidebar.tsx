@@ -37,6 +37,8 @@ import { useToast } from '@/components/ui/toast'
 import type { ChatSession, Project } from '@/api/types'
 import { useI18n } from '@/lib/i18n'
 import { confirmProjectAccess, pickProjectFolder } from '@/api/tauriBridge'
+import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
+import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
 import {
   readSessionWorkspaceMap,
   writeSessionWorkspaceMap,
@@ -222,6 +224,8 @@ export function Sidebar() {
   const [sessionWorkspaces, setSessionWorkspaces] = useState<SessionWorkspaceMap>(readSessionWorkspaceMap)
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set())
   const [creatingProject, setCreatingProject] = useState(false)
+  const [projectSourceOpen, setProjectSourceOpen] = useState(false)
+  const [remoteWizardOpen, setRemoteWizardOpen] = useState(false)
   const expandedProjectsInitialized = useRef(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -283,7 +287,7 @@ export function Sidebar() {
       return
     }
     try {
-      if (projectId !== activeProjectId) setActiveProject(projectId)
+      if (projectId !== activeProjectId && !setActiveProject(projectId)) return
       setExpandedProjects((current) => new Set(current).add(projectId))
       const id = await createSession()
       const nextMap = { ...sessionWorkspaces, [id]: projectId }
@@ -400,7 +404,12 @@ export function Sidebar() {
           type="button"
           className={cn('cx-group-title', project && activeProjectId === project.id && 'is-active')}
           onClick={() => {
-            if (project) setActiveProject(project.id)
+            if (
+              project &&
+              (project.kind !== 'remote' || useProjectsStore.getState().isRemoteRuntimeReady(project.id))
+            ) {
+              setActiveProject(project.id)
+            }
             setExpandedProjects((current) => {
               const next = new Set(current)
               if (next.has(groupId)) next.delete(groupId)
@@ -503,7 +512,7 @@ export function Sidebar() {
           <button
             type="button"
             className="cx-icon-btn"
-            onClick={() => void handleCreateWorkspace()}
+            onClick={() => setProjectSourceOpen(true)}
             disabled={creatingProject}
             title={copy('添加工作区', 'Add workspace')}
             aria-label={copy('添加工作区', 'Add workspace')}
@@ -511,14 +520,14 @@ export function Sidebar() {
         </div>
 
         {searchOpen && (
-          <div className="cx-search">
+          <div className="cx-search search-composite">
             <Search className="h-4 w-4 shrink-0" aria-hidden />
             <Input
               ref={searchRef}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder={t('searchSessions')}
-              className="cx-search-input"
+              className="cx-search-input search-composite-input"
             />
             {search && (
               <button type="button" className="cx-search-clear" onClick={() => setSearch('')} aria-label={copy('清空搜索', 'Clear search')}>
@@ -554,6 +563,13 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+      <ProjectSourceDialog
+        open={projectSourceOpen}
+        onOpenChange={setProjectSourceOpen}
+        onLocal={() => void handleCreateWorkspace()}
+        onRemote={() => { setProjectSourceOpen(false); setRemoteWizardOpen(true) }}
+      />
+      <RemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
     </aside>
   )
 }

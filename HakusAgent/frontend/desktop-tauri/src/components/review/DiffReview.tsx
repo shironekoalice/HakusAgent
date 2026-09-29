@@ -1,5 +1,5 @@
 /**
- * Git review panel — Codex-aligned fine-grained review chrome.
+ * Git review panel — fine-grained review chrome.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'

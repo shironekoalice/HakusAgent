@@ -172,7 +172,6 @@ impl ExternalCredentialAccess {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalCredentialSource {
-    CodexCli,
     KimiCodeCli,
     GrokCli,
     /// Official DeepSeek Harness (`dsh`) `$DSH_HOME/.credentials.yaml`.
@@ -241,7 +240,6 @@ impl ExternalCredentialSource {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::CodexCli => "codex_cli",
             Self::KimiCodeCli => "kimi_code_cli",
             Self::GrokCli => "grok_cli",
             Self::DshCli => "dsh_cli",
@@ -253,7 +251,6 @@ impl ExternalCredentialSource {
     #[must_use]
     pub const fn owner_label(self) -> &'static str {
         match self {
-            Self::CodexCli => "Codex CLI",
             Self::KimiCodeCli => "Kimi Code CLI",
             Self::GrokCli => "Grok CLI",
             Self::DshCli => "DeepSeek Harness",
@@ -552,37 +549,37 @@ mod tests {
 
     #[test]
     fn structural_status_reports_full_scope_without_io() {
-        let path = absolute_test_path("codex-auth.json");
+        let path = absolute_test_path("agy-auth.json");
         let consent = ExternalCredentialConsentToml::read_only(
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
+            ProviderKind::Antigravity,
+            ExternalCredentialSource::AgyCli,
             path.clone(),
         );
         let active = external_credential_consent_status(
             Some(&consent),
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
+            ProviderKind::Antigravity,
+            ExternalCredentialSource::AgyCli,
             &path,
-            ProviderKind::OpenaiCodex,
+            ProviderKind::Antigravity,
         );
         assert_eq!(active.access, ExternalCredentialAccess::ReadOnly);
-        assert_eq!(active.owner, "Codex CLI");
+        assert_eq!(active.owner, "Antigravity CLI");
         assert_eq!(active.path, path);
         assert_eq!(active.route_state, "active");
         assert!(active.scope_valid);
         assert!(active.semantics.contains("no refresh"));
         assert_eq!(
             active.revoke_command,
-            "hakus auth external-revoke --provider openai-codex"
+            "hakus auth external-revoke --provider antigravity"
         );
 
         let changed_path = absolute_test_path("moved-auth.json");
         let pinned = external_credential_consent_status(
             Some(&consent),
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
+            ProviderKind::Antigravity,
+            ExternalCredentialSource::AgyCli,
             &changed_path,
-            ProviderKind::OpenaiCodex,
+            ProviderKind::Antigravity,
         );
         assert!(pinned.scope_valid);
         assert_eq!(pinned.route_state, "active");
@@ -616,13 +613,13 @@ mod tests {
 
     #[test]
     fn disabled_disclosure_does_not_imply_normal_provider_network_is_disabled() {
-        let path = absolute_test_path("codex-auth.json");
+        let path = absolute_test_path("agy-auth.json");
         let status = external_credential_consent_status(
             None,
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
+            ProviderKind::Antigravity,
+            ExternalCredentialSource::AgyCli,
             &path,
-            ProviderKind::OpenaiCodex,
+            ProviderKind::Antigravity,
         );
         assert!(status.semantics.contains("no external-credential"));
         assert!(status.semantics.contains("normal requests"));
@@ -631,17 +628,17 @@ mod tests {
 
     #[test]
     fn read_grant_requires_exact_provider_source_path_and_version() {
-        let path = absolute_test_path("codex-auth.json");
+        let path = absolute_test_path("grok-auth.json");
         let consent = ExternalCredentialConsentToml::read_only(
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
+            ProviderKind::Xai,
+            ExternalCredentialSource::GrokCli,
             path.clone(),
         );
 
         let grant = consent
             .read_grant(
-                ProviderKind::OpenaiCodex,
-                ExternalCredentialSource::CodexCli,
+                ProviderKind::Xai,
+                ExternalCredentialSource::GrokCli,
                 &path,
             )
             .expect("exact consent tuple");
@@ -649,14 +646,14 @@ mod tests {
 
         assert!(
             consent
-                .read_grant(ProviderKind::Xai, ExternalCredentialSource::CodexCli, &path)
+                .read_grant(ProviderKind::Antigravity, ExternalCredentialSource::GrokCli, &path)
                 .is_err()
         );
         assert!(
             consent
                 .read_grant(
-                    ProviderKind::OpenaiCodex,
-                    ExternalCredentialSource::GrokCli,
+                    ProviderKind::Xai,
+                    ExternalCredentialSource::DshCli,
                     &path
                 )
                 .is_err()
@@ -664,8 +661,8 @@ mod tests {
         assert!(
             consent
                 .read_grant(
-                    ProviderKind::OpenaiCodex,
-                    ExternalCredentialSource::CodexCli,
+                    ProviderKind::Xai,
+                    ExternalCredentialSource::GrokCli,
                     &path.with_file_name("other.json")
                 )
                 .is_err()
@@ -717,10 +714,10 @@ mod tests {
 
     #[test]
     fn consent_round_trips_every_scope_field() {
-        let path = absolute_test_path("codex-auth.json");
+        let path = absolute_test_path("grok-auth.json");
         let consent = ExternalCredentialConsentToml::read_only(
-            ProviderKind::OpenaiCodex,
-            ExternalCredentialSource::CodexCli,
+            ProviderKind::Xai,
+            ExternalCredentialSource::GrokCli,
             path,
         );
 
@@ -729,8 +726,8 @@ mod tests {
             toml::from_str(&encoded).expect("deserialize consent");
         assert_eq!(decoded, consent);
         assert!(encoded.contains("access = \"read_only\""));
-        assert!(encoded.contains("provider = \"openai-codex\""));
-        assert!(encoded.contains("source = \"codex_cli\""));
+        assert!(encoded.contains("provider = \"xai\""));
+        assert!(encoded.contains("source = \"grok_cli\""));
         assert!(encoded.contains("consent_version = 1"));
     }
 

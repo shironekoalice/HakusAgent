@@ -423,7 +423,7 @@
   "CmdModelsDescription": "アクティブな API からライブのモデル ID を取得する",
   "CmdModelDbDescription": "内蔵のモデルデータベースを閲覧する",
   "CmdNetworkDescription": "ネットワーク許可・拒否ルールを管理",
-  "CmdUpdateDescription": "新しい CodeWhale リリースを確認してインストールします",
+  "CmdUpdateDescription": "新しい HakusCLI リリースを確認してインストールします",
   "CmdNoteDescription": "ワークスペースノートの追加、一覧、編集、削除",
   "CmdThemeDescription": "テーマを切り替え（ダーク/ライト/グレースケール/システム）",
   "CmdProviderDescription": "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim | ollama）",
@@ -497,7 +497,7 @@
   "TranslationFailed": "翻訳に失敗しました",
   "CmdTrustDescription": "ワークスペースの信頼設定とパス別許可リストを管理する",
   "CmdWorkspaceDescription": "現在のワークスペースを表示または切り替え",
-  "CmdWechatDescription": "WeChatに接続：QRログイン、ステータス、送信、メッセージポーリング",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "最後のメッセージ対を削除",
   "CmdVerboseDescription": "ライブ思考表示の詳細モードを切り替え",
   "CmdCacheAdvice": "3 ターン目以降にヒット率が ~70% 以上で安定していれば、プレフィックスキャッシュは健全。\n長いセッションでこれを下回る場合はプレフィックスのドリフトの可能性あり (#263)。",
@@ -929,7 +929,7 @@
   "ApprovalChooseAction": "Enterで選択、または y/a/d を直接入力",
   "ApprovalIntentLabel": "意図：",
   "ApprovalMoreLines": "  … (+{count} 行)",
-  "ApprovalAutoDeniedSession": "{tool} を自動的に拒否しました: この CodeWhale の実行中に一致するリクエストが以前拒否されています。再検討するには CodeWhale を再起動してください。",
+  "ApprovalAutoDeniedSession": "{tool} を自動的に拒否しました: この HakusCLI の実行中に一致するリクエストが以前拒否されています。再検討するには HakusCLI を再起動してください。",
   "ElevationTitleSandboxDenied": "  ⚠, サンドボックス拒否 ",
   "ElevationTitleRequired": " サンドボックス昇格 ",
   "ElevationFieldTool": "  ツール：",
@@ -1278,7 +1278,6 @@
   "ProviderExternalActionRevoke": "外部アクセスを取り消す",
   "ProviderExternalActionChoices": "外部アクセスの選択",
   "ProviderExternalActionReuseGrok": "外部のGrok認証を再利用",
-  "ProviderExternalHintCodexReview": "{login} の後、Enterを押して無効・読み取り専用・管理アクセスを確認します。",
   "ProviderExternalHintXaiReview": "EnterでHakusCLI所有のデバイスログイン、Eで既存のGrok CLI認証の再利用を確認します。",
   "ProviderExternalHintXaiApiKey": "またはXAI_API_KEYを使用して、このピッカーを再度開きます。",
   "XaiAuthChoiceTitle": " xAI 認証 ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} には /models エンドポイントがないため、到達性は調べていません。",
   "ProviderTemplateOpened": "プロバイダテンプレート '{id}' を開きました。API キーだけ入力してください。",
   "ProviderTemplateUnknown": "未知のプロバイダテンプレート '{id}'。",
-  "ProviderTemplateOpenedEnvOnly": "組み込みテンプレート '{id}' を開きました。生のキーではなく API キーの環境変数名を入力して保存してください。",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "組み込みテンプレート '{id}' を開きました。生のキーではなく API キーの環境変数名を入力して保存してください。"
 }

@@ -49,7 +49,7 @@ const DropdownMenuContent = React.forwardRef<
         // macOS-style: larger radius, frosted glass, soft shadow.
         // backdrop-blur-2xl + bg-popover/70 gives the translucent look
         // that lets the underlying chat content show through subtly.
-        'z-50 min-w-[10rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl border border-border/50 bg-popover/70 p-1.5 text-popover-foreground shadow-lg backdrop-blur-2xl',
+      'z-50 min-w-[10rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--ui-radius-surface)] border border-border/50 bg-popover/70 p-1.5 text-popover-foreground shadow-lg backdrop-blur-2xl',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
         className,
       )}
@@ -81,8 +81,8 @@ const DropdownMenuItem = React.forwardRef<
     className={cn(
       // macOS-style hover: translucent gray instead of blue accent.
       // rounded-lg (not rounded-sm) for softer, more iOS-like items.
-      'relative flex cursor-pointer select-none items-center gap-2 rounded-xl px-2.5 py-2 text-sm outline-none transition-colors',
-      // Codex 菜单项 hover 规范：bg-primary-ghost-hover（8%），见 app-initial cmdk-item 与 Rq.itemInteractive。
+      'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-2 text-sm outline-none transition-colors',
+      // 菜单项 hover 规范：使用轻量的主题色背景。
       'hover:bg-[var(--cx-ghost-hover)] focus:bg-[var(--cx-ghost-hover)] data-[highlighted]:bg-[var(--cx-ghost-hover)]',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       inset && 'pl-8',
@@ -124,7 +124,7 @@ const DropdownMenuSubTrigger = React.forwardRef<
   <DropdownMenuPrimitive.SubTrigger
     ref={ref}
     className={cn(
-      'flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-[var(--cx-ghost-hover)] data-[state=open]:bg-[var(--cx-ghost-hover)]',
+      'flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none focus:bg-[var(--cx-ghost-hover)] data-[state=open]:bg-[var(--cx-ghost-hover)]',
       inset && 'pl-8',
       className,
     )}
@@ -145,7 +145,7 @@ const DropdownMenuSubContent = React.forwardRef<
       ref={ref}
       collisionPadding={8}
       className={cn(
-        'z-50 min-w-[8rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl border bg-popover p-1.5 text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+        'z-50 min-w-[8rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--ui-radius-surface)] border bg-popover p-1.5 text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
         className,
       )}
       {...props}

@@ -68,6 +68,8 @@ import {
 } from '@/lib/agentModes'
 import { PHONE_VIEWPORT_QUERY } from '@/lib/responsive'
 import { cn, displayPath, generateId } from '@/lib/utils'
+import { IS_ANDROID } from '@/lib/platform'
+import { AndroidModelGlass, LIQUID_GLASS_CLASS } from './AndroidModelGlass'
 import type { ConversationState } from '@/lib/voiceConversation'
 import { useAppStore } from '@/store/app'
 import { useProjectsStore } from '@/store/projects'
@@ -78,6 +80,8 @@ import { ContextUsageMeter } from './ContextUsageMeter'
 import { useToast } from '@/components/ui/toast'
 import { ProviderLogo } from '@/components/ui/provider-logo'
 import { isProviderConfigured, getHiddenProviders } from '@/lib/providerState'
+import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
+import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
 import { useI18n } from '@/lib/i18n'
 
 interface Attachment {
@@ -265,7 +269,7 @@ const BASE_MENTION_ITEMS: MentionItem[] = [
 ]
 
 /**
- * Codex-style slash commands — typed as the very first thing in the input
+ * Slash commands — typed as the very first thing in the input
  * ("/rev…" filters). Pure UI actions: they never reach the model.
  */
 function slashQueryFrom(value: string): string | null {
@@ -467,7 +471,7 @@ export function Composer({
   const setReasoningEffort = useAppStore((s) => s.setReasoningEffort)
   const getReasoningEffort = useAppStore((s) => s.getReasoningEffort)
 
-  // Projects store — Codex-style project picker
+  // Projects store — project picker
   const projects = useProjectsStore((s) => s.projects)
   const activeProject = useProjectsStore((s) => s.activeProject)
   const activeProjectId = useProjectsStore((s) => s.activeProjectId)
@@ -485,8 +489,30 @@ export function Composer({
   const projectLocked = !!activeSessionId && (sessionMessages?.length ?? 0) > 0
   const [projectSearch, setProjectSearch] = useState('')
   const [creatingProject, setCreatingProject] = useState(false)
+  const [projectSourceOpen, setProjectSourceOpen] = useState(false)
+  const [remoteWizardOpen, setRemoteWizardOpen] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
+  // Android: the liquid-glass model picker opens from the top-bar title island.
+  const [androidModelGlassOpen, setAndroidModelGlassOpen] = useState(false)
+  // Android: the collapsed brain button expands into the reasoning slider.
+  const [androidReasoningOpen, setAndroidReasoningOpen] = useState(false)
+  useEffect(() => {
+    if (!IS_ANDROID) return
+    const open = () => setAndroidModelGlassOpen(true)
+    window.addEventListener('hakus:android-model-picker', open)
+    return () => window.removeEventListener('hakus:android-model-picker', open)
+  }, [])
+  useEffect(() => {
+    if (!androidReasoningOpen) return
+    const close = (e: PointerEvent) => {
+      if (!(e.target instanceof Element)) return
+      if (e.target.closest('[role="slider"]') || e.target.closest('[aria-label="思考强度"]')) return
+      setAndroidReasoningOpen(false)
+    }
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [androidReasoningOpen])
   const [mobileSettingsSection, setMobileSettingsSection] = useState<MobileSettingsSection>('root')
   const [mobileModelProviderId, setMobileModelProviderId] = useState<string | null>(null)
   const [goalDialogOpen, setGoalDialogOpen] = useState(false)
@@ -521,9 +547,17 @@ export function Composer({
       .flatMap((option) => option.values || [])
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean)
-    return values.length > 0
-      ? ['auto', ...Array.from(new Set(values.filter((value) => value !== 'auto')))]
-      : ['auto']
+    if (values.length > 0) {
+      return ['auto', ...Array.from(new Set(values.filter((value) => value !== 'auto')))]
+    }
+    // Catalog miss fallback: proxy/aggregator models (e.g. gpt-5.6-luna on a
+    // custom gateway) are absent from models.dev, so the bundled catalog has
+    // no ladder even when the model supports reasoning. Offer the standard
+    // OpenAI-compatible effort ladder instead of collapsing to "自动" only.
+    if (selected?.supports_reasoning === true) {
+      return ['auto', 'low', 'medium', 'high']
+    }
+    return ['auto']
   }, [currentProvider, model, modelsCache])
   const activeReasoningEffort = activeReasoningOptions.includes(storedReasoningEffort)
     ? storedReasoningEffort
@@ -1310,7 +1344,105 @@ export function Composer({
   ) : null
 
   return (
-    <div className="composer-shell bg-transparent px-4 pb-4 pt-2">
+      <>
+      <div className="composer-shell bg-transparent px-4 pb-4 pt-2">
+      {/* Android liquid-glass row: a collapsed brain icon that expands into
+          the sliding reasoning-effort ladder, plus the context ring —
+          floating just above the composer box (no bar attached). */}
+      {IS_ANDROID && (
+        <div className="relative mb-1.5 flex items-center gap-2 px-0.5">
+          {androidReasoningOpen && (
+            <div
+              className={cn(
+                'absolute bottom-11 left-0 z-50 w-[min(80vw,280px)] rounded-3xl p-3',
+                LIQUID_GLASS_CLASS,
+                'origin-bottom-left animate-in fade-in zoom-in-95 duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]',
+              )}
+            >
+              <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wide text-foreground/85 dark:text-white/45">
+                {copy('思考强度', 'Reasoning effort')}
+              </div>
+              <div
+                role="slider"
+                aria-label={copy('思考强度', 'Reasoning effort')}
+                aria-valuetext={reasoningLabel(activeReasoningEffort)}
+                aria-valuemin={0}
+                aria-valuemax={Math.max(activeReasoningOptions.length - 1, 0)}
+                aria-valuenow={Math.max(activeReasoningOptions.indexOf(activeReasoningEffort), 0)}
+                tabIndex={0}
+                className="relative flex h-10 touch-none select-none items-center rounded-full bg-black/[0.06] dark:bg-white/[0.06] px-1.5"
+                onPointerDown={(e) => {
+                  const track = e.currentTarget
+                  track.setPointerCapture(e.pointerId)
+                  const move = (clientX: number) => {
+                    const rect = track.getBoundingClientRect()
+                    const ratio = Math.min(Math.max((clientX - rect.left - 6) / (rect.width - 12), 0), 1)
+                    const idx = Math.round(ratio * (activeReasoningOptions.length - 1))
+                    const effort = activeReasoningOptions[idx]
+                    if (effort && effort !== activeReasoningEffort) setReasoningEffort(agentMode, effort)
+                  }
+                  move(e.clientX)
+                  const onMove = (ev: PointerEvent) => move(ev.clientX)
+                  const onUp = () => {
+                    track.removeEventListener('pointermove', onMove)
+                    track.removeEventListener('pointerup', onUp)
+                    track.removeEventListener('pointercancel', onUp)
+                  }
+                  track.addEventListener('pointermove', onMove)
+                  track.addEventListener('pointerup', onUp)
+                  track.addEventListener('pointercancel', onUp)
+                }}
+              >
+                {/* Sliding thumb behind the labels */}
+                <div
+                  className="absolute inset-y-1 rounded-full bg-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_2px_8px_rgba(0,0,0,0.12)] dark:bg-white/[0.14] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] transition-[left] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                  style={{
+                    width: `calc((100% - 0.75rem) / ${activeReasoningOptions.length})`,
+                    left: `calc(0.375rem + (100% - 0.75rem) / ${activeReasoningOptions.length} * ${Math.max(activeReasoningOptions.indexOf(activeReasoningEffort), 0)})`,
+                  }}
+                />
+                {activeReasoningOptions.map((effort) => {
+                  const isSelected = activeReasoningEffort === effort
+                  return (
+                    <span
+                      key={effort}
+                      className={cn(
+                        'relative z-10 flex-1 cursor-pointer text-center text-[10px] font-medium transition-colors',
+                        isSelected ? 'text-foreground font-bold dark:text-white' : 'text-foreground/75 dark:text-white/45',
+                      )}
+                      onClick={() => setReasoningEffort(agentMode, effort)}
+                    >
+                      {reasoningLabel(effort)}
+                    </span>
+                  )
+                })}
+              </div>
+              <div className="mt-2 px-1 text-[10px] leading-relaxed text-foreground/55 dark:text-white/40">
+                {copy('左右拖动或点按切换档位', 'Drag or tap to change the effort level')}
+              </div>
+            </div>
+          )}
+          <button
+            type="button"
+            aria-label={copy('思考强度', 'Reasoning effort')}
+            aria-expanded={androidReasoningOpen}
+            onClick={() => setAndroidReasoningOpen((v) => !v)}
+            className={cn(
+              'relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-foreground/85 transition-transform active:scale-95',
+              LIQUID_GLASS_CLASS,
+              androidReasoningOpen && 'ring-1 ring-foreground/25 dark:ring-white/40',
+            )}
+          >
+            <Brain className={cn('h-4 w-4', androidReasoningOpen && 'text-primary')} />
+          </button>
+          {/* Context usage ring — same meter as the desktop composer. */}
+          <ContextUsageMeter
+            used={contextUsed}
+            total={contextWindow}
+            messages={sessionMessages || []}
+          />
+        </div>
+      )}
       {/* 宽度对齐聊天正文列（同一个 token），输入框与正文左右同边。 */}
       <div className="composer-inner mx-auto w-full max-w-[var(--thread-content-max-width)]">
         <div
@@ -1657,7 +1789,7 @@ export function Composer({
                             {activeProjectId === project.id ? <Check className="mobile-settings-row-check" /> : <ChevronRight className="mobile-settings-row-chevron" />}
                           </button>
                         ))}
-                        <button type="button" className="mobile-settings-row" disabled={creatingProject} onClick={() => { setMobileSettingsOpen(false); void handleCreateProject() }}>
+                        <button type="button" className="mobile-settings-row" disabled={creatingProject} onClick={() => { setMobileSettingsOpen(false); setProjectSourceOpen(true) }}>
                           {creatingProject ? <Loader2 className="mobile-settings-row-icon animate-spin text-primary" /> : <FolderPlus className="mobile-settings-row-icon text-primary" />}
                           <span className="mobile-settings-row-copy"><strong>{copy('新建项目', 'New project')}</strong><small>{copy('选择一个文件夹作为工作区', 'Choose a folder as the workspace')}</small></span>
                           <ChevronRight className="mobile-settings-row-chevron" />
@@ -1818,14 +1950,14 @@ export function Composer({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" side="top" mobileTitle={copy('选择项目', 'Choose project')} className="w-[300px] p-1.5">
                   {/* Search box */}
-                  <div className="mb-1 flex items-center gap-1.5 rounded-lg bg-foreground/[0.04] px-2 py-1.5">
+                  <div className="search-composite mb-1 flex items-center gap-1.5 rounded-lg border border-transparent bg-foreground/[0.04] px-2 py-1.5">
                     <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     <input
                       type="text"
                       value={projectSearch}
                       onChange={(e) => setProjectSearch(e.target.value)}
                       placeholder={copy('搜索项目...', 'Search projects...')}
-                      className="project-picker-search w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+                      className="project-picker-search search-composite-input w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
                     />
                   </div>
                   {/* Project list (filtered) */}
@@ -1933,14 +2065,14 @@ export function Composer({
                       })}
                   </div>
                   <DropdownMenuSeparator />
-                  {/* New project — opens folder picker.
+                  {/* New project — opens the source chooser.
                       Allowed even when projectLocked, because creating
                       a project doesn't switch the active one. But the
                       auto-setActiveProject(created.id) at the end is
                       gated — newly created project just joins the list,
                       user can switch to it in a fresh session. */}
                   <DropdownMenuItem
-                    onClick={() => void handleCreateProject()}
+                    onClick={() => setProjectSourceOpen(true)}
                     disabled={creatingProject}
                     className="gap-2 py-2"
                   >
@@ -2259,5 +2391,14 @@ export function Composer({
         </div>
       </div>
     </div>
+    <ProjectSourceDialog
+      open={projectSourceOpen}
+      onOpenChange={setProjectSourceOpen}
+      onLocal={() => void handleCreateProject()}
+      onRemote={() => { setProjectSourceOpen(false); setRemoteWizardOpen(true) }}
+    />
+    <RemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
+    <AndroidModelGlass open={androidModelGlassOpen} onClose={() => setAndroidModelGlassOpen(false)} />
+    </>
   )
 }

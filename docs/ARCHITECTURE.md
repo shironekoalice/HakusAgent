@@ -1,109 +1,70 @@
-# HakusAgent 架构
+# 运行边界与安全模型
 
-## 1. 系统边界
+这份说明从使用者角度描述 HakusAI 的技术边界。它解释数据和动作如何流动，不依赖具体源码目录或内部接口名称。
 
-HakusAgent 不是单一可执行程序，而是共享产品能力的两套主要运行时：
-
-```text
-                           ┌──────────────────────────┐
-                           │ React / TypeScript UI    │
-                           │ desktop-tauri            │
-                           └────────────┬─────────────┘
-                                        │ HTTP/SSE
-                           ┌────────────▼─────────────┐
-                           │ Rust Runtime API /v1/*  │
-                           │ embedded in Tauri        │
-                           └────────────┬─────────────┘
-                                        │
-                           ┌────────────▼─────────────┐
-                           │ Rust agent/runtime       │
-                           │ frontend/terminal        │
-                           └──────────────────────────┘
-
-Rust HakusCLI ──────────────── shares the same Runtime
-```
-
-桌面 React UI 复用同一个 `apiClient`。Tauri 桌面端和 Android 均连接进程内 Rust
-Runtime 的 `/v1/*` 协议；仅旧 WebUI/兼容开发模式保留 `/api/*` 适配。
-
-## 2. 目录职责
-
-| 目录 | 所有权与职责 |
-| --- | --- |
-| `hakus/` | Python AgentCore、工具、权限、模型、MCP、记忆、会话与编排 |
-| `src/hakusai_server/` | 旧 Python WebUI 兼容服务，不参与 Tauri 发布包 |
-| `HakusAgent/frontend/desktop-tauri/src/` | React UI、Zustand 状态、API 客户端、设置和聊天界面 |
-| `HakusAgent/frontend/desktop-tauri/src-tauri/` | Tauri 生命周期、窗口、托盘、单实例锁和全平台内嵌 Rust Runtime |
-| `HakusAgent/frontend/desktop-tauri/public/` | 原生启动 Splash（`splash.html`）与应用图标 |
-| `frontend/terminal/` | Rust HakusCLI、TUI、Runtime API、工具、Skills 和跨平台构建 |
-| `tests/` | Python 单元与集成测试 |
-| `webui/` | 旧 Vue WebUI，不是主桌面入口 |
-| `editor/` | 旧编辑器/布局实验 |
-| `skills/` | 本地兼容目录；仓库不再分发工作区 Skill 内容 |
-
-## 3. 桌面对话链路
-
-1. `Composer.tsx` 收集文本、附件、模型、权限模式和项目。
-2. `ChatView` 把请求交给 `src/api/client.ts`。
-3. 所有 Tauri 平台向 Rust `/v1/threads/{id}/turns` 创建 turn，再读取事件流。
-4. Rust Runtime 使用统一的 thread/turn 状态和工具执行链路。
-5. 工具调用、推理、token 使用和任务状态被转换为统一的 `AgentEvent`，UI 增量渲染。
-6. 会话、项目和日志由各运行时持久化到 Hakus 数据目录。
-
-## 4. Skills 链路
-
-桌面设置页通过统一客户端调用：
+## 分层模型
 
 ```text
-Settings > Skills
-  ├─ GET list
-  ├─ POST install
-  ├─ POST enable/disable
-  └─ DELETE remove
+交互层
+  桌面应用 / 终端程序
+        │
+        ▼
+运行时层
+  会话、模型路由、工具、权限、事件、持久化
+        │
+        ├── 工作区层：本地文件夹、远程主机、容器或发行版
+        ├── 模型层：云端服务、本地模型、局域网服务
+        └── 扩展层：Skills、MCP 与其他经授权服务
 ```
 
-Rust Runtime 的实现位于 `frontend/terminal/crates/tui/src/skills/` 和
-`runtime_api.rs`。它只向 Hakus 自有目录写入，但会只读发现兼容目录。启停状态写入
-`~/.hakus/skills_state.toml`。
+交互层负责展示和编辑状态；运行时层负责判断请求、执行工具和产生事件；工作区与外部服务是运行时可以访问的边界。界面不会因为显示了一个按钮就自动获得文件或网络权限。
 
-Composer 输入 `@` 时同时加载固定上下文、上传文件和已启用 Skills。选择后插入
-`@skill:<name>`：
+## 事件与状态
 
-- Rust Runtime 读取对应 `SKILL.md`，限制单个 64KB、合计 192KB，再附加到当前请求。
-- 所有 Tauri 平台使用 Runtime 原生的 `$<name>` 显式调用语法。
+一次任务由多个可观察状态组成：请求、模型响应、工具调用、审批、工具结果、错误和完成。运行时以增量事件提供这些状态，桌面和终端分别用适合自身的方式呈现。
 
-相对资源路径以 Skill 所在目录为基准。禁用或已删除的 Skill 不会被注入。
+会话保存消息、工具记录和任务状态，便于搜索、审阅和恢复。运行中的临时视图状态不会被当作项目事实写入长期数据。
 
-## 5. 配置与数据
+## 模型路由
 
-主要配置入口：
+模型服务通过明确的服务商、模型和地址组合选择。路由层负责：
 
-- Rust：`~/.hakus/config.toml`、workspace 配置和环境变量。
-- Python 兼容服务：根目录 `config.yaml`，仅供旧 WebUI/开发兼容路径使用。
-- 桌面本地 UI 偏好：Tauri store / 浏览器持久化层。
-- 项目级 Skills：`<project>/.hakus/skills/`。
-- 全局 Skills：`~/.hakus/skills/`。
+- 保存并校验服务商配置；
+- 区分云端、局域网和本地模型；
+- 在请求前确定实际使用的模型；
+- 将连接错误、限流和模型返回错误反馈给用户。
 
-`HAKUS_HOME` 为绝对路径时会重定向 Hakus 用户数据根。Android 使用应用私有数据目录作为
-`HAKUS_HOME`。
+应用不替服务商保管对话数据。使用云端模型时，发送范围取决于当前请求和上下文设置；使用本地模型时，数据可以留在本机或指定网络内。
 
-## 6. 安全边界
+## 工具与权限
 
-- Skill 安装目标只允许 Hakus 自有的项目或全局目录。
-- 下载限制为 20MB，并拒绝路径穿越、符号链接和超限解压内容。
-- Skill 启用不等于自动授权其中的脚本；实际工具执行仍受 Agent 权限层控制。
-- MCP 凭据、Provider Key 和其他秘密不得写入 Skill 文档或仓库。
-- 项目工具操作应保持在已选择工作区内。
+文件、命令、网络、MCP 和远程连接都属于工具边界。权限模式决定哪些动作可以直接执行、哪些动作必须确认、哪些动作被拒绝。
 
-## 7. 当前约束
+权限有三层含义：
 
-1. Windows/macOS/Linux/Android Tauri 客户端均在进程内启动同一个 Rust Runtime，发布包不
-   需要 Python sidecar。
-2. `webui/`、`editor/` 和旧 Python 服务仍在仓库中，仅作为兼容入口维护；主桌面功能不要
-   误接这些旧入口。
-3. 浏览器预览可通过 `?backend=rust&backendUrl=http://127.0.0.1:48082` 连接独立 Rust
-   Runtime，用于不启动 Tauri 的接口回归。
-4. 所有平台的浮层（Dialog、DropdownMenu、Popover、Tooltip）使用 Radix 原生 portal
-   定位；不要重新引入自定义 overlay 根容器，那曾是设置面板/菜单飘移到左上角的根因。
-5. 透明/圆角窗口在 macOS 依赖 `macos-private-api` feature（`tauri.conf.json` 中
-   `macOSPrivateApi: true`）；托盘图标由显式代码创建并受单实例锁保护，避免重复。
+1. **工作区范围**：工具默认围绕当前项目执行。
+2. **动作授权**：读取、写入、运行命令和访问网络分别判断。
+3. **人工确认**：高影响动作可以在执行前暂停，等待用户确认。
+
+权限策略不会把第三方 Skill 或模型输出变成可信代码。任何扩展都应按不可信输入处理。
+
+## 本地与远程数据边界
+
+本地项目的文件保留在本地工作区。远程项目通过连接配置访问远程环境，命令和文件操作在远端发生。当前设备主要保存连接设置、会话记录以及界面需要的状态。
+
+模型服务、远程主机和 MCP 服务各自拥有独立的数据处理边界。使用前应确认它们的地址、认证方式、日志策略和数据保留规则。
+
+## 扩展机制
+
+- **Skills** 提供任务上下文、流程约束和可复用资源。
+- **MCP** 提供外部工具或数据服务。
+- **流程画布** 将模型、工具、条件、循环和人工确认组织成可重复执行的图。
+
+扩展只增加经过授权的能力，不改变核心权限策略。扩展更新后，应重新检查其内容和声明的访问范围。
+
+## 数据生命周期
+
+- 配置和凭据默认保存在本机用户数据目录。
+- 项目范围的设置保存在项目或远程工作区中。
+- 会话和运行记录用于恢复、审阅和诊断。
+- 卸载或清理前，应分别确认本机数据、项目数据和远程数据的保留策略。

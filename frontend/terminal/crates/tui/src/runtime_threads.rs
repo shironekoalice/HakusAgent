@@ -5073,8 +5073,8 @@ impl RuntimeThreadManager {
     /// range `[since, until]`. Each parent, child, and compaction call is
     /// computed via provider-aware pricing using its persisted concrete route.
     /// Legacy turns without provider provenance and providers without an
-    /// authoritative runtime price (including ChatGPT/Codex OAuth) accrue
-    /// tokens but no fabricated dollar cost. Whalescale#261 / #564.
+    /// authoritative runtime price accrue tokens but no fabricated dollar
+    /// cost. Whalescale#261 / #564.
     ///
     /// Buckets are sorted by ascending key for deterministic output. Empty
     /// ranges produce empty `buckets` (never an error).

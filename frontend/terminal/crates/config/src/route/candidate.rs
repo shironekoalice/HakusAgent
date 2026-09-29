@@ -88,11 +88,6 @@ pub enum LimitField {
 pub enum OverrideSource {
     /// Operator-configured context window.
     UserContextWindow,
-    /// Catalog limits describe the public API offering, not the account-scoped
-    /// Codex route; the API-only limits are stripped.
-    CodexPublicApiLimitStrip,
-    /// Per-model context from the fresh Codex account roster.
-    CodexRosterCorrection,
     /// Fresh, route-scoped provider-reported context metadata.
     ProviderReportedContextWindow,
     /// Conservative all-plan safe floor for a membership-plan route.

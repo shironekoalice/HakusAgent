@@ -1,5 +1,5 @@
 /**
- * Shared Codex-style chrome for right-panel tabs.
+ * Shared chrome for right-panel tabs.
  */
 
 import type { LucideIcon } from 'lucide-react'

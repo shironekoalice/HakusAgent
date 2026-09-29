@@ -7931,44 +7931,6 @@ async fn provider_switch_foreign_direct_model_rejected_before_mutation() {
     );
 }
 
-#[tokio::test]
-async fn provider_switch_to_openai_codex_normalizes_deepseek_off_effort() {
-    let _home = SettingsHomeGuard::new();
-    let _token = crate::test_support::EnvVarGuard::set("OPENAI_CODEX_ACCESS_TOKEN", "test-token");
-    let mut app = create_test_app();
-    app.api_provider = ApiProvider::Deepseek;
-    app.model = DEFAULT_TEXT_MODEL.to_string();
-    app.reasoning_effort = ReasoningEffort::Off;
-    app.reasoning_effort_preference = Some(ReasoningEffort::Off);
-    let mut engine = mock_engine_handle();
-    let mut config = Config {
-        provider: Some("deepseek".to_string()),
-        default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),
-        providers: Some(ProvidersConfig {
-            openai_codex: ProviderConfig {
-                model: Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-
-    switch_provider(
-        &mut app,
-        &mut engine.handle,
-        &mut config,
-        ApiProvider::OpenaiCodex,
-        None,
-    )
-    .await;
-
-    assert_eq!(app.api_provider, ApiProvider::OpenaiCodex);
-    assert_eq!(app.model, crate::config::DEFAULT_OPENAI_CODEX_MODEL);
-    assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
-    assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::Off));
-    assert_eq!(app.reasoning_effort_display_label(), "low");
-}
 
 #[tokio::test]
 async fn provider_switch_to_openrouter_canonicalizes_deepseek_default_model() {
@@ -11481,31 +11443,6 @@ fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
     );
 }
 
-#[test]
-fn subagent_token_usage_prices_the_child_route_not_the_parent_route() {
-    let mut app = create_test_app();
-    assert_eq!(app.api_provider, ApiProvider::Deepseek);
-
-    handle_subagent_mailbox(
-        &mut app,
-        2,
-        &crate::tools::subagent::MailboxMessage::TokenUsage {
-            agent_id: "agent-codex".to_string(),
-            source_id: "response-codex".to_string(),
-            route: test_mailbox_route(ApiProvider::OpenaiCodex, "gpt-5.5"),
-            usage: crate::models::Usage {
-                input_tokens: 10_000,
-                output_tokens: 1_000,
-                ..Default::default()
-            },
-        },
-    );
-
-    assert_eq!(
-        app.session.subagent_cost, 0.0,
-        "ChatGPT/Codex child usage must not inherit the DeepSeek parent's pricing"
-    );
-}
 
 #[test]
 fn subagent_token_usage_is_deduped_by_response_source() {
@@ -16105,25 +16042,6 @@ fn picker_rename_of_inactive_session_does_not_touch_active_metadata() {
     );
 }
 
-#[test]
-fn codex_tool_child_usage_does_not_inherit_public_api_pricing() {
-    let mut app = create_test_app();
-    app.api_provider = crate::config::ApiProvider::OpenaiCodex;
-    app.billing_presentation =
-        crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
-    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
-        serde_json::json!({
-            "child_model": "gpt-5.5",
-            "child_input_tokens": 10_000,
-            "child_output_tokens": 1_000,
-            "child_provider": "openai-codex",
-        }),
-    ));
-
-    handle_tool_call_complete(&mut app, "review-usage", "review", &result);
-
-    assert_eq!(app.session.subagent_cost, 0.0);
-}
 
 #[test]
 fn spilled_tool_completion_records_session_artifact_metadata() {
@@ -16958,48 +16876,6 @@ fn session_picker_restore_rejects_active_turn_before_mutating() {
     assert_eq!(app.current_session_id.as_deref(), Some("current-session"));
 }
 
-#[test]
-fn session_restore_rebuilds_fresh_codex_route_limits() {
-    let _lock = crate::test_support::lock_test_env();
-    let codex_home = tempfile::tempdir().expect("Codex home");
-    let _codex_home = crate::test_support::EnvVarGuard::set("CODEX_HOME", codex_home.path());
-    std::fs::write(
-        codex_home.path().join("models_cache.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "fetched_at": chrono::Utc::now(),
-            "models": [{
-                "slug": crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-                "priority": 1,
-                "context_window": 272000,
-                "supported_reasoning_levels": [{"effort": "high"}]
-            }]
-        }))
-        .expect("serialize cache"),
-    )
-    .expect("write cache");
-    let mut app = create_test_app();
-    let mut config = Config::default();
-    let mut session = saved_session_with_messages(vec![text_message("user", "resume Codex")]);
-    session.metadata.model_provider = ApiProvider::OpenaiCodex.as_str().to_string();
-    session.metadata.model = crate::config::DEFAULT_OPENAI_CODEX_MODEL.to_string();
-
-    apply_loaded_session(&mut app, &mut config, &session).expect("restore session");
-
-    assert_eq!(app.api_provider, ApiProvider::OpenaiCodex);
-    assert_eq!(app.model, crate::config::DEFAULT_OPENAI_CODEX_MODEL);
-    assert_eq!(
-        app.active_route_limits
-            .and_then(|limits| limits.context_tokens),
-        Some(272_000)
-    );
-    let engine_config = build_engine_config(&app, &config);
-    assert_eq!(
-        engine_config
-            .active_route_limits
-            .and_then(|limits| limits.context_tokens),
-        Some(272_000)
-    );
-}
 
 #[test]
 fn apply_loaded_session_restores_concrete_model_mode() {

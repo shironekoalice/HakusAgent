@@ -4190,57 +4190,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dormant_external_consent_row_requires_activation() {
-        let mut snap = snapshot();
-        snap.available_models = vec![(
-            "openai-codex".to_string(),
-            "gpt-5.6-sol".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
-        )];
-        let view = FleetSetupView::from_snapshot(snap);
-        assert!(
-            view.model_choices[1]
-                .summary
-                .contains("external consent · select to check")
-        );
-        assert!(matches!(
-            view.model_row_states[1],
-            FleetModelRowState::NeedsActivation
-        ));
-    }
 
-    #[test]
-    fn enter_on_dormant_external_consent_emits_activation_event() {
-        let mut snap = snapshot();
-        snap.available_models = vec![(
-            "openai-codex".to_string(),
-            "gpt-5.6-terra".to_string(),
-            crate::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection,
-        )];
-        let mut view = FleetSetupView::from_snapshot(snap);
-        view.handle_key(key(KeyCode::Enter)); // Role -> Model
-        view.handle_key(key(KeyCode::Down)); // inherit -> codex row
-        assert_eq!(
-            view.selected_route(),
-            Some(("openai-codex".to_string(), "gpt-5.6-terra".to_string()))
-        );
-        let action = view.handle_key(key(KeyCode::Enter));
-        let ViewAction::Emit(ViewEvent::FleetSetupExternalConsentActivationRequested {
-            provider_id,
-            model,
-        }) = action
-        else {
-            panic!("expected external-consent activation request, got {action:?}");
-        };
-        assert_eq!(provider_id, "openai-codex");
-        assert_eq!(model, "gpt-5.6-terra");
-        assert_eq!(
-            view.step,
-            Step::Model,
-            "stays on Model step until host validates"
-        );
-    }
 
     #[test]
     fn refresh_from_snapshot_makes_activated_row_ready() {
@@ -4302,61 +4252,6 @@ mod tests {
         assert_eq!(view.step, Step::Model);
     }
 
-    #[test]
-    fn fleet_setup_includes_openai_codex_account_roster_with_dormant_consent() {
-        let _env = crate::test_support::lock_test_env();
-        let codex_home = tempfile::tempdir().expect("Codex home");
-        let _home = crate::test_support::EnvVarGuard::set("CODEX_HOME", codex_home.path());
-        std::fs::write(
-            codex_home.path().join("models_cache.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "fetched_at": chrono::Utc::now(),
-                "models": [
-                    { "slug": "gpt-5.6-sol", "priority": 1 },
-                    { "slug": "gpt-5.6-terra", "priority": 2 },
-                    { "slug": "gpt-5.6-luna", "priority": 3 }
-                ]
-            }))
-            .expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        let mut config = crate::config::Config::default();
-        config.providers = Some(crate::config::ProvidersConfig {
-            openai_codex: crate::config::ProviderConfig {
-                auth_mode: Some("oauth".to_string()),
-                external_credentials: Some(
-                    hakus_config::ExternalCredentialConsentToml::read_only(
-                        hakus_config::ProviderKind::OpenaiCodex,
-                        hakus_config::ExternalCredentialSource::CodexCli,
-                        codex_home.path().join("auth.json"),
-                    ),
-                ),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-
-        let routes = cross_provider_model_routes(
-            &config,
-            crate::config::ApiProvider::Moonshot,
-            &crate::provider_readiness::ProviderReadinessSnapshot::default(),
-        );
-
-        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
-            assert!(
-                routes.iter().any(|(provider, m, readiness)| {
-                    provider == "openai-codex"
-                        && m == model
-                        && matches!(
-                            readiness,
-                            crate::provider_readiness::ResolvedProviderReadiness::ExternalConsentPendingSelection
-                        )
-                }),
-                "missing dormant-consent Codex route for {model}: {routes:?}"
-            );
-        }
-    }
 
     #[test]
     fn fleet_setup_includes_xai_grok_routes_with_dormant_consent() {

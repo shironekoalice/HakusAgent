@@ -31,6 +31,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-stable
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   STABLE_TAG: stable
@@ -152,6 +156,24 @@ jobs:
             -name '*.app.tar.gz' -o \
             -name '*.AppImage' \
           \) -exec cp -v {} stable-assets/ \;
+          # Tauri emits the same macOS filenames for both architectures. The
+          # publish job merges all artifacts into one directory, so preserve
+          # both bundles with architecture-specific names before uploading.
+          case "${{ matrix.artifact }}" in
+            macos-arm64) mac_suffix="arm64" ;;
+            macos-x64) mac_suffix="x64" ;;
+            *) mac_suffix="" ;;
+          esac
+          if [ -n "$mac_suffix" ]; then
+            for bundle in stable-assets/*.app.tar.gz; do
+              [ -e "$bundle" ] || continue
+              renamed="${bundle%.app.tar.gz}_${mac_suffix}.app.tar.gz"
+              mv "$bundle" "$renamed"
+              if [ -f "${bundle}.sig" ]; then
+                mv "${bundle}.sig" "${renamed}.sig"
+              fi
+            done
+          fi
           echo "--- collected ---"
           ls -la stable-assets/
           if ! ls stable-assets/*.sig >/dev/null 2>&1; then
@@ -518,16 +540,97 @@ jobs:
             --base-url "https://github.com/${{ github.repository }}/releases/download/${STABLE_TAG}" \
             --out latest.json
 
+      - name: Remove old stable assets
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let release
+            try {
+              release = (await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: process.env.STABLE_TAG,
+              })).data
+            } catch (error) {
+              if (error.status === 404) {
+                core.info('No existing stable release; the publish step will create it.')
+                return
+              }
+              throw error
+            }
+            for (const asset of release.assets) {
+              core.info(`Removing ${asset.name}`)
+              await github.rest.repos.deleteReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                asset_id: asset.id,
+              })
+            }
+
       - name: Publish GitHub stable release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.STABLE_TAG }}
           name: HakusAI Stable
-          # Fixed tag, refreshed each release: the client's endpoint URL is
-          # baked into the binary, so the tag must not change per version.
+          # Keep the tag name fixed so the client's baked-in endpoint remains
+          # valid; the ref is refreshed after the assets upload succeeds.
           prerelease: false
           make_latest: true
+          body: |
+            HakusAI v${{ inputs.version }} stable build.
+
+            Built from commit `${{ github.sha }}`.
           files: |
             stable-assets/*
             latest.json
 
+      - name: Refresh stable release metadata
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ref = 'tags/${{ env.STABLE_TAG }}'
+            try {
+              await github.rest.git.updateRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+                sha: context.sha,
+                force: true,
+              })
+            } catch (error) {
+              if (error.status !== 404) throw error
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/${ref}`,
+                sha: context.sha,
+              })
+            }
+
+            const release = (await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: process.env.STABLE_TAG,
+            })).data
+            if (release.draft || release.prerelease) {
+              throw new Error('The stable release is not published as a regular release.')
+            }
+            if (!release.assets.some(asset => asset.name === 'latest.json')) {
+              throw new Error('The stable release is missing latest.json.')
+            }
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              target_commitish: context.sha,
+            })
+
+            const refreshed = (await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref,
+            })).data
+            if (refreshed.object.sha !== context.sha) {
+              throw new Error(`Stable tag points to ${refreshed.object.sha}, expected ${context.sha}.`)
+            }
+            core.info(`Verified stable tag at ${context.sha} with ${release.assets.length} release assets.`)

@@ -1,7 +1,7 @@
 /**
  * ContextUsageMeter — 上下文计量圈圈 + 点击展开的「用量明细」面板。
  *
- * Codex 风格借鉴：圆圈本身可点击，展开一个下拉面板，展示：
+ * 圆圈本身可点击，展开一个下拉面板，展示：
  *   - 上下文窗口占比条（used / total，按 50%/80% 阈值变色）
  *   - 本会话累计 token 明细：输入 / 输出 / 缓存命中 / 缓存未命中
  *   - 按轮次（assistant 消息）分解的 token 列表
@@ -84,7 +84,7 @@ export function ContextUsageMeter({ used, total, messages, disabled }: ContextUs
           title={copy('上下文用量明细', 'Context usage breakdown')}
           aria-label={copy('上下文用量明细', 'Context usage breakdown')}
           onClick={(e) => {
-            // Open the full usage cost page in the right panel (Codex-style).
+            // Open the full usage cost page in the right panel.
             e.preventDefault()
             void import('@/store/app').then(({ useAppStore }) => {
               useAppStore.getState().setRightPanelTab('usage')

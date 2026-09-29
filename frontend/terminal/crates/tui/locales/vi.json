@@ -423,7 +423,7 @@
   "CmdModelsDescription": "Lấy ID mô hình trực tiếp từ API đang dùng",
   "CmdModelDbDescription": "Duyệt cơ sở dữ liệu mô hình tích hợp",
   "CmdNetworkDescription": "Quản lý các quy tắc cho phép và từ chối mạng",
-  "CmdUpdateDescription": "Kiểm tra và cài đặt bản phát hành CodeWhale mới",
+  "CmdUpdateDescription": "Kiểm tra và cài đặt bản phát hành HakusCLI mới",
   "CmdNoteDescription": "Thêm, liệt kê, sửa hoặc xóa ghi chú trong không gian làm việc",
   "CmdThemeDescription": "Chuyển đổi giao diện hoặc mở bảng chọn giao diện",
   "CmdProviderDescription": "Chuyển đổi hoặc xem backend LLM đang hoạt động (deepseek | nvidia-nim | ollama)",
@@ -497,7 +497,7 @@
   "TranslationFailed": "Dịch thất bại",
   "CmdTrustDescription": "Quản lý quyền tin cậy không gian làm việc và danh sách trắng theo đường dẫn",
   "CmdWorkspaceDescription": "Hiển thị hoặc chuyển đổi không gian làm việc hiện tại",
-  "CmdWechatDescription": "Kết nối WeChat: đăng nhập QR, trạng thái, gửi và thăm dò tin nhắn",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "Xóa cặp tin nhắn gần nhất",
   "CmdVerboseDescription": "Bật/Tắt chế độ hiển thị đầy đủ quá trình suy nghĩ trực tiếp",
   "CmdCacheAdvice": "Tỷ lệ hit/miss trên ~70% sau lượt thứ ba cho thấy tiền tố bộ nhớ đệm ổn định; \nthấp hơn mức đó trong các phiên dài cho thấy có sự biến động tiền tố cần kiểm tra (#263).",
@@ -929,7 +929,7 @@
   "ApprovalChooseAction": "Enter để chọn, hoặc nhấn y/a/d trực tiếp",
   "ApprovalIntentLabel": "Ý định: ",
   "ApprovalMoreLines": "  … (+{count} dòng)",
-  "ApprovalAutoDeniedSession": "Đã tự động từ chối {tool}: một yêu cầu khớp đã bị từ chối trước đó trong lần chạy CodeWhale này. Hãy khởi động lại CodeWhale để xem xét lại.",
+  "ApprovalAutoDeniedSession": "Đã tự động từ chối {tool}: một yêu cầu khớp đã bị từ chối trước đó trong lần chạy HakusCLI này. Hãy khởi động lại HakusCLI để xem xét lại.",
   "ElevationTitleSandboxDenied": "  ⚠ Sandbox Bị Từ Chối ",
   "ElevationTitleRequired": " Yêu Cầu Nâng Cấp Sandbox ",
   "ElevationFieldTool": "  Công cụ: ",
@@ -1278,7 +1278,6 @@
   "ProviderExternalActionRevoke": "thu hồi truy cập ngoài",
   "ProviderExternalActionChoices": "lựa chọn truy cập ngoài",
   "ProviderExternalActionReuseGrok": "dùng lại thông tin Grok bên ngoài",
-  "ProviderExternalHintCodexReview": "Sau {login}, nhấn Enter để xem các lựa chọn tắt, chỉ đọc và được quản lý.",
   "ProviderExternalHintXaiReview": "Nhấn Enter để đăng nhập thiết bị do HakusCLI sở hữu; nhấn E để xem việc dùng lại Grok CLI hiện có.",
   "ProviderExternalHintXaiApiKey": "Hoặc dùng XAI_API_KEY rồi mở lại trình chọn này.",
   "XaiAuthChoiceTitle": " Xác thực xAI ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} không có endpoint /models nên chưa dò khả năng tới được.",
   "ProviderTemplateOpened": "Đã mở mẫu nhà cung cấp '{id}'. Chỉ cần nhập API key.",
   "ProviderTemplateUnknown": "Mẫu nhà cung cấp không rõ '{id}'.",
-  "ProviderTemplateOpenedEnvOnly": "Đã mở mẫu có sẵn '{id}'. Nhập tên biến môi trường API key rồi lưu; đừng dán khóa thô.",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "Đã mở mẫu có sẵn '{id}'. Nhập tên biến môi trường API key rồi lưu; đừng dán khóa thô."
 }

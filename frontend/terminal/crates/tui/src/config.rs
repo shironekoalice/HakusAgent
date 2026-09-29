@@ -75,7 +75,6 @@ pub enum ApiProvider {
     Huggingface,
     Together,
     Qianfan,
-    OpenaiCodex,
     Anthropic,
     Openmodel,
     Zai,
@@ -337,7 +336,7 @@ impl ApiProvider {
 
     /// `ApiProvider` discriminant → `ProviderKind` lookup.
     /// Index 1 is `None` for the legacy `DeepseekCN` variant.
-    const KIND_LOOKUP: [Option<hakus_config::ProviderKind>; 48] = [
+    const KIND_LOOKUP: [Option<hakus_config::ProviderKind>; 47] = [
         Some(hakus_config::ProviderKind::Deepseek),
         None, // DeepseekCN
         Some(hakus_config::ProviderKind::DeepseekAnthropic),
@@ -362,7 +361,6 @@ impl ApiProvider {
         Some(hakus_config::ProviderKind::Huggingface),
         Some(hakus_config::ProviderKind::Together),
         Some(hakus_config::ProviderKind::Qianfan),
-        Some(hakus_config::ProviderKind::OpenaiCodex),
         Some(hakus_config::ProviderKind::Anthropic),
         Some(hakus_config::ProviderKind::Openmodel),
         Some(hakus_config::ProviderKind::Zai),
@@ -389,7 +387,7 @@ impl ApiProvider {
     ];
 
     /// `ProviderKind` discriminant → `ApiProvider` lookup.
-    const FROM_KIND_LOOKUP: [Self; 47] = [
+    const FROM_KIND_LOOKUP: [Self; 46] = [
         Self::Deepseek,
         Self::DeepseekAnthropic,
         Self::NvidiaNim,
@@ -413,7 +411,6 @@ impl ApiProvider {
         Self::Huggingface,
         Self::Together,
         Self::Qianfan,
-        Self::OpenaiCodex,
         Self::Anthropic,
         Self::Openmodel,
         Self::Zai,
@@ -504,10 +501,6 @@ fn subagent_provider_key_matches(key: &str, provider: ApiProvider) -> bool {
         ApiProvider::Openrouter => matches!(normalized.as_str(), "openrouter" | "open_router"),
         ApiProvider::Orcarouter => matches!(normalized.as_str(), "orcarouter" | "orca_router"),
         ApiProvider::Edenai => matches!(normalized.as_str(), "edenai" | "eden_ai"),
-        ApiProvider::OpenaiCodex => matches!(
-            normalized.as_str(),
-            "openai_codex" | "codex" | "chatgpt" | "openai_chatgpt"
-        ),
         ApiProvider::Anthropic => {
             matches!(
                 normalized.as_str(),
@@ -575,8 +568,8 @@ pub struct ProviderCapability {
     /// `max_tokens` against an unknown compatibility cap.
     ///
     /// When `Some`, the value is a documented exact-route maximum or a
-    /// deliberately conservative provider ceiling (Anthropic's 64K floor, the
-    /// Codex OAuth route). It is metadata for diagnostics and CI policy; normal
+    /// deliberately conservative provider ceiling (Anthropic's 64K floor). It
+    /// is metadata for diagnostics and CI policy; normal
     /// turns use a separate, more conservative request cap in the engine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u32>,
@@ -645,25 +638,6 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             thinking_supported: crate::models::model_supports_reasoning(resolved_model),
             cache_telemetry_supported: matches!(provider, ApiProvider::Anthropic),
             request_payload_mode: RequestPayloadMode::AnthropicMessages,
-            alias_deprecation: None,
-        };
-    }
-
-    if matches!(provider, ApiProvider::OpenaiCodex) {
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            context_window: OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
-            // The OAuth cache does not publish an output ceiling. This 4K is a
-            // deliberate, long-standing product decision for the Codex route
-            // (not a fallback): keep the compatibility capability conservative
-            // instead of inheriting the public API model's output limit. It is
-            // an assumption, not a documented fact — receipts label it
-            // unverified (#5440).
-            max_output: Some(4096),
-            thinking_supported: true,
-            cache_telemetry_supported: false,
-            request_payload_mode: RequestPayloadMode::Responses,
             alias_deprecation: None,
         };
     }
@@ -1502,7 +1476,6 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
         ApiProvider::Openai | ApiProvider::Atlascloud => OFFICIAL_DEEPSEEK_MODELS.to_vec(),
         ApiProvider::Together => vec![DEFAULT_TOGETHER_MODEL, DEFAULT_TOGETHER_FLASH_MODEL],
         ApiProvider::Qianfan => vec![DEFAULT_QIANFAN_MODEL],
-        ApiProvider::OpenaiCodex => vec![DEFAULT_OPENAI_CODEX_MODEL],
         ApiProvider::Openmodel => vec![DEFAULT_OPENMODEL_MODEL],
         ApiProvider::Zai => vec![
             DEFAULT_ZAI_MODEL,
@@ -3710,14 +3683,6 @@ pub struct ProvidersConfig {
         alias = "baidu"
     )]
     pub qianfan: ProviderConfig,
-    #[serde(
-        default,
-        alias = "openai-codex",
-        alias = "openaiCodex",
-        alias = "codex",
-        alias = "chatgpt"
-    )]
-    pub openai_codex: ProviderConfig,
     #[serde(default, alias = "claude")]
     pub anthropic: ProviderConfig,
     #[serde(default, alias = "open-model", alias = "open_model")]
@@ -3875,7 +3840,6 @@ impl ProvidersConfig {
             ("providers.deepinfra", &self.deepinfra),
             ("providers.together", &self.together),
             ("providers.qianfan", &self.qianfan),
-            ("providers.openai_codex", &self.openai_codex),
             ("providers.anthropic", &self.anthropic),
             ("providers.openmodel", &self.openmodel),
             ("providers.zai", &self.zai),
@@ -4179,11 +4143,6 @@ impl Config {
         provider: ApiProvider,
     ) -> Option<hakus_config::ExternalCredentialConsentStatus> {
         let (kind, source, path) = match provider {
-            ApiProvider::OpenaiCodex => (
-                hakus_config::ProviderKind::OpenaiCodex,
-                hakus_config::ExternalCredentialSource::CodexCli,
-                crate::oauth::auth_file_path(),
-            ),
             ApiProvider::Xai => (
                 hakus_config::ProviderKind::Xai,
                 hakus_config::ExternalCredentialSource::GrokCli,
@@ -4744,7 +4703,6 @@ impl Config {
             ApiProvider::Deepseek
                 | ApiProvider::DeepseekCN
                 | ApiProvider::XiaomiMimo
-                | ApiProvider::OpenaiCodex
         ) {
             return;
         }
@@ -5501,7 +5459,6 @@ impl Config {
             ApiProvider::Deepinfra => &providers.deepinfra,
             ApiProvider::Together => &providers.together,
             ApiProvider::Qianfan => &providers.qianfan,
-            ApiProvider::OpenaiCodex => &providers.openai_codex,
             ApiProvider::Anthropic => &providers.anthropic,
             ApiProvider::Openmodel => &providers.openmodel,
             ApiProvider::Zai => &providers.zai,
@@ -5584,7 +5541,6 @@ impl Config {
             ApiProvider::Deepinfra => &mut providers.deepinfra,
             ApiProvider::Together => &mut providers.together,
             ApiProvider::Qianfan => &mut providers.qianfan,
-            ApiProvider::OpenaiCodex => &mut providers.openai_codex,
             ApiProvider::Anthropic => &mut providers.anthropic,
             ApiProvider::Openmodel => &mut providers.openmodel,
             ApiProvider::Zai => &mut providers.zai,
@@ -5939,19 +5895,6 @@ impl Config {
             ApiProvider::Deepinfra => DEFAULT_DEEPINFRA_MODEL,
             ApiProvider::Together => DEFAULT_TOGETHER_MODEL,
             ApiProvider::Qianfan => DEFAULT_QIANFAN_MODEL,
-            // Prefer the live Codex roster head over the static seed so a
-            // provider switch lands on the current flagship model instead of
-            // a stale constant (#5034). Missing/stale/invalid rosters keep
-            // the seed default. An explicit root `default_text_model` that is
-            // not a foreign DeepSeek id is honoured above this fallback.
-            ApiProvider::OpenaiCodex => {
-                if let Some(preferred) =
-                    crate::codex_model_cache::model_roster().preferred_model_id()
-                {
-                    return preferred.to_string();
-                }
-                DEFAULT_OPENAI_CODEX_MODEL
-            }
             ApiProvider::Openmodel => DEFAULT_OPENMODEL_MODEL,
             ApiProvider::Zai => DEFAULT_ZAI_MODEL,
             ApiProvider::Stepfun => DEFAULT_STEPFUN_MODEL,
@@ -6034,9 +5977,6 @@ impl Config {
             })
         };
         // Root `base_url` is normally the legacy DeepSeek field. Xiaomi MiMo
-        // also reads it when its table has no endpoint. OpenAI Codex must not:
-        // a legacy DeepSeek endpoint would otherwise turn a normal Codex OAuth
-        // switch into a custom route and make the saved Codex CLI login unusable.
         // NvidiaNim has a back-compat sniff (integrate.api.nvidia.com), and the
         // literal `provider = "custom"` legacy shape retains its root endpoint.
         // Named custom providers always read their own `[providers.<name>]`
@@ -6060,7 +6000,6 @@ impl Config {
             | ApiProvider::WanjieArk
             | ApiProvider::Openrouter
             | ApiProvider::Orcarouter
-            | ApiProvider::OpenaiCodex
             | ApiProvider::Novita
             | ApiProvider::Fireworks
             | ApiProvider::Siliconflow
@@ -6183,7 +6122,6 @@ impl Config {
                         ApiProvider::Deepinfra => DEFAULT_DEEPINFRA_BASE_URL,
                         ApiProvider::Together => DEFAULT_TOGETHER_BASE_URL,
                         ApiProvider::Qianfan => DEFAULT_QIANFAN_BASE_URL,
-                        ApiProvider::OpenaiCodex => DEFAULT_OPENAI_CODEX_BASE_URL,
                         ApiProvider::Openmodel => DEFAULT_OPENMODEL_BASE_URL,
                         ApiProvider::Zai => DEFAULT_ZAI_BASE_URL,
                         ApiProvider::Stepfun => DEFAULT_STEPFUN_BASE_URL,
@@ -6347,8 +6285,7 @@ impl Config {
     /// [`Config::route_owned_root_base_url`] so an environment write addressed
     /// to one identity is not mistaken for the sibling identity's configured
     /// endpoint. DeepSeek and Xiaomi MiMo honour root `base_url` when their
-    /// per-provider table has none. OpenAI Codex does not: its OAuth login is
-    /// valid only for the official route, not an inherited legacy endpoint.
+    /// per-provider table has none.
     fn configured_base_url_for_provider(&self, provider: ApiProvider) -> Option<String> {
         let identity = self.provider_identity_for(provider);
         let provider_base = self
@@ -6610,22 +6547,6 @@ impl Config {
             return crate::xai_oauth::get_access_token(self);
         }
 
-        // OpenAI Codex (ChatGPT) can read an existing Codex CLI OAuth login
-        // only after exact read-only consent. Hakus never refreshes or
-        // rewrites that file. Explicit env overrides remain process-scoped.
-        if provider == ApiProvider::OpenaiCodex && !custom_endpoint {
-            if let Some(credentials) = crate::oauth::credentials_from_env() {
-                return Ok(credentials.access_token);
-            }
-            let path = crate::oauth::auth_file_path();
-            let grant = self.external_credential_read_grant(
-                provider,
-                hakus_config::ExternalCredentialSource::CodexCli,
-                &path,
-            )?;
-            return Ok(crate::oauth::get_credentials(&grant)?.access_token);
-        }
-
         // The dispatcher cannot know the effective provider until the TUI
         // applies `--profile`. A provider-neutral, source-marked CLI override
         // therefore wins over saved API-key slots here, after OAuth routes
@@ -6852,7 +6773,6 @@ impl Config {
             ApiProvider::OpencodeZen => {
                 anyhow::bail!("{}", missing_provider_api_key_message(provider)?)
             }
-            ApiProvider::OpenaiCodex => anyhow::bail!("{}", crate::oauth::missing_auth_message()),
             ApiProvider::Xai => {
                 // Prefer OAuth guidance when auth_mode requests it or Grok CLI
                 // tokens already exist; otherwise show both API-key and OAuth.
@@ -7868,7 +7788,6 @@ fn provider_env_base_url_override(provider: ApiProvider) -> Option<String> {
         | ApiProvider::Deepinfra
         | ApiProvider::Together
         | ApiProvider::Qianfan
-        | ApiProvider::OpenaiCodex
         | ApiProvider::Zai
         | ApiProvider::Stepfun
         | ApiProvider::Minimax
@@ -8118,13 +8037,6 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                     .providers
                     .get_or_insert_with(ProvidersConfig::default)
                     .qianfan
-                    .base_url = Some(value);
-            }
-            ApiProvider::OpenaiCodex => {
-                config
-                    .providers
-                    .get_or_insert_with(ProvidersConfig::default)
-                    .openai_codex
                     .base_url = Some(value);
             }
             ApiProvider::Zai => {
@@ -8583,7 +8495,6 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                 ApiProvider::Deepinfra => &mut providers.deepinfra,
                 ApiProvider::Together => &mut providers.together,
                 ApiProvider::Qianfan => &mut providers.qianfan,
-                ApiProvider::OpenaiCodex => &mut providers.openai_codex,
                 ApiProvider::Anthropic => &mut providers.anthropic,
                 ApiProvider::Openmodel => &mut providers.openmodel,
                 ApiProvider::Zai => &mut providers.zai,
@@ -8960,7 +8871,6 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                 ApiProvider::Deepinfra => &mut providers.deepinfra,
                 ApiProvider::Together => &mut providers.together,
                 ApiProvider::Qianfan => &mut providers.qianfan,
-                ApiProvider::OpenaiCodex => &mut providers.openai_codex,
                 ApiProvider::Anthropic => &mut providers.anthropic,
                 ApiProvider::Openmodel => &mut providers.openmodel,
                 ApiProvider::Zai => &mut providers.zai,
@@ -10415,7 +10325,6 @@ fn merge_providers(
             deepinfra: merge_provider_config(base.deepinfra, override_cfg.deepinfra),
             together: merge_provider_config(base.together, override_cfg.together),
             qianfan: merge_provider_config(base.qianfan, override_cfg.qianfan),
-            openai_codex: merge_provider_config(base.openai_codex, override_cfg.openai_codex),
             zai: merge_provider_config(base.zai, override_cfg.zai),
             stepfun: merge_provider_config(base.stepfun, override_cfg.stepfun),
             minimax: merge_provider_config(base.minimax, override_cfg.minimax),
@@ -11017,8 +10926,7 @@ pub fn has_api_key(config: &Config) -> bool {
 fn provider_uses_oauth_credentials(config: &Config, provider: ApiProvider) -> bool {
     !auth_mode_disables_api_key(config.auth_mode_for_provider(provider).as_deref())
         && !config.provider_uses_custom_endpoint(provider)
-        && (provider == ApiProvider::OpenaiCodex
-            || (provider == ApiProvider::Moonshot
+        && ((provider == ApiProvider::Moonshot
                 && config
                     .provider_config_for(provider)
                     .is_some_and(provider_config_uses_kimi_imported_token))
@@ -11065,19 +10973,6 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
             .is_some_and(provider_config_uses_kimi_imported_token)
     {
         return false;
-    }
-    if provider == ApiProvider::OpenaiCodex && !custom_endpoint {
-        // The persistent Codex login is the OAuth credential file, analogous to
-        // a stored config key. Token env overrides are scored separately by
-        // active_provider_has_env_api_key.
-        let path = crate::oauth::auth_file_path();
-        return config
-            .external_credential_read_grant(
-                provider,
-                hakus_config::ExternalCredentialSource::CodexCli,
-                &path,
-            )
-            .is_ok_and(|grant| crate::oauth::stored_credentials_present(&grant));
     }
     if !custom_endpoint
         && matches!(provider, ApiProvider::Huggingface)
@@ -11226,18 +11121,6 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     if provider == ApiProvider::Moonshot && provider_uses_oauth_credentials(config, provider) {
         return false;
     }
-    if provider == ApiProvider::OpenaiCodex && !config.provider_uses_custom_endpoint(provider) {
-        // Token env overrides are checked above. An external Codex login is
-        // considered only after exact read-only consent has been validated.
-        let path = crate::oauth::auth_file_path();
-        return config
-            .external_credential_read_grant(
-                provider,
-                hakus_config::ExternalCredentialSource::CodexCli,
-                &path,
-            )
-            .is_ok_and(|grant| crate::oauth::stored_credentials_present(&grant));
-    }
     if provider == ApiProvider::Xai
         && !config.provider_uses_custom_endpoint(provider)
         && crate::xai_oauth::credentials_present(config)
@@ -11347,40 +11230,6 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     }
 
     false
-}
-
-impl Config {
-    /// Resolve one coherent Codex OAuth snapshot. The bearer and account id
-    /// must come from the same secure file handle; opening the external JSON a
-    /// second time could pair identities across an atomic owner refresh or a
-    /// hostile path swap.
-    pub(crate) fn codex_credentials(&self) -> Result<crate::oauth::CodexCredentials> {
-        if let Some(credentials) = crate::oauth::credentials_from_env() {
-            return Ok(credentials);
-        }
-        anyhow::ensure!(
-            self.api_provider() == ApiProvider::OpenaiCodex
-                && !self.provider_uses_custom_endpoint(ApiProvider::OpenaiCodex),
-            "Codex OAuth credentials are only available on the official OpenAI Codex route"
-        );
-        let path = crate::oauth::auth_file_path();
-        let grant = self.external_credential_read_grant(
-            ApiProvider::OpenaiCodex,
-            hakus_config::ExternalCredentialSource::CodexCli,
-            &path,
-        )?;
-        crate::oauth::get_credentials(&grant)
-    }
-
-    /// ChatGPT account id for the already-selected Codex route. Environment
-    /// metadata remains independent; the external file is read only when the
-    /// exact provider/source/path consent tuple is valid.
-    #[cfg(test)]
-    pub(crate) fn codex_account_id(&self) -> Option<String> {
-        self.codex_credentials()
-            .ok()
-            .and_then(|credentials| credentials.account_id)
-    }
 }
 
 /// Whether a provider counts as "configured" for the default `/provider`
@@ -11520,11 +11369,6 @@ fn save_api_key_for_identity_unlocked(
     api_key: &str,
 ) -> Result<SavedCredential> {
     let provider = identity.provider;
-    if provider == ApiProvider::OpenaiCodex {
-        anyhow::bail!(
-            "OpenAI Codex uses OAuth. Run `codex login`, then grant exact read-only access with `hakus auth external-consent --provider openai-codex --mode read-only`, or set OPENAI_CODEX_ACCESS_TOKEN for this process; Hakus does not store an API key for this provider."
-        );
-    }
     let is_legacy_literal_custom = provider == ApiProvider::Custom
         && identity.key.trim() == ApiProvider::Custom.as_str()
         && identity.persisted_id().is_none();
@@ -11826,10 +11670,6 @@ pub(crate) fn persist_external_credential_consent_for_at(
     path: &Path,
 ) -> Result<PathBuf> {
     let expected = match provider {
-        ApiProvider::OpenaiCodex => (
-            hakus_config::ProviderKind::OpenaiCodex,
-            hakus_config::ExternalCredentialSource::CodexCli,
-        ),
         ApiProvider::Xai => (
             hakus_config::ProviderKind::Xai,
             hakus_config::ExternalCredentialSource::GrokCli,
@@ -11914,7 +11754,7 @@ pub(crate) fn revoke_external_credential_consent_for_at(
     provider: ApiProvider,
 ) -> Result<PathBuf> {
     anyhow::ensure!(
-        matches!(provider, ApiProvider::OpenaiCodex | ApiProvider::Xai),
+        matches!(provider, ApiProvider::Xai),
         "{} has no supported external credential owner",
         provider.as_str()
     );

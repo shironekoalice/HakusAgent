@@ -3657,36 +3657,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn config_reasoning_effort_uses_codex_provider_labels() {
-        let temp_root = env::temp_dir().join(format!(
-            "hakus-tui-codex-effort-config-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-        let mut app = create_test_app();
-        app.api_provider = ApiProvider::OpenaiCodex;
-        app.reasoning_effort = ReasoningEffort::High;
-
-        let result = set_config_value(&mut app, "reasoning_effort", "off", false);
-
-        assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
-        assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::Off));
-        assert_eq!(
-            result.message.as_deref(),
-            Some("reasoning_effort = low (session only, add --save to persist)")
-        );
-
-        let result = set_config_value(&mut app, "reasoning_effort", "xhigh", false);
-
-        // `xhigh` stopped collapsing into `Max` when the ladder gave it a rung.
-        assert_eq!(app.reasoning_effort, ReasoningEffort::XHigh);
-        assert_eq!(
-            result.message.as_deref(),
-            Some("reasoning_effort = xhigh (session only, add --save to persist)")
-        );
-    }
 
     #[test]
     fn config_fancy_animations_keeps_ghostty_full_motion() {

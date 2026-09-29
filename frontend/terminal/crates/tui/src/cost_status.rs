@@ -1598,22 +1598,6 @@ mod tests {
         assert!(!drained.unpriced_reasons.is_empty());
     }
 
-    #[test]
-    fn report_skips_codex_oauth_pricing_without_calling_it_incomplete() {
-        let _g = test_scope();
-        report(
-            scope_token(),
-            &BackgroundRoute::new(ApiProvider::OpenaiCodex, "gpt-5.5"),
-            &small_usage(),
-        );
-        let drained = drain();
-        assert_eq!(drained.estimate, CostEstimate::default());
-        // Exactly non-metered: not counted in either coverage bucket.
-        assert_eq!(drained.priced_turns, 0);
-        assert_eq!(drained.unpriced_turns, 0);
-        assert!(drained.unpriced_reasons.is_empty());
-        assert!(drained.cny_unpriced_reasons.is_empty());
-    }
 
     #[test]
     fn report_skips_stepfun_without_billing_surface() {

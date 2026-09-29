@@ -91,7 +91,7 @@
   "AppModePlanHint": "先唯讀調研，行動前提出計畫",
   "AppModeYolo": "完全存取（已棄用標籤）",
   "AppModeYoloHint": "僅相容 — Act + 完全存取，不是可見模式",
-  "ApprovalAutoDeniedSession": "已自動拒絕 {tool}：在本次 CodeWhale 執行期間，已有相符請求被拒絕。若要重新考慮，請重新啟動 CodeWhale。",
+  "ApprovalAutoDeniedSession": "已自動拒絕 {tool}：在本次 HakusCLI 執行期間，已有相符請求被拒絕。若要重新考慮，請重新啟動 HakusCLI。",
   "ApprovalBlockTitle": "審批",
   "ApprovalCategoryAgent": "子代理",
   "ApprovalCategoryFileWrite": "檔案寫入",
@@ -330,7 +330,7 @@
   "CmdModelDescription": "切換或檢視目前模型",
   "CmdModelsDescription": "工具箱：從目前 API 取得實時模型 ID",
   "CmdNetworkDescription": "管理網路允許和拒絕規則",
-  "CmdUpdateDescription": "檢查並安裝新的 CodeWhale 版本",
+  "CmdUpdateDescription": "檢查並安裝新的 HakusCLI 版本",
   "CmdNewDescription": "開始一個新的已儲存工作階段",
   "CmdNoteDescription": "添加、列出、編輯或刪除工作區筆記",
   "CmdPermissionsDescription": "列出並安全刪除權限規則",
@@ -431,7 +431,7 @@
   "CmdWorkflowDescription": "需要階段、順序或多路並行時執行多智能體腳本",
   "CmdWorkflowsDescription": "顯示此工作空間的工作流程執行（列表、取消）",
   "CmdWorkspaceDescription": "顯示或切換目前工作空間",
-  "CmdWechatDescription": "連接微信：掃碼登入、狀態、傳送、訊息輪詢",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CommandPaletteSubtitle": "查找並執行一個操作",
   "CommandPaletteTitle": "命令",
   "ComposerDispatchFailedRestored": "訊息未傳送（{error}）；已還原到輸入框。",
@@ -1109,7 +1109,6 @@
   "ProviderExternalDormant": "休眠",
   "ProviderExternalExactPathLabel": "確切解析路徑",
   "ProviderExternalGrantedToast": "已為{provider}授予{owner}唯讀存取權限。不重新整理、不發起身份/發現請求、不寫入外部檔案；正常提供商請求可以使用該令牌。",
-  "ProviderExternalHintCodexReview": "完成 {login} 後，按Enter檢視禁用、唯讀和託管存取選項。",
   "ProviderExternalHintXaiApiKey": "也可以使用XAI_API_KEY，然後重新開啟此選擇器。",
   "ProviderExternalHintXaiReview": "按Enter使用HakusCLI自有的設備登入；按E檢視現有Grok CLI憑據複用。",
   "ProviderExternalManagedDetail": "沒有經過審核且能安全保留架構的適配器",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} 沒有 /models 端點，因此未探測可達性。",
   "ProviderTemplateOpened": "已開啟提供商範本 '{id}'。只需輸入 API 金鑰。",
   "ProviderTemplateUnknown": "未知提供商範本 '{id}'。",
-  "ProviderTemplateOpenedEnvOnly": "已開啟內建範本 '{id}'。請填入 API 金鑰環境變數名後儲存，不要貼上原始金鑰。",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "已開啟內建範本 '{id}'。請填入 API 金鑰環境變數名後儲存，不要貼上原始金鑰。"
 }

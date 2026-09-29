@@ -10131,48 +10131,6 @@ fn subagent_failed_sentinel_format_is_well_formed() {
     assert!(parsed.get("error").is_none());
 }
 
-#[test]
-fn annotated_failure_message_composes_class_tag_and_model_hint() {
-    // #3884: the failure recorder composes subagent_failure_message (adds the
-    // class tag + full chain) with annotate_child_model_error (adds the
-    // model-availability hint). Pin the composition the mailbox/update_failed
-    // call sites actually perform, not just the helper in isolation.
-    let err = anyhow::Error::new(crate::llm_client::LlmError::AuthorizationError(
-        "The model `gpt-5.5-codex` does not exist or you do not have access".to_string(),
-    ))
-    .context("Responses API request failed");
-
-    let provider = crate::config::ApiProvider::OpenaiCodex;
-    let route = ModelRoute::Fixed("gpt-5.5-codex".to_string());
-    let annotated = annotate_child_model_error(
-        &subagent_failure_message(&err),
-        "gpt-5.5-codex",
-        provider,
-        &route,
-    );
-
-    // Class tag from subagent_failure_message.
-    assert!(annotated.starts_with("[auth]"), "{annotated}");
-    // Full chain preserved.
-    assert!(
-        annotated.contains("Responses API request failed"),
-        "{annotated}"
-    );
-    assert!(annotated.contains("does not exist"), "{annotated}");
-    // Model-availability hint fired because the real provider text now
-    // reaches the classifier (it could not when only the masked outer
-    // context string was recorded).
-    assert!(annotated.contains("gpt-5.5-codex"), "{annotated}");
-    assert!(
-        annotated.contains("child model override")
-            || annotated.contains("child-agent model config"),
-        "{annotated}"
-    );
-    // #4049: the failure now names the provider and the route source.
-    assert!(annotated.contains(provider.display_name()), "{annotated}");
-    assert!(annotated.contains("route:"), "{annotated}");
-    assert!(annotated.contains("explicit model id"), "{annotated}");
-}
 
 #[test]
 fn subagent_failure_message_preserves_error_chain() {
@@ -10215,51 +10173,6 @@ fn subagent_failure_message_preserves_error_chain() {
     assert_eq!(message, "outer: boom");
 }
 
-#[test]
-fn annotate_child_model_error_adds_actionable_hint() {
-    // #2653: a bare provider 403 becomes actionable by naming the model and the
-    // recovery path, while unrelated errors pass through unchanged.
-    let provider = crate::config::ApiProvider::Moonshot;
-    let inherit = ModelRoute::Inherit;
-    let auth = annotate_child_model_error("403 Forbidden", "kimi-k2", provider, &inherit);
-    assert!(auth.contains("kimi-k2"), "names the model: {auth}");
-    assert!(
-        auth.contains("child model override"),
-        "names the recovery path: {auth}"
-    );
-    assert!(
-        auth.contains("403 Forbidden"),
-        "preserves the original: {auth}"
-    );
-    // #4049: provider + route source are named in the hint.
-    assert!(auth.contains(provider.display_name()), "{auth}");
-    assert!(auth.contains("inherited from the parent"), "{auth}");
-
-    // Unrelated errors still pass through completely unchanged (no provider
-    // /route noise on a network failure).
-    let unrelated =
-        annotate_child_model_error("connection reset by peer", "kimi-k2", provider, &inherit);
-    assert_eq!(unrelated, "connection reset by peer");
-
-    // #3020: provider rejections that classify as Internal (not
-    // Authorization/State) still get the hint via raw-text matching.
-    let not_exist = annotate_child_model_error("Model Not Exist", "kimi-k2", provider, &inherit);
-    assert!(
-        not_exist.contains("child-agent model config"),
-        "DeepSeek-style rejection gets the hint: {not_exist}"
-    );
-
-    let openai_style = annotate_child_model_error(
-        "The model `gpt-5.5-nano` does not exist or you do not have access to it.",
-        "gpt-5.5-nano",
-        crate::config::ApiProvider::OpenaiCodex,
-        &ModelRoute::Fixed("gpt-5.5-nano".to_string()),
-    );
-    assert!(
-        openai_style.contains("child-agent model config"),
-        "OpenAI-style rejection gets the hint: {openai_style}"
-    );
-}
 
 #[test]
 fn child_launch_error_names_provider_model_and_route_source() {
@@ -12325,54 +12238,6 @@ fn stub_runtime_for_provider(provider: &str) -> SubAgentRuntime {
     runtime
 }
 
-fn stub_client_for_provider(provider: &str) -> DeepSeekClient {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut providers = crate::config::ProvidersConfig::default();
-    match provider {
-        "moonshot" => {
-            providers.moonshot = crate::config::ProviderConfig {
-                api_key: Some("test-key".to_string()),
-                ..Default::default()
-            };
-        }
-        "openrouter" => {
-            providers.openrouter = crate::config::ProviderConfig {
-                api_key: Some("test-key".to_string()),
-                ..Default::default()
-            };
-        }
-        "zai" => {
-            providers.zai = crate::config::ProviderConfig {
-                api_key: Some("test-key".to_string()),
-                ..Default::default()
-            };
-        }
-        // OpenAI Codex (ChatGPT backend). Exercises the faster-lane reasoning
-        // rule: GPT-5.5 children stay on GPT-5.5 and resolve Low reasoning.
-        "openai-codex" => {
-            providers.openai_codex = crate::config::ProviderConfig {
-                api_key: Some("test-key".to_string()),
-                ..Default::default()
-            };
-        }
-        // Ollama is keyless (local runtime); extend per-provider as needed.
-        "ollama" => {}
-        "sakana" => {
-            providers.sakana = crate::config::ProviderConfig {
-                api_key: Some("test-key".to_string()),
-                ..Default::default()
-            };
-        }
-        other => panic!("extend stub_client_for_provider for provider {other}"),
-    }
-    let config = crate::config::Config {
-        api_key: Some("test-key".to_string()),
-        provider: Some(provider.to_string()),
-        providers: Some(providers),
-        ..crate::config::Config::default()
-    };
-    DeepSeekClient::new(&config).expect("stub client should construct")
-}
 
 fn stub_client() -> DeepSeekClient {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -12384,6 +12249,27 @@ fn stub_client() -> DeepSeekClient {
 }
 
 // ---- #4193: interactive-TUI in-process spawn honors a profile's pinned provider ----
+
+/// A minimal stub client for provider-routing tests.
+fn stub_client_for_provider(provider: &str) -> DeepSeekClient {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut providers = crate::config::ProvidersConfig::default();
+    match provider {
+        "moonshot" => providers.moonshot.api_key = Some("test-key".to_string()),
+        "openrouter" => providers.openrouter.api_key = Some("test-key".to_string()),
+        "zai" => providers.zai.api_key = Some("test-key".to_string()),
+        "ollama" => {},
+        "sakana" => providers.sakana.api_key = Some("test-key".to_string()),
+        other => panic!("extend stub_client_for_provider for provider {other}"),
+    }
+    let config = crate::config::Config {
+        api_key: Some("test-key".to_string()),
+        provider: Some(provider.to_string()),
+        providers: Some(providers),
+        ..crate::config::Config::default()
+    };
+    DeepSeekClient::new(&config).expect("stub client should construct")
+}
 
 /// A `Config` with two fully-configured providers, each on a DISTINCT host so a
 /// test can prove a child client actually re-pointed: `deepseek` is the session
@@ -14556,49 +14442,6 @@ fn normalize_requested_subagent_model_rejects_cross_namespace_for_sakana() {
     );
 }
 
-#[test]
-fn gpt55_faster_route_stays_on_gpt55_with_low_reasoning() {
-    // AC: a faster/explore child of a GPT-5.5 (OpenAI Codex) parent must stay
-    // on GPT-5.5 — there is no cheaper same-provider sibling, so we never
-    // fabricate a DeepSeek/GLM id — and resolve Low reasoning rather than Off,
-    // because the Codex adapter has no true "off" on the wire.
-    //
-    // The Codex client validates OAuth credentials at construction time, so we
-    // stub the access-token env var for the duration of this test (save/restore
-    // to avoid leaking into parallel tests).
-    let prev_token = std::env::var_os("OPENAI_CODEX_ACCESS_TOKEN");
-    // Safety: this test does not run concurrently with other tests that read
-    // OPENAI_CODEX_ACCESS_TOKEN, and we restore the original value below.
-    unsafe {
-        std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", "test-token");
-    }
-    let mut codex = stub_runtime_for_provider("openai-codex");
-    unsafe {
-        match prev_token {
-            Some(prev) => std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", prev),
-            None => std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN"),
-        }
-    }
-    codex.model = "gpt-5.5".to_string();
-    let route = fallback_subagent_assignment_route(
-        &codex,
-        None,
-        ModelRoute::Faster,
-        SubAgentThinking::Inherit,
-        "inspect one file",
-    );
-    assert_eq!(route.model, "gpt-5.5");
-    assert!(
-        !route.model.contains("deepseek"),
-        "no DeepSeek id may be fabricated: {route:?}"
-    );
-    assert!(
-        !route.model.contains("glm"),
-        "no GLM id may be fabricated: {route:?}"
-    );
-    assert_eq!(route.reasoning_effort.as_deref(), Some("low"));
-    assert_ne!(route.reasoning_effort.as_deref(), Some("off"));
-}
 
 #[test]
 fn role_model_validation_accepts_provider_native_ids() {

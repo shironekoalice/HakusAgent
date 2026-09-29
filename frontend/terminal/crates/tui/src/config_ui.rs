@@ -1758,33 +1758,7 @@ mod tests {
         assert_eq!(doc.config.reasoning_effort, ReasoningEffortValue::Max);
     }
 
-    #[test]
-    fn build_document_uses_raw_reasoning_preference() {
-        let mut app = app();
-        app.api_provider = ApiProvider::OpenaiCodex;
-        app.reasoning_effort = ReasoningEffort::Low;
-        app.reasoning_effort_preference = Some(ReasoningEffort::Off);
 
-        let doc = build_document(&app, &Config::default()).expect("document");
-
-        assert_eq!(doc.config.reasoning_effort, ReasoningEffortValue::Off);
-    }
-
-    #[test]
-    fn config_ui_reasoning_keeps_raw_preference_for_fixed_route() {
-        let mut app = app();
-        app.api_provider = ApiProvider::OpenaiCodex;
-        app.reasoning_effort = ReasoningEffort::High;
-        app.reasoning_effort_preference = None;
-        let mut config = Config::default();
-
-        apply_reasoning_effort(&mut app, &mut config, ReasoningEffortValue::Off, false)
-            .expect("apply reasoning");
-
-        assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
-        assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::Off));
-        assert_eq!(config.reasoning_effort.as_deref(), Some("off"));
-    }
 
     #[test]
     fn persisted_config_ui_reasoning_updates_the_startup_precedence_layer() {

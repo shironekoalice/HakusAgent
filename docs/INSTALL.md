@@ -1,90 +1,57 @@
-# HakusCLI 安装指南（四端）
+# 安装与首次配置
 
-HakusCLI 有两个实现：
+## 桌面应用
 
-| 实现 | 位置 | 状态 |
-|---|---|---|
-| **Rust + ratatui 版** | `frontend/terminal/`（fork 自 DeepSeek-TUI/Codewhale，MIT） | **当前主力** |
-| Python + Textual 版 | `hakus/cli/`（`pip install -e .` 后 `hakuscli` 命令） | 兼容 CLI/WebUI，不是 Tauri 桌面后端 |
+从 [Releases](https://github.com/modemneko/HakusAgent/releases/latest) 下载对应平台的安装包：
 
-## Rust 版（推荐）
+| 平台 | 推荐文件 |
+| --- | --- |
+| Windows | 安装程序或 MSI |
+| macOS | 对应芯片架构的 DMG |
+| Linux | AppImage 或 deb |
+| Android | arm64 APK |
 
-需要 Rust 工具链（1.88+，edition 2024）：
+安装完成后启动应用，按向导完成语言、模型服务、默认模型和工作区设置。API Key 只应填入可信设备，不要写入截图、项目文件或公开日志。
 
-```sh
-cd frontend/terminal
-cargo build --release --bin hakuscli
-# 产物: target/release/hakuscli (.exe on Windows)
+## 第一次运行
+
+1. 选择一个本地工作区，或稍后从项目页添加远程连接。
+2. 打开模型设置，添加服务商、访问地址、模型名称和凭据。
+3. 发送一条简单消息，确认模型连接可用。
+4. 第一次执行文件或命令操作时，选择合适的权限模式。
+
+应用会把会话、配置和界面偏好保存到本机用户数据目录。卸载时是否删除这些数据，由系统卸载器和应用提示决定。
+
+## 终端程序
+
+终端程序适用于 Windows、macOS、Linux，以及 Android 的 Termux。下载对应平台的压缩包并将程序放入可执行路径，然后运行：
+
+```text
+hakuscli
 ```
 
-四端支持：macOS / Linux 直接 cargo build；Windows 同；Termux 用
-`pkg install rust binutils` 后 `cargo build --release`（依赖树大，首次编译较久）。
+首次进入后，可在设置界面选择模型服务商，也可以通过环境变量或配置文件提供凭据。详细说明见[终端使用指南](../frontend/terminal/docs/README.md)。
 
-运行：
+## 网络与凭据
 
-```sh
-export DEEPSEEK_API_KEY=sk-...   # 或配置其他 provider，见 frontend/terminal/config.example.toml
-hakuscli            # 交互 TUI（Plan/Agent/YOLO 模式、思考流、命令面板）
-hakuscli exec "..." # 非交互
-```
+- 云端模型需要访问对应服务商的网络地址。
+- 自定义服务应明确填写协议兼容的地址，不要把管理后台地址当作模型接口地址。
+- 本地模型或局域网模型可以只在本机网络内使用，但仍应检查访问控制。
+- 不同服务商的凭据格式不同；连接失败时先检查地址、模型名、区域和账户权限。
 
-详细归属与改动清单见 `frontend/terminal/ATTRIBUTION.md`。
+## 远程项目
 
-## Python 兼容版（旧 CLI/WebUI）
+新建项目时选择“远程连接”，再按向导选择 SSH、WSL 或 Docker。远程项目的文件和命令在远程环境执行，当前设备只保存连接配置、会话信息和必要的界面状态。
 
-## 前置要求
+## 更新与卸载
 
-- Python **3.11+**
-- 一个 LLM API key（`config.yaml` 或环境变量，见根目录 `config.example.yaml`）
+稳定版更新从应用内更新入口或 Releases 页面获取。测试版与正式版可能使用不同的更新通道，不要混用安装包。卸载前请决定是否删除本机的会话、凭据和项目索引。
 
-## macOS / Linux
+## 常见问题
 
-```sh
-git clone <repo> && cd HakusAgent
-sh scripts/install.sh
-```
-
-## Windows
-
-```powershell
-git clone <repo>; cd HakusAgent
-.\scripts\install.ps1
-```
-
-## Android Termux
-
-```sh
-pkg install python python-pydantic   # pydantic-core 用官方预编译包，绕开 Rust 自编译
-git clone <repo> && cd HakusAgent
-sh scripts/install.sh
-```
-
-> Termux 注意事项：
-> - 不要装 `hakusai[memory]`（numpy/chromadb 需自编译，Termux 上基本装不动）；
->   记忆系统缺失时 CLI 会自动降级，不影响其他功能。
-> - `hakusai[server]`（桌面 sidecar）在 Termux 上无意义，不需要装。
-> - 若 `mcp` 包安装失败，可用 `pkg install python` 后重试，或加 `--no-build-isolation`。
-
-脚本行为：优先复用仓库自带 `venv`（有就用），否则用系统 Python 做
-`pip install -e .`（editable 源码安装）。
-
-## 运行
-
-```sh
-hakuscli                  # 默认 Work 模式 + dark 主题
-hakuscli --mode code      # Code 模式
-hakuscli --model glm-4.5  # 指定模型
-```
-
-命令别名：`hakuscli` = `hakusai`，二者等价。
-
-## Extras 说明
-
-| extra | 内容 | 适用端 |
-|---|---|---|
-| （默认） | HakusCLI 终端版最小集 | 四端通用 |
-| `server` | 旧 FastAPI 兼容服务 | WebUI/兼容回归 |
-| `models` | 多云模型 SDK | 可选 |
-| `voice` | 语音 ASR/TTS | 桌面端/全量 |
-| `memory` | 长期记忆（numpy/chromadb） | 非 Termux |
-| `live` | 直播平台接入 | 桌面端/全量 |
+| 现象 | 建议 |
+| --- | --- |
+| 应用能打开但无法对话 | 检查服务商、模型名称、地址和网络连接 |
+| 工具调用被暂停 | 查看当前权限模式，并在确认窗口中允许所需操作 |
+| 远程项目打不开 | 检查主机、凭据、端口以及远程环境是否可用 |
+| 更新没有出现 | 检查当前渠道和网络，必要时从 Releases 手动下载 |

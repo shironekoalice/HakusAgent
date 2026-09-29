@@ -1,5 +1,5 @@
 /**
- * Goal side panel — Codex ThreadGoalSidePanelTab chrome.
+ * Goal side panel chrome.
  */
 
 import { useCallback, useEffect, useState } from 'react'

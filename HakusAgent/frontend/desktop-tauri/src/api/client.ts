@@ -75,7 +75,9 @@ import type {
   SkillsResponse,
   SkillMutationReceipt,
   ThreadGoal,
+  WeChatStatus,
 } from './types'
+import { BROWSER_DYNAMIC_TOOL, embeddedBrowserAvailable } from '@/lib/agentBrowser'
 import { EXPECTED_BACKEND_API_VERSION_INT } from './types'
 import { refreshProjectFolder, syncProjectFolder } from './tauriBridge'
 
@@ -200,7 +202,11 @@ function mergeProviderCatalog(entries: ProviderInfo[], current: string): Provide
 
 export class HakusAIClient {
   private baseUrl: string = 'http://127.0.0.1:48081'
+  private localBaseUrl: string = 'http://127.0.0.1:48081'
   private wsBaseUrl: string = 'ws://127.0.0.1:48081'
+  private runtimeToken: string | null = null
+  private remoteRuntimeActive = false
+  private runtimeProjectPaths = new Map<string, string>()
   private ws: WebSocket | null = null
   private timeout: number = 30000
 
@@ -259,8 +265,41 @@ export class HakusAIClient {
   }
 
   private async runtimeFetch(path: string, init: RequestInit = {}, timeoutMs = 12000): Promise<Response> {
-    if (timeoutMs === 0) return fetch(`${this.baseUrl}/v1${path}`, init)
-    return this.fetchWithHardTimeout(`${this.baseUrl}/v1${path}`, init, timeoutMs)
+    const headers = new Headers(init.headers)
+    if (this.runtimeToken) headers.set('Authorization', `Bearer ${this.runtimeToken}`)
+    const request = { ...init, headers }
+    if (timeoutMs === 0) return fetch(`${this.baseUrl}/v1${path}`, request)
+    return this.fetchWithHardTimeout(`${this.baseUrl}/v1${path}`, request, timeoutMs)
+  }
+
+  setRuntimeToken(token: string | null) {
+    this.runtimeToken = token?.trim() || null
+  }
+
+  setLocalBaseUrl(url: string) {
+    this.localBaseUrl = url.replace(/\/$/, '')
+  }
+
+  getLocalBaseUrl(): string {
+    return this.localBaseUrl
+  }
+
+  setRemoteRuntime(url: string, token: string) {
+    this.baseUrl = url.replace(/\/$/, '')
+    this.wsBaseUrl = this.baseUrl.replace(/^http/, 'ws')
+    this.runtimeToken = token.trim() || null
+    this.remoteRuntimeActive = true
+  }
+
+  useLocalRuntime() {
+    this.baseUrl = this.localBaseUrl
+    this.wsBaseUrl = this.localBaseUrl.replace(/^http/, 'ws')
+    this.runtimeToken = null
+    this.remoteRuntimeActive = false
+  }
+
+  setRuntimeProjectPath(projectId: string, path: string) {
+    if (projectId.trim() && path.trim()) this.runtimeProjectPaths.set(projectId, path)
   }
 
   private runtimeUnsupported(feature: string): never {
@@ -443,8 +482,11 @@ export class HakusAIClient {
     // Remove trailing slash
     const previewUrl = this.rustPreviewUrl
     const isLoopback = /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)(:\d+)?\/?$/i.test(url)
-    this.baseUrl = previewUrl && isLoopback ? previewUrl : url.replace(/\/$/, '')
-    this.wsBaseUrl = this.baseUrl.replace(/^http/, 'ws')
+    this.localBaseUrl = previewUrl && isLoopback ? previewUrl : url.replace(/\/$/, '')
+    if (!this.remoteRuntimeActive) {
+      this.baseUrl = this.localBaseUrl
+      this.wsBaseUrl = this.baseUrl.replace(/^http/, 'ws')
+    }
   }
 
   setTimeout(timeout: number) {
@@ -1633,8 +1675,11 @@ export class HakusAIClient {
   /** Approve or deny an approval. decision: 'once' | 'session' | 'deny'. */
   async decideApproval(approvalId: string, decision: 'once' | 'session' | 'deny'): Promise<void> {
     if (this.usesEmbeddedRuntime) {
+      // The Runtime API expects "allow" | "deny" (DecideApprovalBody) — the
+      // legacy server used "approve". "本会话允许" maps to remember=true.
       await this.decideRuntimeApproval(approvalId, {
-        decision: decision === 'deny' ? 'deny' : 'approve',
+        decision: decision === 'deny' ? 'deny' : 'allow',
+        remember: decision === 'session',
       })
       return
     }
@@ -2055,13 +2100,14 @@ export class HakusAIClient {
     const project = projectId
       ? (await this.listProjects()).find((candidate) => candidate.id === projectId) || null
       : null
-    if (project) {
-      await refreshProjectFolder({ path: project.path, sourceUri: project.source_uri })
+    const workspace = project?.path || (projectId ? this.runtimeProjectPaths.get(projectId) : undefined)
+    if (workspace) {
+      await refreshProjectFolder({ path: workspace, sourceUri: project?.source_uri })
       const workspaceUrl = `${this.baseUrl}/v1/threads/${encodeURIComponent(threadId)}`
       const workspaceResponse = await this.runtimeFetch(`/threads/${encodeURIComponent(threadId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace: project.path }),
+        body: JSON.stringify({ workspace }),
         signal,
       })
       if (!workspaceResponse.ok) {
@@ -2106,6 +2152,9 @@ export class HakusAIClient {
         // act (daily work) and operate (full power) respectively.
         ...(runMode ? { mode: runtimeModeFromAgentMode(runMode) } : {}),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        ...(runMode === 'deep' && embeddedBrowserAvailable()
+          ? { dynamic_tools: [BROWSER_DYNAMIC_TOOL] }
+          : {}),
       }),
       signal,
     })
@@ -2195,6 +2244,15 @@ export class HakusAIClient {
 
   private runtimeEventToAgentEvent(name: string, payload: any): AgentEvent | null {
     switch (name) {
+      case 'tool_call.requested':
+        if (payload.namespace !== 'browser' || payload.tool !== 'control') return null
+        return {
+          event_type: 'browser_tool_requested',
+          thread_id: String(payload.thread_id || ''),
+          turn_id: String(payload.turn_id || ''),
+          call_id: String(payload.call_id || ''),
+          arguments: payload.arguments || {},
+        } as AgentEvent
       case 'item.delta':
         if (payload.kind === 'agent_message') return { event_type: 'text_delta', text: String(payload.delta || '') }
         if (payload.kind === 'agent_reasoning') return { event_type: 'reasoning_delta', text: String(payload.delta || '') }
@@ -2248,6 +2306,23 @@ export class HakusAIClient {
           duration: 0,
           arguments: item.tool?.input || item.input || {},
         }
+      }
+      case 'approval.required': {
+        // The Runtime gates dangerous tool calls behind an approval request.
+        // Without this mapping the card never renders and the request times
+        // out (300s) into an automatic deny.
+        return {
+          event_type: 'approval_required',
+          approval: {
+            id: String(payload.approval_id || payload.id || ''),
+            session_id: String(payload.thread_id || ''),
+            tool: String(payload.tool_name || 'tool'),
+            action_key: String(payload.intent_summary || payload.tool_name || ''),
+            reason: String(payload.description || ''),
+            approver: 'runtime',
+            status: 'pending',
+          } as ApprovalRecord,
+        } as AgentEvent
       }
       case 'user_input.required': {
         const request = payload.request || {}
@@ -2926,7 +3001,7 @@ export class HakusAIClient {
   }
 
   // ---- 微信 ClawBot ----
-  async getWeChatStatus(): Promise<any> {
+  async getWeChatStatus(): Promise<WeChatStatus> {
     if (this.usesEmbeddedRuntime) {
       const res = await this.runtimeFetch('/wechat/status')
       if (!res.ok) await this._throwForResponse(res, `${this.baseUrl}/v1/wechat/status`, 'Get Runtime WeChat status failed')
@@ -2934,6 +3009,26 @@ export class HakusAIClient {
     }
     const res = await this.fetchWithHardTimeout(`${this.baseUrl}/api/wechat/status`, {}, 10000)
     if (!res.ok) await this._throwForResponse(res, 'wechat/status', 'Get wechat status failed')
+    return res.json()
+  }
+
+  async weChatSetAutoReply(enabled: boolean): Promise<{ enabled: boolean }> {
+    if (this.usesEmbeddedRuntime) {
+      const url = `${this.baseUrl}/v1/wechat/settings`
+      const res = await this.runtimeFetch('/wechat/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+      if (!res.ok) await this._throwForResponse(res, url, 'Save WeChat settings failed')
+      return res.json()
+    }
+    const res = await this.fetchWithHardTimeout(`${this.baseUrl}/api/wechat/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }, 10000)
+    if (!res.ok) await this._throwForResponse(res, 'wechat/settings', 'Save WeChat settings failed')
     return res.json()
   }
 
@@ -2986,7 +3081,7 @@ export class HakusAIClient {
     return res.json()
   }
 
-  // ============ Git / Workspace (Codex-style review panel) ============
+  // ============ Git / Workspace (review panel) ============
 
   /**
    * GET /api/git/status — branch + changed file list for the agent working dir.
@@ -3167,18 +3262,20 @@ export class HakusAIClient {
     return `${this.wsBaseUrl}/ws/terminal`
   }
 
-  // ============ Projects (Codex-style project picker) ============
+  // ============ Projects (project picker) ============
 
   async listProjects(): Promise<Project[]> {
     if (this.usesEmbeddedRuntime) {
-      const res = await this.runtimeFetch('/projects')
-      if (!res.ok) await this._throwForResponse(res, `${this.baseUrl}/v1/projects`, 'List Runtime projects failed')
+      const url = `${this.localBaseUrl}/v1/projects`
+      const res = await this.fetchWithHardTimeout(url, {}, 8000)
+      if (!res.ok) await this._throwForResponse(res, url, 'List Runtime projects failed')
       const data = await res.json() as ProjectsListResponse
       return data.projects || []
     }
-    const res = await this.fetchWithHardTimeout(`${this.baseUrl}/api/projects`, {}, 8000)
+    const url = `${this.localBaseUrl}/api/projects`
+    const res = await this.fetchWithHardTimeout(url, {}, 8000)
     if (!res.ok) {
-      await this._throwForResponse(res, `${this.baseUrl}/api/projects`, 'List projects failed')
+      await this._throwForResponse(res, url, 'List projects failed')
     }
     const data = (await res.json()) as ProjectsListResponse
     return data.projects || []
@@ -3186,16 +3283,17 @@ export class HakusAIClient {
 
   async createProject(body: ProjectCreateBody): Promise<Project> {
     if (this.usesEmbeddedRuntime) {
-      const res = await this.runtimeFetch('/projects', {
+      const url = `${this.localBaseUrl}/v1/projects`
+      const res = await this.fetchWithHardTimeout(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      if (!res.ok) await this._throwForResponse(res, `${this.baseUrl}/v1/projects`, 'Create Runtime project failed')
+      if (!res.ok) await this._throwForResponse(res, url, 'Create Runtime project failed')
       return res.json()
     }
     const res = await this.fetchWithHardTimeout(
-      `${this.baseUrl}/api/projects`,
+      `${this.localBaseUrl}/api/projects`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3211,8 +3309,9 @@ export class HakusAIClient {
 
   async updateProject(projectId: string, body: ProjectUpdateBody): Promise<Project> {
     if (this.usesEmbeddedRuntime) {
-      const url = `${this.baseUrl}/v1/projects/${encodeURIComponent(projectId)}`
-      const res = await this.runtimeFetch(`/projects/${encodeURIComponent(projectId)}`, {
+      const path = `/projects/${encodeURIComponent(projectId)}`
+      const url = `${this.localBaseUrl}/v1${path}`
+      const res = await this.fetchWithHardTimeout(url, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -3221,7 +3320,7 @@ export class HakusAIClient {
       return res.json()
     }
     const res = await this.fetchWithHardTimeout(
-      `${this.baseUrl}/api/projects/${encodeURIComponent(projectId)}`,
+      `${this.localBaseUrl}/api/projects/${encodeURIComponent(projectId)}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -3237,13 +3336,14 @@ export class HakusAIClient {
 
   async deleteProject(projectId: string): Promise<void> {
     if (this.usesEmbeddedRuntime) {
-      const url = `${this.baseUrl}/v1/projects/${encodeURIComponent(projectId)}`
-      const res = await this.runtimeFetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
+      const path = `/projects/${encodeURIComponent(projectId)}`
+      const url = `${this.localBaseUrl}/v1${path}`
+      const res = await this.fetchWithHardTimeout(url, { method: 'DELETE' })
       if (!res.ok) await this._throwForResponse(res, url, 'Delete Runtime project failed')
       return
     }
     const res = await this.fetchWithHardTimeout(
-      `${this.baseUrl}/api/projects/${encodeURIComponent(projectId)}`,
+      `${this.localBaseUrl}/api/projects/${encodeURIComponent(projectId)}`,
       { method: 'DELETE' },
       8000,
     )

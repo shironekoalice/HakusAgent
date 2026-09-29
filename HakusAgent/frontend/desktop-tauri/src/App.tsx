@@ -1,28 +1,36 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { lazy, Suspense, useEffect, useState, useCallback, useRef } from 'react'
+import { Loader2 } from 'lucide-react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster, toastApi } from '@/components/ui/toast'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ChatView } from '@/components/chat/ChatView'
-import { FlowWorkbench } from '@/components/flow/FlowWorkbench'
 import { TopBar } from '@/components/layout/TopBar'
 import { ResizeHandle } from '@/components/layout/ResizeHandle'
-import { RightPanel } from '@/components/review/RightPanel'
+import { WindowResizeEdges } from '@/components/layout/WindowResizeEdges'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { FirstRunSetup } from '@/components/FirstRunSetup'
 import { AwakeningSplash } from '@/components/AwakeningSplash'
+import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
+import { TextContextMenu } from '@/components/ui/TextContextMenu'
 
 import { useSessionStore } from '@/store/session'
 import { useSettingsStore } from '@/store/settings'
+import { IS_ANDROID } from '@/lib/platform'
 import { useAppStore } from '@/store/app'
 import { useConnectionStore } from '@/store/connection'
-import { useProjectsStore } from '@/store/projects'
+import { REMOTE_RECONNECT_EVENT, REMOTE_RUNTIME_CONNECTED_EVENT, useProjectsStore } from '@/store/projects'
+import { assignSessionWorkspace } from '@/lib/sessionWorkspaces'
+import type { Project } from '@/api/types'
 import { apiClient } from '@/api/client'
 import { isPhoneViewport, PHONE_VIEWPORT_QUERY } from '@/lib/responsive'
 import { cn } from '@/lib/utils'
 import { localeForRuntime, useI18n, useLocaleStore } from '@/lib/i18n'
 
+const FlowWorkbench = lazy(() => import('@/components/flow/FlowWorkbench').then((module) => ({ default: module.FlowWorkbench })))
+const RightPanel = lazy(() => import('@/components/review/RightPanel').then((module) => ({ default: module.RightPanel })))
+
 const IS_TAURI = typeof __TAURI_INTERNALS__ !== 'undefined'
-const IS_ANDROID = IS_TAURI && /Android/i.test(navigator.userAgent)
+// IS_ANDROID comes from @/lib/platform (UA + ?platform=android preview flag).
 const IS_RUST_PREVIEW = typeof window !== 'undefined'
   && new URLSearchParams(window.location.search).get('backend')?.toLowerCase() === 'rust'
 // Minimum time between the frontend mounting and the native splash being
@@ -30,16 +38,28 @@ const IS_RUST_PREVIEW = typeof window !== 'undefined'
 // process start); this only avoids a flash of the UI for instant boots.
 const MIN_SPLASH_MS = 1500
 
+function DeferredSurface({ label }: { label: string }) {
+  return (
+    <div className="flex h-full min-h-0 w-full items-center justify-center" role="status" aria-busy="true">
+      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+      <span className="sr-only">{label}</span>
+    </div>
+  )
+}
+
 function App() {
   const mountedAt = useRef(Date.now())
   const splashFinishedRef = useRef(false)
   const [appReady, setAppReady] = useState(!IS_TAURI || IS_ANDROID)
   const [awakeningDone, setAwakeningDone] = useState(!IS_TAURI || IS_ANDROID)
   const [showFirstRun, setShowFirstRun] = useState(false)
+  const [remoteReconnectProject, setRemoteReconnectProject] = useState<Project | null>(null)
 
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const sidebarCompact = useAppStore((s) => s.sidebarCompact)
-  const agentMode = useAppStore((s) => s.agentMode)
+  const storedAgentMode = useAppStore((s) => s.agentMode)
+  // Android ships a single surface: Code mode only, no Work/Code/Flow switch.
+  const agentMode = IS_ANDROID ? 'code' : storedAgentMode
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
   const setSidebar = useAppStore((s) => s.setSidebar)
   const setSidebarCompact = useAppStore((s) => s.setSidebarCompact)
@@ -47,6 +67,11 @@ function App() {
   const settingsOpen = useAppStore((s) => s.settingsOpen)
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const refreshServerInfo = useAppStore((s) => s.refreshServerInfo)
+  const [rightPanelMounted, setRightPanelMounted] = useState(rightPanelOpen)
+
+  useEffect(() => {
+    if (rightPanelOpen) setRightPanelMounted(true)
+  }, [rightPanelOpen])
 
   // Flow mode is a full-window workbench: it ships its own left (workflow
   // list) and right (inspector) rails, so the chat sidebar and the review
@@ -80,7 +105,7 @@ function App() {
 
   const compactSidebarActive = sidebarCompact && !isPhoneViewport()
 
-  // Codex-style global keyboard shortcuts. Meta on macOS, Ctrl elsewhere.
+  // Global keyboard shortcuts. Meta on macOS, Ctrl elsewhere.
   // Esc interrupts the in-flight turn (same key the composer uses to close
   // its mention menu — that path stopPropagation()s, and Esc here is
   // ignored while the user is typing in an editable field).
@@ -128,6 +153,31 @@ function App() {
   const serverUrl = useSettingsStore((s) => s.connection.serverUrl)
   const connState = useConnectionStore((s) => s.state)
   const loadProjects = useProjectsStore((s) => s.load)
+
+  useEffect(() => {
+    const handleRemoteReconnect = (event: Event) => {
+      const project = (event as CustomEvent<Project>).detail
+      if (project?.kind === 'remote') setRemoteReconnectProject(project)
+    }
+    window.addEventListener(REMOTE_RECONNECT_EVENT, handleRemoteReconnect)
+    return () => window.removeEventListener(REMOTE_RECONNECT_EVENT, handleRemoteReconnect)
+  }, [])
+
+  const completeRemoteReconnect = useCallback(async (project: Project) => {
+    if (!useProjectsStore.getState().setActive(project.id)) return
+    const sessionId = await useSessionStore.getState().createSession('New Chat')
+    assignSessionWorkspace(sessionId, project.id)
+    setRemoteReconnectProject(null)
+  }, [])
+
+  useEffect(() => {
+    const handleRemoteRuntimeConnected = (event: Event) => {
+      const project = (event as CustomEvent<Project>).detail
+      if (project?.kind === 'remote') void completeRemoteReconnect(project)
+    }
+    window.addEventListener(REMOTE_RUNTIME_CONNECTED_EVENT, handleRemoteRuntimeConnected)
+    return () => window.removeEventListener(REMOTE_RUNTIME_CONNECTED_EVENT, handleRemoteRuntimeConnected)
+  }, [completeRemoteReconnect])
 
   // Desktop first launch gets a short, optional setup after the runtime and
   // initial shell are ready. Android now runs the same welcome flow, minus
@@ -386,7 +436,13 @@ function App() {
   // preference when the viewport enters the phone breakpoint.
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return
+    // A minimized desktop WebView reports a phone-sized viewport for a
+    // moment. Do not persist a collapsed sidebar from that transient state;
+    // desktop users can still resize or collapse it explicitly.
+    if (typeof __TAURI_INTERNALS__ !== 'undefined' && !IS_ANDROID) return
+
     const phoneQuery = window.matchMedia(PHONE_VIEWPORT_QUERY)
+
     const closePhonePanels = () => {
       if (!isPhoneViewport()) return
       setSidebar(false)
@@ -412,7 +468,7 @@ function App() {
       <TooltipProvider delayDuration={300}>
         <div
           data-testid="app-shell"
-          className="app-shell flex h-screen w-full max-w-full flex-col overflow-hidden bg-background text-foreground"
+          className="app-shell relative flex h-screen w-full max-w-full flex-col overflow-hidden bg-background text-foreground"
           style={{
             opacity: appReady ? 1 : 0,
             transition: 'opacity 0.3s ease-in',
@@ -423,15 +479,31 @@ function App() {
           {/* Global title bar — spans the full window width and always sits
               ABOVE the side panes, so the window controls (min/max/close),
               settings and right-panel buttons can never be covered by the
-              right panel. */}
-          <TopBar
-            onToggleSidebar={toggleSidebar}
-            onToggleRightPanel={toggleRightPanel}
-            showSidebarToggle={!isFlow}
-            flowMode={isFlow}
-          />
+              right panel. On Android there is no bar: the controls float as
+              glass islands over the content instead. */}
+          {IS_ANDROID ? (
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 z-40 flex items-start justify-between gap-2 p-2"
+              data-testid="floating-topbar"
+            >
+              <TopBar
+                floating
+                onToggleSidebar={toggleSidebar}
+                onToggleRightPanel={toggleRightPanel}
+                showSidebarToggle={!isFlow}
+                flowMode={isFlow}
+              />
+            </div>
+          ) : (
+            <TopBar
+              onToggleSidebar={toggleSidebar}
+              onToggleRightPanel={toggleRightPanel}
+              showSidebarToggle={!isFlow}
+              flowMode={isFlow}
+            />
+          )}
 
-          <div className="app-main relative flex min-h-0 flex-1">
+          <div className={cn('app-main relative flex min-h-0 flex-1', IS_ANDROID && 'pt-12')}>
             {!isFlow && (sidebarOpen || rightPanelOpen) && (
               <button
                 type="button"
@@ -486,7 +558,11 @@ function App() {
             )}
 
             <div className="app-content flex min-h-0 min-w-0 flex-1 flex-col">
-              {agentMode === 'flow' ? <FlowWorkbench /> : <ChatView />}
+              {agentMode === 'flow' ? (
+                <Suspense fallback={<DeferredSurface label={locale === 'zh-CN' ? '正在加载' : 'Loading'} />}>
+                  <FlowWorkbench />
+                </Suspense>
+              ) : <ChatView />}
             </div>
 
             {/* Right panel resize handle */}
@@ -510,13 +586,25 @@ function App() {
                   'overflow-hidden',
                 )}
               >
-                <RightPanel />
+                {rightPanelMounted && (
+                  <Suspense fallback={<DeferredSurface label={locale === 'zh-CN' ? '正在加载' : 'Loading'} />}>
+                    <RightPanel />
+                  </Suspense>
+                )}
               </div>
             )}
           </div>
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <RemoteProjectWizard
+            open={Boolean(remoteReconnectProject)}
+            initialProject={remoteReconnectProject}
+            onOpenChange={(open) => { if (!open) setRemoteReconnectProject(null) }}
+            onConnected={(project) => { void completeRemoteReconnect(project) }}
+          />
+          <TextContextMenu />
           {showFirstRun && <FirstRunSetup onComplete={() => setShowFirstRun(false)} />}
           <Toaster />
+          <WindowResizeEdges />
         </div>
       </TooltipProvider>
     </>

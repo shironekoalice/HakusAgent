@@ -43,6 +43,28 @@ pub struct UserContextEntry {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WechatUserSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WechatSettings {
+    #[serde(default)]
+    pub auto_reply: bool,
+    #[serde(default)]
+    pub users: HashMap<String, WechatUserSettings>,
+}
+
 /// Top-level state manager.
 #[derive(Debug)]
 pub struct WechatState {
@@ -115,6 +137,26 @@ impl WechatState {
 
     fn updates_buf_path(&self) -> PathBuf {
         self.state_dir.join("wechat-updates-buf.txt")
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.state_dir.join("wechat-settings.json")
+    }
+
+    pub fn load_settings(&self) -> Result<WechatSettings> {
+        let path = self.settings_path();
+        if !path.exists() {
+            return Ok(WechatSettings::default());
+        }
+        let data = std::fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&data)?)
+    }
+
+    pub fn save_settings(&self, settings: &WechatSettings) -> Result<()> {
+        self.ensure_dir()?;
+        let data = serde_json::to_string_pretty(settings)?;
+        std::fs::write(self.settings_path(), data)?;
+        Ok(())
     }
 
     /// Load the opaque iLink pagination cursor.
@@ -220,5 +262,44 @@ impl WechatState {
     fn ensure_dir(&self) -> Result<()> {
         std::fs::create_dir_all(&self.state_dir)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WechatSettings, WechatState, WechatUserSettings};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn settings_round_trip_persists_auto_reply_and_user_preferences() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "hakus-wechat-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let state = WechatState::new(state_dir.clone());
+        let mut users = HashMap::new();
+        users.insert(
+            "wechat-user".to_string(),
+            WechatUserSettings {
+                model: Some("provider/model".to_string()),
+                workspace: Some(PathBuf::from("workspace")),
+                ..Default::default()
+            },
+        );
+        state
+            .save_settings(&WechatSettings {
+                auto_reply: true,
+                users,
+            })
+            .expect("save settings");
+
+        let loaded = state.load_settings().expect("load settings");
+        assert!(loaded.auto_reply);
+        let user = loaded.users.get("wechat-user").expect("user settings");
+        assert_eq!(user.model.as_deref(), Some("provider/model"));
+        assert_eq!(user.workspace.as_deref(), Some(std::path::Path::new("workspace")));
+
+        std::fs::remove_dir_all(state_dir).expect("remove temporary state");
     }
 }

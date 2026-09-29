@@ -19,8 +19,7 @@ use super::{
     DEFAULT_MOONSHOT_BASE_URL, DEFAULT_MOONSHOT_MODEL, DEFAULT_NOVITA_BASE_URL,
     DEFAULT_NOVITA_MODEL, DEFAULT_NVIDIA_NIM_BASE_URL, DEFAULT_NVIDIA_NIM_MODEL,
     DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_CLOUD_BASE_URL, DEFAULT_OLLAMA_CLOUD_MODEL,
-    DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_CODEX_BASE_URL,
-    DEFAULT_OPENAI_CODEX_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENCODE_GO_BASE_URL,
+    DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENCODE_GO_BASE_URL,
     DEFAULT_OPENCODE_GO_MODEL, DEFAULT_OPENCODE_ZEN_BASE_URL, DEFAULT_OPENCODE_ZEN_MODEL,
     DEFAULT_OPENMODEL_BASE_URL, DEFAULT_OPENMODEL_MODEL, DEFAULT_OPENROUTER_BASE_URL,
     DEFAULT_OPENROUTER_MODEL, DEFAULT_ORCAROUTER_BASE_URL, DEFAULT_ORCAROUTER_MODEL,
@@ -332,12 +331,6 @@ pub const fn credential_help(kind: ProviderKind) -> CredentialHelp {
             credential_url: Some("https://console.bce.baidu.com/iam/#/iam/accesslist"),
             docs_url: Some("https://cloud.baidu.com/doc/qianfan/index.html"),
             guidance: "Create Baidu Qianfan credentials in the Baidu Cloud console.",
-        },
-        ProviderKind::OpenaiCodex => CredentialHelp {
-            acquisition: OAuth,
-            credential_url: None,
-            docs_url: Some("https://developers.openai.com/codex/"),
-            guidance: "Run `codex login`, then explicitly grant Hakus read-only access to that exact Codex credential file; or use a process-scoped token environment variable.",
         },
         ProviderKind::Anthropic => CredentialHelp {
             acquisition: ApiKey,
@@ -1050,55 +1043,6 @@ provider!(
     aliases: ["google-gemini", "google_gemini", "gemini", "google-ai", "google_ai", "ai-studio", "aistudio"]
 );
 
-/// OpenAI Codex / ChatGPT OAuth provider using the Responses API.
-pub struct OpenaiCodex;
-
-impl Provider for OpenaiCodex {
-    fn id(&self) -> &'static str {
-        "openai-codex"
-    }
-
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenaiCodex
-    }
-
-    fn display_name(&self) -> &'static str {
-        "OpenAI Codex (ChatGPT)"
-    }
-
-    fn default_base_url(&self) -> &'static str {
-        DEFAULT_OPENAI_CODEX_BASE_URL
-    }
-
-    fn default_model(&self) -> &'static str {
-        DEFAULT_OPENAI_CODEX_MODEL
-    }
-
-    fn env_vars(&self) -> &'static [&'static str] {
-        &["OPENAI_CODEX_ACCESS_TOKEN", "CODEX_ACCESS_TOKEN"]
-    }
-
-    fn provider_config_key(&self) -> &'static str {
-        "openai_codex"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &[
-            "openai_codex",
-            "openaicodex",
-            "codex",
-            "chatgpt",
-            "chatgpt-codex",
-            "chatgpt_codex",
-            "chatgptcodex",
-        ]
-    }
-
-    fn wire_policy(&self) -> WirePolicy {
-        WirePolicy::Fixed(WireFormat::Responses)
-    }
-}
-
 /// Native Anthropic Messages API provider (#3014).
 pub struct Anthropic;
 
@@ -1666,7 +1610,6 @@ static OLLAMA_CLOUD: OllamaCloud = OllamaCloud;
 static HUGGINGFACE: Huggingface = Huggingface;
 static TOGETHER: Together = Together;
 static QIANFAN: Qianfan = Qianfan;
-static OPENAI_CODEX: OpenaiCodex = OpenaiCodex;
 static ANTHROPIC: Anthropic = Anthropic;
 static OPENMODEL: Openmodel = Openmodel;
 static ZAI: Zai = Zai;
@@ -1692,7 +1635,7 @@ static MODELSTUDIO_CODING_PLAN_ANTHROPIC: ModelstudioCodingPlanAnthropic =
     ModelstudioCodingPlanAnthropic;
 static CUSTOM: Custom = Custom;
 
-static PROVIDER_REGISTRY: [&dyn Provider; 47] = [
+static PROVIDER_REGISTRY: [&dyn Provider; 46] = [
     &DEEPSEEK,
     &DEEPSEEK_ANTHROPIC,
     &NVIDIA_NIM,
@@ -1716,7 +1659,6 @@ static PROVIDER_REGISTRY: [&dyn Provider; 47] = [
     &HUGGINGFACE,
     &TOGETHER,
     &QIANFAN,
-    &OPENAI_CODEX,
     &ANTHROPIC,
     &OPENMODEL,
     &ZAI,
@@ -2117,12 +2059,6 @@ mod tests {
                 CredentialAcquisition::LocalOptional
             );
         }
-        assert_eq!(
-            provider_for_kind(ProviderKind::OpenaiCodex)
-                .credential_help()
-                .acquisition,
-            CredentialAcquisition::OAuth
-        );
         assert_eq!(
             provider_for_kind(ProviderKind::Xai)
                 .credential_help()

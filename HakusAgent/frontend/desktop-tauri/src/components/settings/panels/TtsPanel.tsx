@@ -344,6 +344,7 @@ export function TtsPanel() {
                   <input
                     id="dashscope-key"
                     type="password"
+                    autoComplete="new-password"
                     value={settings.dashscopeApiKey}
                     onChange={(e) => settings.update({ dashscopeApiKey: e.target.value })}
                     placeholder="sk-..."

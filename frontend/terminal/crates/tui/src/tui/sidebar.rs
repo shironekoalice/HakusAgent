@@ -1265,19 +1265,6 @@ mod tests {
         assert_eq!(context_panel_cost_line(&app), "cost: unknown");
     }
 
-    #[test]
-    fn context_panel_cost_line_does_not_inherit_api_pricing_for_codex_oauth() {
-        let mut app = create_test_app();
-        app.api_provider = crate::config::ApiProvider::OpenaiCodex;
-        app.model = "gpt-5.5".to_string();
-        app.billing_presentation =
-            crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
-        app.accrue_session_cost_estimate(crate::pricing::CostEstimate::usd_only(12.34));
-
-        let line = context_panel_cost_line(&app);
-        assert_eq!(line, "usage: Codex OAuth quota");
-        assert!(!line.contains('$'), "OAuth must not invent dollars: {line}");
-    }
 
     #[test]
     fn context_panel_cost_line_marks_unpriced_metered_as_unknown() {

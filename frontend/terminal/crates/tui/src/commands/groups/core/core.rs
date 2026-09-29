@@ -505,7 +505,7 @@ pub fn hakus_links(app: &mut App) -> CommandResult {
     );
     let _ = writeln!(
         message,
-        "{} `https://github.com/Hmbown/CodeWhale`",
+        "{} `https://github.com/modemneko/HakusAgent`",
         tr(locale, MessageId::LinksGitHub)
     );
     let _ = writeln!(
@@ -1433,23 +1433,6 @@ mod tests {
         assert!(app.last_effective_reasoning_effort.is_none());
     }
 
-    #[test]
-    fn test_model_auto_preserves_raw_explicit_thinking() {
-        let _settings = SettingsPathGuard::new();
-        let mut app = create_test_app();
-        app.api_provider = ApiProvider::OpenaiCodex;
-        app.auto_model = false;
-        app.reasoning_effort = ReasoningEffort::Low;
-        app.reasoning_effort_preference = Some(ReasoningEffort::Off);
-
-        let result = model(&mut app, Some("auto"));
-
-        assert!(result.message.is_some());
-        assert!(app.auto_model);
-        assert_eq!(app.model, "auto");
-        assert_eq!(app.reasoning_effort, ReasoningEffort::Off);
-        assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::Off));
-    }
 
     #[test]
     fn test_model_change_accepts_future_deepseek_model() {
@@ -1579,7 +1562,7 @@ mod tests {
         assert!(msg.contains("Hakus & community"));
         assert!(msg.contains("https://hakus.net/en/docs"));
         assert!(msg.contains("https://hakus.net/en/community"));
-        assert!(msg.contains("https://github.com/Hmbown/CodeWhale"));
+        assert!(msg.contains("https://github.com/modemneko/HakusAgent"));
         assert!(msg.contains("https://app.hakus.net"));
         assert!(msg.contains("separate sign-in"));
         assert!(msg.contains("not connected to the current local session"));
@@ -1601,7 +1584,6 @@ mod tests {
         assert!(msg.contains("Baidu Qianfan (qianfan)"));
         assert!(msg.contains("https://cloud.baidu.com/doc/qianfan/index.html"));
         assert!(msg.contains("Local Ollama is keyless by default"));
-        assert!(msg.contains("Run `codex login`"));
         assert!(msg.contains("no canonical vendor credential page exists"));
         assert!(msg.contains("OPENAI_API_KEY"));
         assert!(msg.contains("XIAOMI_MIMO_TOKEN_PLAN_API_KEY"));

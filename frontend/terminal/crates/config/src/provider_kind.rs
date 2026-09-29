@@ -69,15 +69,6 @@ pub enum ProviderKind {
     Together,
     #[serde(alias = "baidu-qianfan", alias = "baidu_qianfan", alias = "baidu")]
     Qianfan,
-    #[serde(
-        alias = "openai-codex",
-        alias = "openai_codex",
-        alias = "codex",
-        alias = "chatgpt",
-        alias = "chatgpt-codex",
-        alias = "chatgpt_codex"
-    )]
-    OpenaiCodex,
     #[serde(alias = "claude")]
     Anthropic,
     #[serde(alias = "open-model", alias = "open_model")]
@@ -232,7 +223,7 @@ impl ProviderKind {
     /// stay on the enum for serde and `provider_for_kind`, but they are not
     /// first-class catalog rows. Plan is `mode` / base_url; dialect is
     /// `wire = openai|anthropic` on the primary provider config.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 41] = [
         Self::Deepseek,
         Self::NvidiaNim,
         Self::Openai,
@@ -255,7 +246,6 @@ impl ProviderKind {
         Self::Huggingface,
         Self::Together,
         Self::Qianfan,
-        Self::OpenaiCodex,
         Self::Anthropic,
         Self::Openmodel,
         Self::Zai,

@@ -907,6 +907,7 @@ function McpServerDialog({ mode, initial, busy, onClose, onSave }: McpServerDial
             <Label htmlFor="mcp-name" className="text-xs">{copy('服务器名称 *', 'Server name *')}</Label>
             <Input
               id="mcp-name"
+              autoComplete="off"
               value={form.name}
               onChange={(e) => update('name', e.target.value)}
               placeholder="filesystem"
@@ -964,6 +965,7 @@ function McpServerDialog({ mode, initial, busy, onClose, onSave }: McpServerDial
             </Label>
             <Input
               id="mcp-command"
+              autoComplete="off"
               value={form.command}
               onChange={(e) => update('command', e.target.value)}
               placeholder={form.transport === 'stdio' ? 'npx' : 'http://localhost:8080/sse'}
@@ -981,6 +983,7 @@ function McpServerDialog({ mode, initial, busy, onClose, onSave }: McpServerDial
             <Label htmlFor="mcp-args" className="text-xs">{copy('参数（空格分隔）', 'Arguments (space separated)')}</Label>
             <Input
               id="mcp-args"
+              autoComplete="off"
               value={form.args}
               onChange={(e) => update('args', e.target.value)}
               placeholder="-y @modelcontextprotocol/server-filesystem /tmp"
@@ -996,6 +999,7 @@ function McpServerDialog({ mode, initial, busy, onClose, onSave }: McpServerDial
             <Label htmlFor="mcp-env" className="text-xs">{copy('环境变量（每行 KEY=value）', 'Environment (one KEY=value per line)')}</Label>
             <textarea
               id="mcp-env"
+              autoComplete="off"
               value={form.env}
               onChange={(e) => update('env', e.target.value)}
               placeholder={'API_KEY=sk-xxx\nNODE_ENV=production'}
@@ -1015,6 +1019,7 @@ function McpServerDialog({ mode, initial, busy, onClose, onSave }: McpServerDial
             <Label htmlFor="mcp-cwd" className="text-xs">{copy('工作目录（可选）', 'Working directory (optional)')}</Label>
             <Input
               id="mcp-cwd"
+              autoComplete="off"
               value={form.cwd}
               onChange={(e) => update('cwd', e.target.value)}
               placeholder="/home/user/project"
@@ -1028,6 +1033,7 @@ function McpServerDialog({ mode, initial, busy, onClose, onSave }: McpServerDial
               <Label htmlFor="mcp-startup-timeout" className="text-xs">{copy('启动超时（秒）', 'Startup timeout (seconds)')}</Label>
               <Input
                 id="mcp-startup-timeout"
+                autoComplete="off"
                 type="number"
                 min={1}
                 max={120}
@@ -1040,6 +1046,7 @@ function McpServerDialog({ mode, initial, busy, onClose, onSave }: McpServerDial
               <Label htmlFor="mcp-tool-timeout" className="text-xs">{copy('工具调用超时（秒）', 'Tool timeout (seconds)')}</Label>
               <Input
                 id="mcp-tool-timeout"
+                autoComplete="off"
                 type="number"
                 min={1}
                 max={600}

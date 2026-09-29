@@ -27,6 +27,12 @@ interface TopBarProps {
   showSidebarToggle?: boolean
   /** Flow mode owns the whole window: no chat sidebar / review panel. */
   flowMode?: boolean
+  /**
+   * Android layout: no bar at all — the title and actions render as
+   * floating glass islands (iOS-26 style) hovering over the content.
+   * There is also no mode selector: Android runs Code mode only.
+   */
+  floating?: boolean
 }
 
 // Mode segments — Work / Code. Binds to agentMode (not the legacy runMode).
@@ -113,8 +119,25 @@ function WindowButtons() {
 }
 
 const IS_ANDROID = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
+const HAS_NATIVE_WINDOW_CHROME = typeof window !== 'undefined'
+  && typeof __TAURI_INTERNALS__ !== 'undefined'
+  && !IS_ANDROID
 
-export function TopBar({ onToggleSidebar, onToggleRightPanel, showSidebarToggle = true, flowMode = false }: TopBarProps) {
+/** Glass-island pill shared by every floating control cluster (Android). */
+function FloatingIsland({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div
+      className={cn(
+        'pointer-events-auto flex h-10 items-center gap-1 rounded-full border border-black/10 bg-white/55 px-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.12),inset_0_1px_0_rgba(255,255,255,0.55)] backdrop-blur-xl backdrop-saturate-150 dark:border-white/15 dark:bg-card/50 dark:shadow-[0_8px_28px_rgba(0,0,0,0.35),inset_0_1px_0_rgba(255,255,255,0.18)]',
+        className,
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
+export function TopBar({ onToggleSidebar, onToggleRightPanel, showSidebarToggle = true, flowMode = false, floating = false }: TopBarProps) {
   const { t } = useI18n()
   const activeId = useSessionStore((s) => s.activeSessionId)
   const sessions = useSessionStore((s) => s.sessions)
@@ -172,6 +195,79 @@ export function TopBar({ onToggleSidebar, onToggleRightPanel, showSidebarToggle 
       refreshServerInfo()
     }
   }, [connState]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sessionTitle = flowMode ? flowGraphName : activeSession?.title || characterName
+
+  // ── Android: floating glass islands, no bar, no mode selector ──
+  // Android runs Code mode only, so the Work/Code/Flow segment is gone and
+  // every control hovers over the content as an iOS-26-style island.
+  if (floating) {
+    return (
+      <>
+        {showSidebarToggle && (
+          <FloatingIsland className="app-region-no-drag">
+            <button
+              type="button"
+              className="cx-tb-btn"
+              onClick={onToggleSidebar}
+              title={t('toggleSidebar')}
+              aria-label={t('toggleSidebar')}
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+          </FloatingIsland>
+        )}
+
+        <FloatingIsland className="mx-auto max-w-[60vw] px-4">
+          <button
+            type="button"
+            className="flex min-w-0 flex-col items-center justify-center leading-tight"
+            onClick={() => window.dispatchEvent(new CustomEvent('hakus:android-model-picker'))}
+            title="点击选择模型"
+            aria-label="选择模型"
+          >
+            <span className="cx-title-main max-w-full truncate text-[13px]">{sessionTitle}</span>
+            {!flowMode && (
+              <span className="flex max-w-full items-center gap-1 text-[10px] text-muted-foreground">
+                {currentProvider && <ProviderLogo providerId={currentProvider.id} size={10} />}
+                <span className="truncate">{currentModelLabel}</span>
+              </span>
+            )}
+          </button>
+        </FloatingIsland>
+
+        <FloatingIsland className="app-region-no-drag">
+          {!flowMode && (
+            <button
+              type="button"
+              className="cx-tb-btn"
+              data-panel-open={rightPanelOpen ? 'true' : undefined}
+              onClick={onToggleRightPanel}
+              title={t('reviewPanel')}
+              aria-label={t('reviewPanel')}
+            >
+              <PanelRight className="h-4 w-4" />
+            </button>
+          )}
+          {!flowMode && activeId && (
+            <button
+              type="button"
+              className="cx-tb-btn"
+              onClick={() => {
+                if (confirm(t('clearChat') + '?')) {
+                  clearMessages(activeId)
+                }
+              }}
+              title={t('clearChat')}
+              aria-label={t('clearChat')}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </FloatingIsland>
+      </>
+    )
+  }
 
   return (
     <header
@@ -265,7 +361,7 @@ export function TopBar({ onToggleSidebar, onToggleRightPanel, showSidebarToggle 
           </button>
         )}
 
-        {!isMac && !IS_ANDROID && <WindowButtons />}
+        {!isMac && HAS_NATIVE_WINDOW_CHROME && <WindowButtons />}
       </div>
     </header>
   )

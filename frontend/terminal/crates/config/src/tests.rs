@@ -4993,13 +4993,11 @@ fn provider_metadata_defaults_match_runtime_helpers() {
         if kind != ProviderKind::Custom {
             assert!(!provider.env_vars().is_empty());
         }
-        // OpenAI Codex (ChatGPT) speaks the Responses API; DeepSeek and
-        // OpenCode Zen select a protocol per exact model offering; Anthropic
+        // OpenCode Zen and DeepSeek select a protocol per exact model offering; Anthropic
         // and the Anthropic-compatible routes speak native Messages; every
         // other built-in provider is OpenAI-compatible Chat Completions.
         let expected_wire = match kind {
             ProviderKind::Deepseek | ProviderKind::OpencodeZen => None,
-            ProviderKind::OpenaiCodex => Some(provider::WireFormat::Responses),
             ProviderKind::Anthropic
             | ProviderKind::DeepseekAnthropic
             | ProviderKind::MinimaxAnthropic

@@ -22,7 +22,7 @@ const MAX_REDIRECTS: usize = 5;
 const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (compatible; hakuscli/",
     env!("CARGO_PKG_VERSION"),
-    "; +https://github.com/Hmbown/CodeWhale)"
+    "; +https://github.com/modemneko/HakusAgent)"
 );
 
 #[derive(Debug, Clone)]

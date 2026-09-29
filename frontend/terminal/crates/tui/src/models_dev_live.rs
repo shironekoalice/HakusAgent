@@ -33,7 +33,7 @@ pub const DEFAULT_MODELS_DEV_TTL_SECS: u64 = 24 * 60 * 60;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Explicit user-agent; no credentials, no session cookies.
-pub const USER_AGENT: &str = concat!("CodeWhale/", env!("CARGO_PKG_VERSION"), " (+models-dev)");
+pub const USER_AGENT: &str = concat!("HakusCLI/", env!("CARGO_PKG_VERSION"), " (+models-dev)");
 
 /// Filename under the CodeWhale `catalog` state dir.
 pub const CACHE_FILE: &str = "models-dev-catalog.json";

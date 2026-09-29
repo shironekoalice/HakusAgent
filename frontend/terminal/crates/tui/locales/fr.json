@@ -420,7 +420,7 @@
   "CmdModelsDescription": "Récupérer les IDs de modèles en direct depuis l'API active",
   "CmdModelDbDescription": "Parcourir la base de modèles intégrée",
   "CmdNetworkDescription": "Gérer les règles réseau d'autorisation et de refus",
-  "CmdUpdateDescription": "Rechercher et installer une nouvelle version de CodeWhale",
+  "CmdUpdateDescription": "Rechercher et installer une nouvelle version de HakusCLI",
   "CmdNoteDescription": "Ajouter, lister, modifier ou supprimer des notes du workspace",
   "CmdThemeDescription": "Changer de thème ou ouvrir le sélecteur de thème",
   "CmdProviderDescription": "Changer le fournisseur et/ou le modèle actif",
@@ -493,7 +493,7 @@
   "TranslationFailed": "Échec de la traduction",
   "CmdTrustDescription": "Gérer la confiance du workspace et la liste blanche par chemin",
   "CmdWorkspaceDescription": "Afficher ou changer le workspace actuel",
-  "CmdWechatDescription": "Se connecter à WeChat : connexion QR, statut, envoi et sondage des messages",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "Supprimer la dernière paire de messages",
   "CmdVerboseDescription": "Basculer le raisonnement en direct complet dans la transcription",
   "CmdCacheAdvice": "Des taux de hit/miss supérieurs à ~70 % après le troisième tour indiquent un préfixe de cache stable ; \n en dessous, sur les longues sessions, cela suggère une instabilité du préfixe à investiguer (#263).",
@@ -908,7 +908,7 @@
   "ApprovalChooseAction": "Enter pour l'option sélectionnée, ou appuyez directement sur y/a/d",
   "ApprovalIntentLabel": "Intention : ",
   "ApprovalMoreLines": "  … (+{count} lignes)",
-  "ApprovalAutoDeniedSession": "{tool} refusé automatiquement : une demande correspondante a été refusée plus tôt pendant cette exécution de CodeWhale. Redémarrez CodeWhale pour la reconsidérer.",
+  "ApprovalAutoDeniedSession": "{tool} refusé automatiquement : une demande correspondante a été refusée plus tôt pendant cette exécution de HakusCLI. Redémarrez HakusCLI pour la reconsidérer.",
   "ElevationTitleSandboxDenied": "  ⚠, Sandbox refusé ",
   "ElevationTitleRequired": " Élévation du sandbox requise ",
   "ElevationFieldTool": "  Outil : ",
@@ -1255,7 +1255,6 @@
   "ProviderExternalActionRevoke": "révoquer l'accès externe",
   "ProviderExternalActionChoices": "choix d'accès externe",
   "ProviderExternalActionReuseGrok": "réutilisation externe de Grok",
-  "ProviderExternalHintCodexReview": "Après {login}, appuyez sur Enter pour revoir les choix d'accès désactivé/lecture seule/géré.",
   "ProviderExternalHintXaiReview": "Appuyez sur Enter pour la connexion appareil gérée par HakusCLI ; appuyez sur E pour revoir la réutilisation existante du Grok CLI.",
   "ProviderExternalHintXaiApiKey": "Ou utilisez XAI_API_KEY et rouvrez ce sélecteur.",
   "XaiAuthChoiceTitle": " Authentification xAI ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} n'a pas de point de terminaison /models ; l'accessibilité n'a pas été sondée.",
   "ProviderTemplateOpened": "Modèle de fournisseur '{id}' ouvert. Saisissez uniquement la clé API.",
   "ProviderTemplateUnknown": "Modèle de fournisseur inconnu '{id}'.",
-  "ProviderTemplateOpenedEnvOnly": "Modèle intégré '{id}' ouvert. Saisissez le nom de la variable d'environnement de la clé API, puis enregistrez. Ne collez pas la clé brute.",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "Modèle intégré '{id}' ouvert. Saisissez le nom de la variable d'environnement de la clé API, puis enregistrez. Ne collez pas la clé brute."
 }

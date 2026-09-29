@@ -420,7 +420,7 @@
   "CmdModelsDescription": "Obtén els IDs de model en viu de l'API activa",
   "CmdModelDbDescription": "Explora la base de dades de models inclosa",
   "CmdNetworkDescription": "Gestiona les regles de xarxa de permís i denegació",
-  "CmdUpdateDescription": "Comprova i instal·la una nova versió de CodeWhale",
+  "CmdUpdateDescription": "Comprova i instal·la una nova versió de HakusCLI",
   "CmdNoteDescription": "Afegeix, llista, edita o elimina notes de l'espai de treball",
   "CmdThemeDescription": "Canvia de tema o obre el selector de temes",
   "CmdProviderDescription": "Canvia el proveïdor i/o model actiu",
@@ -493,7 +493,7 @@
   "TranslationFailed": "La traducció ha fallat",
   "CmdTrustDescription": "Gestiona la confiança de l'espai de treball i la llista de permisos per ruta",
   "CmdWorkspaceDescription": "Mostra o canvia l'espai de treball actual",
-  "CmdWechatDescription": "Connecta't a WeChat: inici de sessió amb QR, estat, enviament i sondeig de missatges",
+  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink",
   "CmdUndoDescription": "Elimina l'últim parell de missatges",
   "CmdVerboseDescription": "Commuta el pensament en viu complet a la transcripció",
   "CmdCacheAdvice": "Unes taxes de hit/miss per sobre del ~70% a partir del tercer torn indiquen un prefix de memòria cau estable;\nvalors més baixos en sessions llargues suggereixen una rotació del prefix que val la pena investigar (#263).",
@@ -908,7 +908,7 @@
   "ApprovalChooseAction": "Enter per a l'opció seleccionada, o prem y/a/d directament",
   "ApprovalIntentLabel": "Intenció: ",
   "ApprovalMoreLines": "  … (+{count} línies)",
-  "ApprovalAutoDeniedSession": "{tool} denegat automàticament: una sol·licitud coincident es va denegar abans en aquesta execució de CodeWhale. Reinicia CodeWhale per reconsiderar-la.",
+  "ApprovalAutoDeniedSession": "{tool} denegat automàticament: una sol·licitud coincident es va denegar abans en aquesta execució de HakusCLI. Reinicia HakusCLI per reconsiderar-la.",
   "ElevationTitleSandboxDenied": "  ⚠, Sandbox denegat ",
   "ElevationTitleRequired": " Cal elevació del sandbox ",
   "ElevationFieldTool": "  Eina: ",
@@ -1255,7 +1255,6 @@
   "ProviderExternalActionRevoke": "revoca l'extern",
   "ProviderExternalActionChoices": "opcions d'accés extern",
   "ProviderExternalActionReuseGrok": "reús extern de Grok",
-  "ProviderExternalHintCodexReview": "Després de {login}, prem Enter per revisar les opcions d'accés desactivat/només lectura/gestionat.",
   "ProviderExternalHintXaiReview": "Prem Enter per a l'inici de sessió de dispositiu gestionat per HakusCLI; prem E per revisar el reús existent del Grok CLI.",
   "ProviderExternalHintXaiApiKey": "O usa XAI_API_KEY i torna a obrir aquest selector.",
   "XaiAuthChoiceTitle": " Autenticació d’xAI ",
@@ -1616,6 +1615,5 @@
   "ProviderTestConnectionNoEndpoint": "{provider} no té un punt final /models; no s'ha sondejat l'accessibilitat.",
   "ProviderTemplateOpened": "S'ha obert la plantilla de proveïdor '{id}'. Introduïu només la clau API.",
   "ProviderTemplateUnknown": "Plantilla de proveïdor desconeguda '{id}'.",
-  "ProviderTemplateOpenedEnvOnly": "S'ha obert la plantilla integrada '{id}'. Introduïu el nom de la variable d'entorn de la clau API i deseu. No enganxeu la clau crua.",
-  "CmdWechatDescription": "WeChat ClawBot — QR login, messaging, and polling via iLink"
+  "ProviderTemplateOpenedEnvOnly": "S'ha obert la plantilla integrada '{id}'. Introduïu el nom de la variable d'entorn de la clau API i deseu. No enganxeu la clau crua."
 }

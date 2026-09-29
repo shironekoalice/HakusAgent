@@ -1418,7 +1418,8 @@ api_key = {provider_api_key:?}
     #[tokio::test]
     async fn non_chat_completions_provider_rejected() {
         // Use the test to verify WireFormat checks work for non-ChatCompletions providers.
-        // Anthropic's wire format is AnthropicMessages; OpenaiCodex is Responses.
+        // Anthropic's wire format is AnthropicMessages; Responses is selected
+        // from model catalog metadata for providers that support it.
         let endpoint = ResolvedModelEndpoint {
             provider: ProviderKind::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),

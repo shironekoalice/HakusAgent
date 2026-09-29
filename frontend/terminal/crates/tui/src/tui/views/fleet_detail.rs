@@ -812,7 +812,6 @@ fn reasoning_tiers_for_provider(provider: &str) -> &'static [&'static str] {
             &["inherit", "off", "low", "high", "max"]
         }
         "moonshot" | "kimi" | "kimicode" => &["inherit", "off", "low", "medium", "high"],
-        "openaicodex" => &["inherit", "off", "minimal", "high"],
         _ => &["inherit", "off", "low", "medium", "high"],
     }
 }

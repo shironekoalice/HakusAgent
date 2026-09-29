@@ -1,5 +1,5 @@
 /**
- * CheckpointList — Codex 风格「检查点」悬浮按钮 + 下拉列表。
+ * CheckpointList — 「检查点」悬浮按钮 + 下拉列表。
  *
  * 每条用户消息即一个检查点（与后端 timeline/rewind 账本对齐）。
  * 列表从新到旧展示各检查点（时间 + 摘要），点击后二次确认，

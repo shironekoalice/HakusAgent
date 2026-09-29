@@ -88,7 +88,7 @@ function ToastRow({ item }: { item: ToastItem }) {
   return (
     <div
       className={cn(
-        'pointer-events-auto flex items-start gap-2 rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur-md',
+        'pointer-events-auto flex items-start gap-2 rounded-[var(--ui-radius-surface)] border px-4 py-3 text-sm shadow-lg backdrop-blur-md',
         'animate-in fade-in-0 slide-in-from-bottom-2 duration-200',
         VARIANT_STYLES[item.variant],
       )}

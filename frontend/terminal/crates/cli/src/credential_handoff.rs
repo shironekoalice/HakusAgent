@@ -36,9 +36,6 @@ pub(crate) fn resolve_api_key(
     }
     let source = resolved.api_key_source;
     if source != Some(RuntimeApiKeySource::Cli) {
-        if provider == ProviderKind::OpenaiCodex {
-            bail!("bearer credentials are not an API key");
-        }
         let uses_api_key = provider != ProviderKind::Xai
             || xai_auth_diagnostics(store, runtime_overrides).evaluates_runtime_api_key();
         ensure!(uses_api_key, "OAuth bearer credentials are not an API key");

@@ -451,13 +451,12 @@ fn shell_segment_is_exact_readonly_git_probe(segment: &str) -> bool {
 // the built-in safety floor are hard blocks that never reach a model. Only
 // the deterministic *fallback hold* — an `AskUser` outcome that Auto posture
 // would otherwise convert into a bare permission denial — is eligible for a
-// one-shot reviewer request, Codex-style. Reviewer failure is a denial (fail
+// one-shot reviewer request. Reviewer failure is a denial (fail
 // closed). There is no secondary advisory path or remembered reviewer state.
 // ---------------------------------------------------------------------------
 
-/// Built-in guardian policy for the reviewer tier, ported in spirit from
-/// OpenAI Codex's `guardian/policy.md` risk taxonomy: exfiltration,
-/// credential probing, persistent security weakening, destructive actions.
+/// Built-in guardian policy for the reviewer tier. It covers exfiltration,
+/// credential probing, persistent security weakening, and destructive actions.
 pub const DEFAULT_GUARDIAN_POLICY: &str = "\
 You are the Auto-Review guardian for a coding agent. Assess the intrinsic risk \
 of one proposed tool call, then decide whether it is safe to execute automatically.

@@ -121,7 +121,11 @@ pub(super) async fn workspace_diff(
         }));
     }
 
-    let reference = query.reference.as_deref().map(validate_git_reference).transpose()?;
+    let reference = query
+        .reference
+        .as_deref()
+        .map(validate_git_reference)
+        .transpose()?;
     let paths = parse_git_paths(query.paths.as_deref())?;
     let mut args = vec!["diff".to_string(), "--no-ext-diff".to_string()];
     if query.staged {
@@ -269,8 +273,11 @@ pub(super) async fn discard_path(
     if !checkout.status.success() {
         // checkout fails on a path with no tracked changes. That is only OK
         // when the path is untracked (??) — the clean below then removes it.
-        let status = run_git(&state.workspace, &["status", "--porcelain", "--", path.as_str()])
-            .unwrap_or_default();
+        let status = run_git(
+            &state.workspace,
+            &["status", "--porcelain", "--", path.as_str()],
+        )
+        .unwrap_or_default();
         if !status.lines().any(|line| line.starts_with("??")) {
             return Err(ApiError::bad_request(
                 String::from_utf8_lossy(&checkout.stderr).trim().to_string(),
@@ -298,11 +305,9 @@ fn run_git(workspace: &FsPath, args: &[&str]) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
-fn parse_git_status(porcelain: &str) -> (
-    Vec<GitFileChange>,
-    Vec<GitFileChange>,
-    Vec<GitFileChange>,
-) {
+fn parse_git_status(
+    porcelain: &str,
+) -> (Vec<GitFileChange>, Vec<GitFileChange>, Vec<GitFileChange>) {
     let mut unstaged = Vec::new();
     let mut staged = Vec::new();
     let mut untracked = Vec::new();

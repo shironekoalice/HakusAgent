@@ -6,7 +6,6 @@ use hakus_config::route::{
 use serde::Serialize;
 
 use crate::client::DeepSeekClient;
-use crate::codex_model_cache::{CodexModelCacheFreshness, model_roster};
 use crate::config::{
     ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL, KIMI_CODE_K3_CONTEXT_WINDOW_TOKENS,
     ProviderIdentity, is_exact_direct_moonshot_k3_route, is_exact_kimi_code_k3_route,
@@ -281,20 +280,6 @@ fn format_provider_route_preflight_error(
 
 fn classify_provider_route_preflight_next_step(identity_key: &str, reason: &str) -> Option<String> {
     let lower = reason.to_ascii_lowercase();
-    if lower
-        .contains("codex oauth credentials are only available on the official openai codex route")
-    {
-        return Some(format!(
-            "Run /provider setup {identity_key} and remove its custom base URL; Codex OAuth only works on the official route."
-        ));
-    }
-    if lower.contains("openai codex oauth credentials are unavailable")
-        || lower.contains("codex access token")
-    {
-        return Some(format!(
-            "Run `codex login`, then retry {identity_key}; Hakus reads that official CLI login without modifying it."
-        ));
-    }
     if lower.contains("api key not found")
         || lower.contains("access token")
         || (lower.contains("credential")
@@ -494,7 +479,7 @@ fn plan_limit_overrides(
 ) -> LimitOverridePlan {
     let mut overrides = Vec::new();
     let configured = context_window_override.filter(|window| *window > 0);
-    let mut effective_context = resolved.limits().context_tokens;
+    let effective_context = resolved.limits().context_tokens;
     if is_exact_direct_moonshot_k3_route(
         provider,
         &resolved.endpoint().base_url,
@@ -506,39 +491,6 @@ fn plan_limit_overrides(
             source: OverrideSource::DocumentedRouteOutputMaximum,
         });
     }
-    if provider == ApiProvider::OpenaiCodex {
-        // Models.dev describes the public API offering, not the account-scoped
-        // ChatGPT OAuth route. Strip API-only limits, then carry the fresh
-        // Codex roster's per-model context into every runtime consumer.
-        overrides.push(SourcedLimitOverride {
-            field: LimitField::InputTokens,
-            value: None,
-            source: OverrideSource::CodexPublicApiLimitStrip,
-        });
-        overrides.push(SourcedLimitOverride {
-            field: LimitField::OutputTokens,
-            value: None,
-            source: OverrideSource::CodexPublicApiLimitStrip,
-        });
-        if configured.is_none() {
-            let roster = model_roster();
-            let roster_context = if roster.freshness == CodexModelCacheFreshness::Fresh {
-                roster
-                    .metadata_for(resolved.wire_model_id().as_str())
-                    .and_then(|metadata| metadata.context_window)
-                    .map(u64::from)
-            } else {
-                None
-            };
-            effective_context = roster_context;
-            overrides.push(SourcedLimitOverride {
-                field: LimitField::ContextTokens,
-                value: roster_context,
-                source: OverrideSource::CodexRosterCorrection,
-            });
-        }
-    }
-
     if let Some(context_window) = configured {
         overrides.push(SourcedLimitOverride {
             field: LimitField::ContextTokens,
@@ -656,16 +608,6 @@ pub(crate) fn resolve_runtime_route_for_identity(
     let provider = identity.provider;
     let mut route_config = prepared_route_config(config, &identity, model_selector);
     let saved_provider_model = configured_model_for_route(&route_config, provider);
-    // #5034: with no explicit selector and no saved model, a Codex route
-    // would fall back to the resolver's static seed offering. Prefer the
-    // live Codex roster head so a provider switch lands on the current
-    // flagship model; a missing/stale roster keeps the seed offering.
-    let roster_preferred = (provider == ApiProvider::OpenaiCodex
-        && model_selector.is_none()
-        && saved_provider_model.is_none())
-    .then(|| model_roster().preferred_model_id().map(str::to_string))
-    .flatten();
-    let model_selector = model_selector.or(roster_preferred.as_deref());
     let resolution = resolve_route_candidate_with_context_metadata(
         provider,
         model_selector,
@@ -935,24 +877,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn provider_route_preflight_codex_oauth_errors_surface_the_right_next_step() {
-        let missing = anyhow::anyhow!("OpenAI Codex OAuth credentials are unavailable.");
-        let missing_formatted =
-            format_provider_route_preflight_error("openai-codex", "gpt-5.6-sol", &missing);
-        assert!(missing_formatted.contains(
-            "Next step: Run `codex login`, then retry openai-codex; Hakus reads that official CLI login without modifying it."
-        ));
-
-        let custom = anyhow::anyhow!(
-            "Codex OAuth credentials are only available on the official OpenAI Codex route"
-        );
-        let custom_formatted =
-            format_provider_route_preflight_error("openai-codex", "gpt-5.6-sol", &custom);
-        assert!(custom_formatted.contains(
-            "Next step: Run /provider setup openai-codex and remove its custom base URL; Codex OAuth only works on the official route."
-        ));
-    }
 
     #[test]
     fn provider_route_preflight_tls_error_surfaces_route_and_setup_step() {
@@ -972,82 +896,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn codex_route_uses_fresh_account_context_and_drops_api_only_limits() {
-        let _lock = crate::test_support::lock_test_env();
-        let codex_home = tempfile::tempdir().expect("Codex home");
-        let _home = crate::test_support::EnvVarGuard::set("CODEX_HOME", codex_home.path());
-        std::fs::write(
-            codex_home.path().join("models_cache.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "fetched_at": chrono::Utc::now(),
-                "models": [{
-                    "slug": crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-                    "priority": 1,
-                    "context_window": 128000,
-                    "supported_reasoning_levels": [{"effort": "high"}]
-                }]
-            }))
-            .expect("serialize cache"),
-        )
-        .expect("write cache");
 
-        let candidate = resolve_route_candidate(
-            ApiProvider::OpenaiCodex,
-            Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL),
-            None,
-            None,
-            None,
-        )
-        .expect("Codex route");
-
-        assert_eq!(candidate.limits().context_tokens, Some(128_000));
-        assert_eq!(candidate.limits().input_tokens, None);
-        assert_eq!(candidate.limits().output_tokens, None);
-        assert_eq!(
-            crate::route_budget::route_context_window_tokens(
-                ApiProvider::OpenaiCodex,
-                crate::config::DEFAULT_OPENAI_CODEX_MODEL,
-                Some(candidate.limits()),
-            ),
-            128_000
-        );
-    }
-
-    #[test]
-    fn codex_switch_without_saved_model_prefers_fresh_roster_head() {
-        // #5034: switching to openai-codex with no saved model must land on
-        // the roster's current flagship, not the static seed constant.
-        let _lock = crate::test_support::lock_test_env();
-        let codex_home = tempfile::tempdir().expect("Codex home");
-        let _home = crate::test_support::EnvVarGuard::set("CODEX_HOME", codex_home.path());
-        std::fs::write(
-            codex_home.path().join("models_cache.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "fetched_at": chrono::Utc::now(),
-                "models": [
-                    {"slug": "gpt-test-flagship", "priority": 1, "context_window": 256000},
-                    {"slug": crate::config::DEFAULT_OPENAI_CODEX_MODEL, "priority": 7}
-                ]
-            }))
-            .expect("serialize cache"),
-        )
-        .expect("write cache");
-
-        let config = crate::config::Config::default();
-        let route = resolve_runtime_route(&config, ApiProvider::OpenaiCodex, None)
-            .expect("codex route resolves");
-        assert_eq!(route.model, "gpt-test-flagship");
-
-        // An explicit selector or saved provider model still wins.
-        let explicit = resolve_runtime_route(
-            &config,
-            ApiProvider::OpenaiCodex,
-            Some(crate::config::DEFAULT_OPENAI_CODEX_MODEL),
-        )
-        .expect("explicit codex route resolves");
-        assert_eq!(explicit.model, crate::config::DEFAULT_OPENAI_CODEX_MODEL);
-    }
 
     #[test]
     fn opencode_go_kimi_k3_route_uses_1m_context() {

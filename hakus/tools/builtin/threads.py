@@ -1,7 +1,6 @@
-"""Thread-as-tool suite (Codex-style internal thread ops).
+"""Thread-as-tool suite for internal thread operations.
 
-Ported from the OpenAI Codex desktop app: the app itself registers an
-MCP server (``codex_app``) exposing ``create_thread`` / ``fork_thread`` /
+This module registers an MCP server exposing ``create_thread`` / ``fork_thread`` /
 ``send_message_to_thread`` / ``handoff_thread`` so the agent can
 orchestrate sub-conversations as first-class objects.
 

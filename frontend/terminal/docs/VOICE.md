@@ -1,61 +1,12 @@
-# HakusCLI voice and terminal charter
+# 语音功能
 
-HakusCLI speaks like an instrument with a constitution: calm, exact, and
-receipt-driven. It is maritime without nautical jokes. It names the action,
-the boundary, and the next useful move.
+支持语音输入和语音播报的平台可以在设置中分别配置识别与合成服务。两者可以独立启用，也可以只使用其中一项。
 
-## Voice
+## 使用时注意
 
-- Lead with the fact: `MCP tool pool reloaded in process`.
-- Name the boundary: `Provider switching stays in /provider`.
-- Offer one next action when recovery is possible.
-- Prefer short sentences and concrete nouns over slogans or celebration.
-- Say `saved`, `reloaded`, `verified`, or `failed` only when that event
-  happened. An affordance is not a receipt.
-- Keep product terms exact: HakusCLI; Plan / Work / Operate; Ask /
-  Auto-Review / Full Access; Fleet / Workflow / Lane / Runtime; Work.
-- Keep commands, key names, paths, and provider/model names literal. Compose
-  them in code around localized prose.
+- 语音识别会把音频发送到所选识别服务，或交给本地识别引擎。
+- 播报服务会收到需要朗读的文本；包含项目隐私内容时应先确认服务边界。
+- 嘈杂环境、专业术语和长文本可能导致识别或播报质量下降。
+- 语音输入产生的文字仍会遵循与键盘输入相同的权限和工作区规则。
 
-Avoid timer carousels, marketing banners, anthropomorphic chatter, emoji
-celebrations, and borrowed competitor language. Guidance is action-triggered,
-seen-gated, and quiet.
-
-## Blue Stage
-
-Blue Stage is the default visual grammar, not a separate product mode.
-
-- Stage black holds the room.
-- Action blue owns general interaction.
-- Structural ice owns Plan.
-- Seafoam and working green report live or successful state.
-- Signal Gold is reserved for the whale and moments requiring human attention.
-
-Theme settings remain compatible as `dark` and `light`; picker labels expose
-the product names `Blue Stage` and `Blue Stage Light`.
-
-## Glyphs
-
-`crates/tui/src/tui/glyphs.rs` owns authored terminal glyphs and their narrow
-ASCII fallbacks. Renderers consume semantic names rather than choosing symbols
-locally.
-
-- `●` is the recurring HakusCLI anchor: current speaker or current human
-  choice.
-- `▸` is selection or active traversal.
-- `◆` means attention or waiting, never generic decoration.
-- `✓` and `✕` are settled success and failure.
-- `▎` marks finished user input; `▏` is a transcript continuation rail.
-
-The terminal compatibility layer applies ASCII fallbacks. Translation strings
-do not own glyphs, commands, or key names.
-
-## Copy review
-
-For new customer-visible text:
-
-1. Identify the typed fact that owns it.
-2. Write the shortest truthful sentence in this register.
-3. Add a `MessageId` and every complete locale when the TUI renders it.
-4. Keep keys, commands, paths, and glyphs as code-owned placeholders.
-5. Test narrow widths and the ASCII-safe renderer when chrome changes.
+无法使用时，检查麦克风权限、输出设备、服务凭据、网络连接和当前平台是否支持对应能力。

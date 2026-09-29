@@ -1,208 +1,31 @@
-# Sandbox threat model
+# 权限与安全边界
 
-HakusCLI can launch shell commands proposed by a model. Approval policy,
-workspace-aware tools, and an operating-system command wrapper are separate
-controls: an approval is not a sandbox, and selecting `workspace-write` does
-not prove that the current platform has an OS wrapper available.
+权限策略、人工确认和操作系统隔离是不同层次的控制。允许一次工具调用，不等于操作系统会替它提供完整沙箱；启用沙箱，也不等于扩展来源可信。
 
-This document describes only behavior wired into the command execution path.
-See [Authorization order](AUTHORIZATION_ORDER.md) for the policy layers that
-run before execution reaches this boundary.
+## 三个边界
 
-## Platform overview
+1. **工作区边界**：文件工具默认围绕当前项目或明确连接的远程环境。
+2. **应用权限**：读取、写入、命令、网络和外部服务分别受策略控制。
+3. **系统权限**：操作系统、容器、远程主机和 Termux 决定进程最终能看到什么。
 
-| Mechanism | Platform | Selection | What HakusCLI reports |
-|---|---|---|---|
-| Seatbelt (`sandbox-exec`) | macOS | Automatic when the runtime probe succeeds | `macos-seatbelt` |
-| Bubblewrap (`/usr/bin/bwrap`) | Linux | `prefer_bwrap = true` and the file is executable | `linux-bwrap` |
-| No OS wrapper | Linux without usable opt-in bwrap | Default | `none` |
-| No OS wrapper | Windows | Current implementation | `none` |
-| OpenSandbox-compatible service | Any supported host | `sandbox_backend = "opensandbox"` | External execution path |
+不同平台支持的系统隔离能力不同。Windows、macOS、Linux、容器和 Android 的行为不能简单等同；应用会在可用时使用额外隔离，但不能替代系统管理员配置。
 
-The repository contains a seccomp implementation module plus a future Windows
-helper contract. They are not wired into child-command launch, so HakusCLI
-does not advertise them as active sandboxes. Source-only sandbox code is not
-evidence that a command was restricted.
+## 高风险动作
 
-## macOS: Seatbelt
+执行前应特别检查：
 
-HakusCLI probes `/usr/bin/sandbox-exec` by running a minimal profile. When the
-probe succeeds and the selected `SandboxPolicy` requests a sandbox, the child
-command is wrapped with a generated Seatbelt profile.
+- 删除或覆盖文件；
+- 运行未知脚本或安装依赖；
+- 访问工作区之外的路径；
+- 连接外部网络、远程主机或第三方 MCP；
+- 把项目内容发送到云端模型。
 
-The profile can provide:
+## 安全建议
 
-- broad filesystem reads;
-- writes limited by the selected policy, including the workspace and specific
-  runtime/cache paths needed by supported tools;
-- network access only when the policy enables it.
+- 日常工作优先使用受限权限模式。
+- 先在副本或测试工作区验证批量操作。
+- 不要把密钥放入命令参数、Skill、MCP 配置或项目日志。
+- 使用远程项目时，确认连接账户的权限和主机范围。
+- 把模型输出、扩展代码和外部工具返回值都视为不可信输入。
 
-If the probe fails or `sandbox-exec` is unavailable, HakusCLI reports no OS
-sandbox and launches the command without a Seatbelt wrapper. It does not set a
-Seatbelt marker on that fallback.
-
-## Linux: opt-in bubblewrap
-
-Linux command sandboxing is opt-in. Set the top-level configuration key:
-
-```toml
-prefer_bwrap = true
-```
-
-HakusCLI selects bubblewrap only when `/usr/bin/bwrap` is a regular executable
-file. The wrapper derives its mounts and network namespace from the resolved
-`SandboxPolicy`:
-
-```text
-/usr/bin/bwrap \
-  --unshare-all \
-  [--share-net] \
-  --ro-bind / / \
-  --dev /dev \
-  --proc /proc \
-  --tmpfs /tmp \
-  [--dev-bind <device-root> <device-root> ...] \
-  --bind <writable-root> <writable-root> ... \
-  --ro-bind <protected-descendant> <protected-descendant> ... \
-  [--ro-bind <extra-ro-root> <extra-ro-root> ...] \
-  --chdir <cwd> \
-  -- <program> <args>
-```
-
-The sandbox always gets a private `/dev` (fresh device nodes, so `>/dev/null`
-works), a private `/proc`, and a tmpfs `/tmp` (#5410). Two optional top-level
-config keys extend the mounts: `bwrap_ro_roots` (extra host paths bind-mounted
-read-only, applied last so they can narrow a policy-writable path) and
-`bwrap_dev_roots` (host character/block device nodes bind-mounted read-write;
-directories are never honored). Missing paths are skipped silently.
-
-That gives the child a read-only root view. For `workspace-write`, every safe,
-existing policy root is mounted read-write: the working directory, configured
-additional roots, `/tmp` and `TMPDIR` unless excluded, and verified Git
-worktree metadata roots. Existing `.hakuscli` and `.deepseek` descendants are
-remounted read-only after their writable parent. Missing paths, non-directory
-paths, and `/` are not promoted to writable mounts.
-
-For `read-only`, there are no writable binds, so the working directory remains
-inside the read-only root view. `--unshare-all` isolates the network namespace
-by default. HakusCLI adds `--share-net` only when the policy's
-`network_access` is true. `danger-full-access` and `external-sandbox` bypass the
-local wrapper entirely.
-
-If the user does not opt in, or `/usr/bin/bwrap` is missing or non-executable,
-HakusCLI reports `none` and launches the command without a Linux OS wrapper.
-There is no marker-only fallback to a different Linux sandbox.
-
-Install bubblewrap separately when this opt-in fits the workflow:
-
-- Ubuntu/Debian: `apt install bubblewrap`
-- Fedora: `dnf install bubblewrap`
-- Arch: `pacman -S bubblewrap`
-
-HakusCLI does not vendor bubblewrap.
-
-## Windows: no advertised OS sandbox
-
-The Windows command path currently reports no OS sandbox. The source tree has
-a future helper contract for Job Object process-tree cleanup, but it is not
-wired into selection and must not be described as any of the following:
-
-- read-only filesystem or workspace-write enforcement;
-- network blocking;
-- registry isolation;
-- restricted-token or AppContainer isolation.
-
-Windows host permissions and approval policy still apply, but they are not a
-HakusCLI OS command sandbox.
-
-## Linux process hardening is not a command sandbox
-
-At startup on Linux, HakusCLI best-effort applies `PR_SET_DUMPABLE=0`,
-`PR_SET_NO_NEW_PRIVS=1`, and `RLIMIT_CORE=0` to its own process. Each failure is
-logged and startup continues. These controls reduce process-inspection,
-privilege-escalation, and core-dump risk; they do not create filesystem or
-network isolation for a child command and are not listed as a sandbox backend.
-
-## External OpenSandbox execution
-
-When `sandbox_backend = "opensandbox"` is configured, shell execution is sent
-to the configured OpenSandbox-compatible HTTP endpoint instead of starting a
-local child. HakusCLI validates the request/response contract, but isolation
-guarantees belong to the configured service and its operator.
-
-```toml
-sandbox_backend = "opensandbox"
-sandbox_url = "http://localhost:8080"
-sandbox_api_key = "YOUR_API_KEY"
-```
-
-`sandbox_backend = "none"` (or omitting the key) keeps local execution.
-
-## Policies and fallbacks
-
-The local `sandbox_mode` values are:
-
-```toml
-sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
-```
-
-- `read-only` and `workspace-write` are enforced by Seatbelt or bubblewrap only
-  when that wrapper is selected and available.
-- `danger-full-access` deliberately bypasses the local OS wrapper.
-- `external-sandbox` declares that execution is already externally isolated
-  and bypasses a second local wrapper.
-- When no wrapper is selected, the shell command runs without HakusCLI OS
-  isolation. Approval rules and workspace-aware native file tools remain
-  separate controls.
-
-Canonical environment overrides exist for `sandbox_mode` and the external
-backend:
-
-- `HAKUS_SANDBOX_MODE`
-- `HAKUS_SANDBOX_BACKEND`
-- `HAKUS_SANDBOX_URL`
-- `HAKUS_SANDBOX_API_KEY`
-
-There is no `HAKUS_PREFER_BWRAP` environment override; use the top-level
-`prefer_bwrap` config key.
-
-## Diagnostics and failure attribution
-
-`hakuscli setup --status`, `hakuscli doctor`, `hakuscli doctor --json`, and
-the `diagnostics` tool report the locally available wrapper after applying the
-resolved bubblewrap preference. An individual command can still bypass that
-wrapper when its policy does not request sandboxing. On Linux, merely finding
-a sandbox-related syscall or source module does not make `sandbox_available`
-true.
-
-Denial attribution is intentionally conservative:
-
-- Seatbelt uses its wrapper-specific denial patterns.
-- Bubblewrap setup errors must be prefixed by `bwrap:`; a read-only-filesystem
-  error from the bwrap filesystem view can also identify the boundary.
-- A child command's generic `Permission denied` or `Operation not permitted`
-  is not, by itself, proof that HakusCLI's sandbox blocked it.
-- Unsandboxed command failures are never labeled sandbox denials.
-
-## Limitations
-
-- Availability is checked before launch; the selected wrapper can still fail
-  because of host policy, container restrictions, or a race after the probe.
-- Bubblewrap ignores a configured writable root if it is missing, is not a
-  directory, or canonicalizes to `/`; a path can also disappear between policy
-  resolution and wrapper launch.
-- Seatbelt profiles are generated at runtime and must be tested against the
-  commands they are expected to support.
-- No current local wrapper is advertised on Windows.
-- An external sandbox backend is only as strong as its configured service.
-- No sandbox protects against kernel vulnerabilities or all resource-exhaustion
-  and side-channel attacks.
-
-## Implementation references
-
-- `crates/tui/src/sandbox/mod.rs` — truthful selection and public capability markers
-- `crates/tui/src/sandbox/seatbelt.rs` — macOS wrapper and availability probe
-- `crates/tui/src/sandbox/bwrap.rs` — Linux opt-in wrapper
-- `crates/tui/src/sandbox/process_hardening.rs` — Linux parent-process hardening
-- `crates/tui/src/sandbox/backend.rs` — external backend selection
-- `crates/tui/src/tools/diagnostics.rs` — machine-readable diagnostics
+如果某个平台没有额外的操作系统隔离，应用仍会保留审批和工作区规则，但不能声称提供超出平台能力的保护。
