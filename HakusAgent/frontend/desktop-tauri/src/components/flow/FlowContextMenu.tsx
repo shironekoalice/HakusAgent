@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+import { LiquidGlassSurface } from '@/components/ui/liquid-glass-surface'
 
 export type MenuTarget =
   | { kind: 'pane'; flow: { x: number; y: number } }
@@ -173,9 +174,10 @@ export function FlowContextMenu({ state, actions, onClose }: Props) {
   }
 
   return (
-    <div
+    <LiquidGlassSurface
       ref={boxRef}
       className="flow-menu"
+      contentClassName="flow-menu-surface-content"
       role="menu"
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
@@ -232,6 +234,6 @@ export function FlowContextMenu({ state, actions, onClose }: Props) {
           <MenuItem icon={Trash2} label={t.delete} hint="Del" danger onClick={run(actions.removeSelection)} />
         </>
       )}
-    </div>
+    </LiquidGlassSurface>
   )
 }

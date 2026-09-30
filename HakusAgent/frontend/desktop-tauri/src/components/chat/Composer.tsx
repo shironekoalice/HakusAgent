@@ -79,6 +79,7 @@ import { LongRunningTaskVisual } from './LongRunningTaskVisual'
 import { ContextUsageMeter } from './ContextUsageMeter'
 import { useToast } from '@/components/ui/toast'
 import { ProviderLogo } from '@/components/ui/provider-logo'
+import { LiquidGlassSurface } from '@/components/ui/liquid-glass-surface'
 import { isProviderConfigured, getHiddenProviders } from '@/lib/providerState'
 import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
 import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
@@ -1256,9 +1257,10 @@ export function Composer({
   const hasExpandedContent = attachments.length > 0 || Boolean(taskProgress) || pendingQueue.length > 0
 
   const mentionMenu = mentionOpen ? (
-    <div
+    <LiquidGlassSurface
       ref={menuRef}
-      className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 overflow-auto rounded-2xl border border-border bg-popover p-1.5 shadow-lg"
+      className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 overflow-auto"
+      contentClassName="composer-mention-menu-content"
     >
       <div className="hakus-mobile-menu-header composer-mention-header">
         <span>{copy('@ 上下文与 Skills', '@ Context & skills')}</span>
@@ -1305,11 +1307,14 @@ export function Composer({
           })
         )}
       </div>
-    </div>
+    </LiquidGlassSurface>
   ) : null
 
   const slashMenu = slashOpen ? (
-    <div className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 w-72 overflow-auto rounded-2xl border border-border bg-popover p-1.5 shadow-lg">
+    <LiquidGlassSurface
+      className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 w-72 overflow-auto"
+      contentClassName="composer-mention-menu-content"
+    >
       <div className="composer-mention-desktop-heading">
         <span>{copy('命令', 'Commands')}</span>
       </div>
@@ -1340,7 +1345,7 @@ export function Composer({
           )
         })
       )}
-    </div>
+    </LiquidGlassSurface>
   ) : null
 
   return (
@@ -1352,12 +1357,12 @@ export function Composer({
       {IS_ANDROID && (
         <div className="relative mb-1.5 flex items-center gap-2 px-0.5">
           {androidReasoningOpen && (
-            <div
+            <LiquidGlassSurface
               className={cn(
-                'absolute bottom-11 left-0 z-50 w-[min(80vw,280px)] rounded-3xl p-3',
-                LIQUID_GLASS_CLASS,
+                '!absolute bottom-11 left-0 z-50 w-[min(80vw,280px)]',
                 'origin-bottom-left animate-in fade-in zoom-in-95 duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]',
               )}
+              contentClassName="android-reasoning-glass-content"
             >
               <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wide text-foreground/85 dark:text-white/45">
                 {copy('思考强度', 'Reasoning effort')}
@@ -1420,7 +1425,7 @@ export function Composer({
               <div className="mt-2 px-1 text-[10px] leading-relaxed text-foreground/55 dark:text-white/40">
                 {copy('左右拖动或点按切换档位', 'Drag or tap to change the effort level')}
               </div>
-            </div>
+            </LiquidGlassSurface>
           )}
           <button
             type="button"

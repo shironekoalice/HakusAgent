@@ -288,7 +288,7 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({ toolCal
 
       {/* 展开态：参数 + 结果的格式化 JSON，max-height 内滚动 */}
       {expanded && hasDetails && (
-        <div className="mb-1.5 ml-2 mr-1 mt-0.5 space-y-2 pl-5">
+        <div className="liquid-glass-disclosure mb-1.5 ml-2 mr-1 mt-0.5 space-y-2 p-2.5 pl-5">
           {hasArgs && (
             <div className="group/block relative">
               <button

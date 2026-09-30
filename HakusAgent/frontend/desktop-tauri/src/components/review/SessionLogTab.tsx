@@ -195,6 +195,7 @@ export function SessionLogTab() {
                   <button
                     onClick={() => toggleTurn(turn)}
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-foreground/[0.03]"
+                    aria-expanded={!collapsed}
                   >
                     {collapsed ? (
                       <ChevronRight className="h-3 w-3 text-muted-foreground" />
@@ -217,7 +218,7 @@ export function SessionLogTab() {
                     </span>
                   </button>
                   {!collapsed && (
-                    <div className="px-3 pb-2 pl-8">
+                    <div className="liquid-glass-disclosure mx-2 mb-2 px-3 pb-2 pl-8">
                       {turnEvents.map((ev, i) => (
                         <EventRow key={i} event={ev} />
                       ))}

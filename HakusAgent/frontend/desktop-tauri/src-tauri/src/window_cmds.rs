@@ -1,10 +1,35 @@
 //! Window commands — custom titlebar controls (minimize, maximize, close).
 //! No more IPC bridge needed — Tauri window API handles this natively.
 
-#[cfg(not(target_os = "android"))]
-use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
+
+/// Switch the native desktop material when the renderer theme changes.
+/// Windows uses Mica so wallpaper colours do not bleed into a light titlebar.
+#[tauri::command]
+pub fn window_set_material(app: AppHandle, theme: String) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Err("No main window".into());
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::window::{Effect, EffectsBuilder};
+        let effect = match theme.as_str() {
+            "light" => Effect::MicaLight,
+            "dark" => Effect::MicaDark,
+            _ => return Err("Unsupported window material theme".into()),
+        };
+        window
+            .set_effects(EffectsBuilder::new().effect(effect).build())
+            .map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = theme;
+
+    Ok(true)
+}
 
 /// Read (trayEnabled, minimizeToTray) from the persisted settings store.
 fn read_tray_settings(app: &AppHandle) -> (bool, bool) {

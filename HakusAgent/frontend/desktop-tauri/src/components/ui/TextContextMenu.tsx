@@ -4,6 +4,7 @@ import { clipboardOs } from '@/api/tauriBridge'
 import { copyToClipboard } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { toastApi } from '@/components/ui/toast'
+import { LiquidGlassSurface } from '@/components/ui/liquid-glass-surface'
 
 type TextControl = HTMLInputElement | HTMLTextAreaElement
 type EditableTarget = TextControl | HTMLElement
@@ -289,7 +290,7 @@ export function TextContextMenu() {
   ]
 
   return (
-    <div
+    <LiquidGlassSurface
       ref={menuRef}
       role="menu"
       aria-label={copy('文本编辑菜单', 'Text editing menu')}
@@ -330,6 +331,6 @@ export function TextContextMenu() {
           <span className="shrink-0 text-[11px] text-muted-foreground">{item.shortcut}</span>
         </button>
       ))}
-    </div>
+    </LiquidGlassSurface>
   )
 }

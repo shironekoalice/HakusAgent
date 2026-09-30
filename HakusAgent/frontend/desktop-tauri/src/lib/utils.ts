@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { window as tauriWindow } from '@/api/tauriBridge'
 
 /** Tailwind-aware class merge — typical shadcn/ui helper */
 export function cn(...inputs: ClassValue[]) {
@@ -101,4 +102,8 @@ export function getSystemTheme(): 'light' | 'dark' {
 export function applyTheme(theme: 'light' | 'dark' | 'system') {
   const resolved = theme === 'system' ? getSystemTheme() : theme
   document.documentElement.classList.toggle('dark', resolved === 'dark')
+  document.documentElement.dataset.windowMaterial = resolved
+  if (typeof __TAURI_INTERNALS__ !== 'undefined') {
+    void tauriWindow.setMaterial(resolved).catch(() => undefined)
+  }
 }

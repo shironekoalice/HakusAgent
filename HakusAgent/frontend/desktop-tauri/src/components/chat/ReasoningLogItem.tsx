@@ -70,6 +70,7 @@ export function ReasoningLogItem({ reasoning, isStreaming, durationSec }: Reason
       <div
         role={isExpandable ? 'button' : undefined}
         tabIndex={isExpandable ? 0 : -1}
+        aria-expanded={isExpandable ? expanded : undefined}
         onClick={() => isExpandable && setExpanded(!expanded)}
         onKeyDown={(e) => {
           if (isExpandable && (e.key === 'Enter' || e.key === ' ')) {
@@ -109,7 +110,7 @@ export function ReasoningLogItem({ reasoning, isStreaming, durationSec }: Reason
       </div>
 
       {expanded && hasReasoning && (
-        <div className="space-y-1.5 py-1 pl-4">
+        <div className="liquid-glass-disclosure space-y-1.5 p-2.5 pl-4">
           <div className="relative">
             <button
               onClick={handleCopy}

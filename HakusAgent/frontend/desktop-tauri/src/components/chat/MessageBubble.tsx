@@ -471,7 +471,7 @@ const ErrorBlock = memo(function ErrorBlock({ raw }: { raw: string }) {
         )}
       </div>
       {hasDetail && expanded && (
-        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-destructive/5 px-2 py-1.5 text-[10px] leading-relaxed text-destructive/80">
+        <pre className="liquid-glass-disclosure mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all px-2 py-1.5 text-[10px] leading-relaxed text-destructive/80">
           {translated.detail}
         </pre>
       )}

@@ -25,6 +25,10 @@ export const window = {
   toggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
   close: () => invoke<boolean>("window_close"),
   isMaximized: () => invoke<boolean>("window_is_maximized"),
+  setMaterial: (theme: 'light' | 'dark') => {
+    if (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)) return Promise.resolve(false)
+    return invoke<boolean>("window_set_material", { theme })
+  },
 };
 
 // ── Backend ────────────────────────────────────────────────────────

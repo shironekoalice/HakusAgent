@@ -26,6 +26,10 @@ const WS_CONNECTING = 0
 const WS_CLOSING = 2
 const WS_CLOSED = 3
 
+function createCloseEvent(code: number, reason: string): CloseEvent {
+  return Object.assign(new Event('close'), { code, reason }) as unknown as CloseEvent
+}
+
 class MockWebSocket {
   static instances: MockWebSocket[] = []
   // 控制新实例是否自动 open 成功; 默认 true。设为 false 后, 新实例会自动
@@ -63,7 +67,7 @@ class MockWebSocket {
           // 模拟连接失败: 先 onerror, 然后关掉
           this.onerror?.(new Event('error'))
           this.readyState = WS_CLOSED
-          this.onclose?.(new CloseEvent('close', { code: 1006, reason: 'connection refused' }))
+          this.onclose?.(createCloseEvent(1006, 'connection refused'))
         }
       }
     }, 0)
@@ -81,7 +85,7 @@ class MockWebSocket {
     this.closed = true
     this.readyState = WS_CLOSED
     this.closeCode = code
-    this.onclose?.(new CloseEvent('close', { code, reason }))
+    this.onclose?.(createCloseEvent(code, reason))
   }
 
   /** 模拟服务端发消息到客户端 */

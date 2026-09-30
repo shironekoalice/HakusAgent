@@ -24,12 +24,10 @@ mod remote_cmds;
 mod browser_cmds;
 
 #[cfg(not(target_os = "android"))]
-use std::time::{Duration, Instant};
-#[cfg(not(target_os = "android"))]
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Manager, RunEvent, WindowEvent,
 };
 #[cfg(not(target_os = "android"))]
 use tauri_plugin_store::StoreExt;
@@ -168,9 +166,19 @@ fn apply_window_material(app: &tauri::AppHandle) {
     use tauri::window::{Effect, EffectsBuilder};
 
     if let Some(window) = app.get_webview_window("main") {
-        let acrylic = EffectsBuilder::new().effect(Effect::Acrylic).build();
-        if let Err(error) = window.set_effects(acrylic) {
-            eprintln!("[setup] Acrylic material unavailable, falling back to Mica: {error}");
+        let saved_theme = app
+            .store("settings.json")
+            .ok()
+            .and_then(|store| store.get("theme"))
+            .and_then(|theme| theme.as_str().map(ToOwned::to_owned));
+        let light = match saved_theme.as_deref() {
+            Some("light") => true,
+            Some("dark") => false,
+            _ => matches!(window.theme(), Ok(tauri::Theme::Light)),
+        };
+        let effect = if light { Effect::MicaLight } else { Effect::MicaDark };
+        if let Err(error) = window.set_effects(EffectsBuilder::new().effect(effect).build()) {
+            eprintln!("[setup] Mica material unavailable, falling back to Acrylic: {error}");
             if let Err(error) =
                 window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build())
             {
@@ -405,6 +413,7 @@ pub fn run() {
         window_cmds::window_toggle_maximize,
         window_cmds::window_close,
         window_cmds::window_is_maximized,
+        window_cmds::window_set_material,
         window_cmds::finish_splash,
         // Tray
         tray_cmds::tray_get_config,

@@ -27,6 +27,12 @@ import { cn } from '@/lib/utils'
 import { useToast } from '@/components/ui/toast'
 import { useI18n } from '@/lib/i18n'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   RpBody,
   RpChip,
   RpEmpty,
@@ -131,26 +137,6 @@ export function DiffReview() {
     void refresh()
   }, [refresh])
 
-  // Close scope dropdown on outside click / Escape
-  useEffect(() => {
-    if (!scopeMenuOpen) return
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null
-      if (target && !target.closest('.rp-scope-btn') && !target.closest('.rp-scope-menu')) {
-        setScopeMenuOpen(false)
-      }
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setScopeMenuOpen(false)
-    }
-    window.addEventListener('mousedown', onDown)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('mousedown', onDown)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [scopeMenuOpen])
-
   const fileDiffs = useMemo(() => parseDiff(diffText), [diffText])
 
   const allChanges: GitFileChange[] = useMemo(() => {
@@ -244,38 +230,26 @@ export function DiffReview() {
         meta={branches.length > 1 ? `${branches.length}` : null}
         actions={
           <>
-            <div className="relative">
-              <button
-                type="button"
-                className="rp-scope-btn"
-                onClick={() => setScopeMenuOpen((v) => !v)}
-                aria-haspopup="menu"
-                aria-expanded={scopeMenuOpen}
-              >
-                {scopeLabel}
-                <ChevronDown className="h-3 w-3 opacity-55" />
-              </button>
-              {scopeMenuOpen && (
-                <div className="rp-scope-menu" role="menu">
-                  {SCOPE_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      role="menuitem"
-                      data-active={scopeId === opt.id}
-                      className="rp-scope-item"
-                      onClick={() => {
-                        setScope(opt.id as never)
-                        setScopeMenuOpen(false)
-                      }}
-                    >
-                      {copy(opt.zh, opt.en)}
-                      {scopeId === opt.id && <Check className="h-3 w-3" />}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <DropdownMenu open={scopeMenuOpen} onOpenChange={setScopeMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button type="button" className="rp-scope-btn">
+                  {scopeLabel}
+                  <ChevronDown className="h-3 w-3 opacity-55" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" side="bottom" className="rp-scope-menu-content">
+                {SCOPE_OPTIONS.map((opt) => (
+                  <DropdownMenuItem
+                    key={opt.id}
+                    className="rp-scope-item"
+                    onSelect={() => setScope(opt.id as never)}
+                  >
+                    {copy(opt.zh, opt.en)}
+                    {scopeId === opt.id && <Check className="h-3 w-3" />}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <RpIconButton icon={RefreshCw} title={copy('刷新', 'Refresh')} onClick={() => void refresh()} disabled={loading} />
           </>
         }
@@ -355,6 +329,7 @@ export function DiffReview() {
                       className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground"
                       onClick={() => toggleFile(f.path)}
                       aria-label={isOpen ? copy('折叠', 'Collapse') : copy('展开', 'Expand')}
+                      aria-expanded={isOpen}
                     >
                       <ChevronDown className={cn('h-3 w-3 transition-transform', !isOpen && '-rotate-90')} />
                     </button>
@@ -400,7 +375,7 @@ export function DiffReview() {
                   </div>
 
                   {isOpen && fd && (
-                    <div className="overflow-x-auto border-t border-border/25 bg-background/30 py-1">
+                    <div className="liquid-glass-disclosure mx-2 mb-2 max-w-full overflow-x-auto py-1">
                       {fd.hunks.map((h: ParsedHunk, hi: number) => {
                         const hunkId = `${fd.path}:${hi}`
                         return (
