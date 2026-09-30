@@ -2149,6 +2149,8 @@ export function Composer({
                           type="button"
                           onClick={() => void toggleProviderModels(provider.id)}
                           aria-current={isCurrent ? 'true' : undefined}
+                          aria-expanded={isExpanded}
+                          aria-controls={isExpanded ? `provider-models-${provider.id}` : undefined}
                           className={cn(
                             'flex w-full items-start gap-2 rounded-lg border border-transparent px-2 py-2 text-left text-sm transition-colors hover:bg-[var(--cx-ghost-hover)]',
                             isCurrent && 'border-primary/15 bg-primary/[0.06]',
@@ -2173,7 +2175,12 @@ export function Composer({
 
                         {/* Collapsible model list for this provider. */}
                         {isExpanded && (
-                          <div className="ml-3 border-l border-border/60 pl-1.5">
+                          <div
+                            id={`provider-models-${provider.id}`}
+                            role="region"
+                            aria-label={`${provider.display_name} models`}
+                            className="liquid-glass-disclosure ml-3 mt-1 space-y-0.5 p-1.5"
+                          >
                             {modelsLoading && !models ? (
                               <div className="flex items-center gap-2 px-2 py-2 text-xs text-muted-foreground">
                                 <Loader2 className="h-3 w-3 animate-spin" />
