@@ -2522,8 +2522,8 @@ select:focus {
  *
  * Liquid Glass belongs to the navigation layer: the titlebar, side panes,
  * status bar, and menus float above a quieter content canvas. Keeping the
- * chat canvas opaque prevents glass-on-glass stacking and preserves reading
- * contrast while the shell still feels native on macOS, Windows, and Linux.
+ * chat canvas uses a restrained translucent tint so the native window
+ * material can contribute a little desktop colour without reducing legibility.
  * ====================================================================== */
 @media (min-width: 768px) {
   :root {
@@ -2538,7 +2538,7 @@ select:focus {
        becomes a black ring in undecorated Tauri windows and is especially
        visible during resize or first paint. */
     padding: 0;
-    background: transparent;
+    background: transparent !important;
   }
 
   .app-main {
@@ -2551,8 +2551,16 @@ select:focus {
     overflow: hidden;
     border: 0;
     border-radius: 0;
-    background: hsl(var(--background));
+    background: hsl(var(--background) / 0.84);
+    -webkit-backdrop-filter: blur(24px) saturate(135%);
+    backdrop-filter: blur(24px) saturate(135%);
     box-shadow: none;
+  }
+
+  .app-content > .workspace-launchpad {
+    background: hsl(var(--background) / 0.84) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(135%);
+    backdrop-filter: blur(24px) saturate(135%);
   }
 
   .sidebar-wrapper[data-panel-open="true"],
@@ -2610,7 +2618,9 @@ select:focus {
   }
 
   .app-chat {
-    background: hsl(var(--background)) !important;
+    background: hsl(var(--background) / 0.84) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(135%);
+    backdrop-filter: blur(24px) saturate(135%);
   }
 
   .composer-shell {
@@ -2722,6 +2732,9 @@ select:focus {
   .statusbar,
   .composer-shell,
   .composer-box,
+  .app-content,
+  .app-content > .workspace-launchpad,
+  .app-content > .app-chat,
   .sidebar-wrapper,
   .right-panel-wrapper,
   .settings-dialog-content,
@@ -2732,6 +2745,10 @@ select:focus {
     background: hsl(var(--card)) !important;
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
+  }
+
+  .app-shell {
+    background: hsl(var(--background)) !important;
   }
 
   .app-panel-scrim,
@@ -8756,7 +8773,9 @@ body > [data-radix-popper-content-wrapper] {
 }
 
 :root:not(.dark) .liquid-glass-surface-host > .liquid-glass-surface > .glass {
-  background: color-mix(in srgb, hsl(var(--popover)) 92%, transparent) !important;
+  background: color-mix(in srgb, hsl(var(--popover)) 58%, transparent) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  backdrop-filter: blur(30px) saturate(160%);
 }
 
 .liquid-glass-surface-host > .liquid-glass-surface > .glass > div:last-child {
