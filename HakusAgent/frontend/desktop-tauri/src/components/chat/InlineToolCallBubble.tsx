@@ -370,6 +370,18 @@ interface InlineToolCallBubbleProps {
 }
 
 /**
+ * 折叠时选择可见行：优先保留失败行（用户最需要排查的），其余按执行
+ * 顺序取前 N 个。
+ */
+function pickVisibleRows(group: ToolCall[], count: number): ToolCall[] {
+  const failed = group.filter((tc) => tc.success === false)
+  const rest = group.filter((tc) => tc.success !== false)
+  const picked = new Set([...failed.slice(0, count), ...rest].slice(0, count))
+  // 保持原有执行顺序
+  return group.filter((tc) => picked.has(tc))
+}
+
+/**
  * InlineToolCallBubble — 连续工具调用的折叠堆叠组。
  *
  * 学习 ZCode/Codex 的 transcript 模式：相邻的已完成工具调用合并进一个
@@ -388,12 +400,17 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({
     return siblings
   }, [siblings, toolCall])
 
-  // 折叠条件：组内所有调用都已完成（无 pending）且无失败。
-  const allSettled = group.every((tc) => !(tc.success === undefined && !tc.result) && tc.success !== false)
-  const collapsible = group.length > VISIBLE_ROWS && allSettled && !showAll
-  const visible = collapsible ? group.slice(0, VISIBLE_ROWS) : group
+  // 折叠条件：组内没有运行中的调用即可折叠。失败/被拒的调用保持为
+  // 组内紧凑行（红 ✗ 可见），但不阻止折叠——否则一次大量拒绝会让
+  // 整条消息膨胀成数千像素（DSH/ZCode 同样把失败行折进组里）。
+  const hasPending = group.some((tc) => tc.success === undefined && !tc.result)
+  const collapsible = group.length > VISIBLE_ROWS && !hasPending && !showAll
+  // 折叠时优先展示失败行（用户最需要看到的），其余按执行顺序。
+  const visible = collapsible ? pickVisibleRows(group, VISIBLE_ROWS) : group
   const hiddenCount = group.length - visible.length
-  // 折叠头部（被藏起来的行）里若全部成功则计数即可；这里 simply 计数。
+  const hiddenFailures = collapsible
+    ? group.filter((tc) => tc.success === false && !visible.includes(tc)).length
+    : 0
   const inGroup = group.length > 1
 
   if (group.length === 1) {
@@ -420,10 +437,10 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({
           className="flex w-full items-center gap-2 rounded-b-xl px-3 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-[var(--cx-ghost-hover)] hover:text-foreground"
         >
           <ChevronRight className="h-3 w-3" />
-          还有 {hiddenCount} 个工具调用
+          还有 {hiddenCount} 个工具调用{hiddenFailures > 0 ? `（${hiddenFailures} 个失败）` : ''}
         </button>
       )}
-      {showAll && group.length > VISIBLE_ROWS && allSettled && (
+      {showAll && group.length > VISIBLE_ROWS && !hasPending && (
         <button
           type="button"
           onClick={() => setShowAll(false)}
