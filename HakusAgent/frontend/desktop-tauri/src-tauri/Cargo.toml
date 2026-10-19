@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "macos-private-api", "unstable"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api", "unstable", "devtools"] }
 url = "2"
 hakus-tui = { package = "hakus-tui", path = "../../../../frontend/terminal/crates/tui", version = "0.9.10" }
 tauri-plugin-opener = "2"
@@ -30,11 +30,11 @@ tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-dialog = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-ssh2 = "0.9"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
+ssh2 = "0.9"
 # Ensures a second app launch focuses the existing window instead of
 # spawning a second process (which would show a duplicate tray icon).
 tauri-plugin-single-instance = "2"
@@ -42,7 +42,12 @@ tauri-plugin-single-instance = "2"
 [target.'cfg(target_os = "windows")'.dependencies]
 # DWM rounded corners for the undecorated main window (Windows 11).
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+# WebView2's supported memory target API is used by the opt-in measurement
+# gate in lib.rs; the default startup path leaves the runtime at Normal.
+webview2-com = "0.38.2"
+windows-core = "0.61"
 
 [target.'cfg(target_os = "android")'.dependencies]
 hakus-folder-picker = { path = "plugins/folder-picker" }
+hakus-android-asr = { path = "plugins/android-asr" }
 jni = "0.21"
