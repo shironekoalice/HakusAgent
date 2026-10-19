@@ -264,7 +264,7 @@ export function ToolCallLogItem({ toolCall, standalone = false }: ToolCallLogIte
   )
 
   const details = expanded && hasDetails && (
-    <div className="liquid-glass-disclosure mt-2 space-y-2 p-2.5">
+    <div className="mt-2 space-y-2">
       {Object.keys(args).length > 0 && (
         <div className="relative">
           <button
@@ -319,7 +319,6 @@ export function ToolCallLogItem({ toolCall, standalone = false }: ToolCallLogIte
           <span>结果过长 ({resultLength} 字符)</span>
           <button
             onClick={() => setShowFullResult(!showFullResult)}
-            aria-expanded={showFullResult}
             className="text-primary hover:underline"
           >
             {showFullResult ? '收起' : `展开全部`}
@@ -358,7 +357,6 @@ export function ToolCallLogItem({ toolCall, standalone = false }: ToolCallLogIte
         <div
           role="button"
           tabIndex={hasDetails ? 0 : -1}
-          aria-expanded={hasDetails ? expanded : undefined}
           onClick={() => hasDetails && setExpanded(!expanded)}
           onKeyDown={(e) => {
             if (hasDetails && (e.key === 'Enter' || e.key === ' ')) {
@@ -409,7 +407,7 @@ export function ToolCallLogItem({ toolCall, standalone = false }: ToolCallLogIte
           </span>
         </div>
         {expanded && hasDetails && (
-          <div className="liquid-glass-disclosure mx-2 mb-2 space-y-2 p-2.5">
+          <div className="space-y-2 px-2.5 pb-2.5 pt-0">
             {Object.keys(args).length > 0 && (
               <div className="relative">
                 <button
@@ -464,7 +462,6 @@ export function ToolCallLogItem({ toolCall, standalone = false }: ToolCallLogIte
                 <span>结果过长 ({resultLength} 字符)</span>
                 <button
                   onClick={() => setShowFullResult(!showFullResult)}
-                  aria-expanded={showFullResult}
                   className="text-primary hover:underline"
                 >
                   {showFullResult ? '收起' : `展开全部`}
@@ -501,7 +498,6 @@ export function ToolCallLogItem({ toolCall, standalone = false }: ToolCallLogIte
       <div
         role="button"
         tabIndex={hasDetails ? 0 : -1}
-        aria-expanded={hasDetails ? expanded : undefined}
         className={cn(
           'flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--cx-ghost-hover)]',
           !hasDetails && 'cursor-default',

@@ -19,7 +19,6 @@ import { useSettingsStore } from '@/store/settings'
 import { useAppStore } from '@/store/app'
 import { isProviderConfigured, getHiddenProviders } from '@/lib/providerState'
 import { cn } from '@/lib/utils'
-import { LiquidGlassSurface } from '@/components/ui/liquid-glass-surface'
 
 /** iOS-26 liquid glass surface: blur + saturate + specular top edge.
  *  Theme-adaptive: frosted white in light mode, smoked glass in dark mode. */
@@ -148,13 +147,13 @@ export function AndroidModelGlass({ open, onClose }: AndroidModelGlassProps) {
     <div className="fixed inset-0 z-[480]" role="dialog" aria-modal="true" aria-label="选择模型">
       {/* Dismiss scrim — lighter than dialogs: a tap outside just closes. */}
       <div className="absolute inset-0 bg-black/20" onClick={onClose} role="presentation" />
-      <LiquidGlassSurface
+      <div
         className={cn(
-          '!absolute left-1/2 top-14 w-[min(92vw,340px)] -translate-x-1/2',
-          'max-h-[70vh] overflow-y-auto overscroll-contain',
+          'absolute left-1/2 top-14 w-[min(92vw,340px)] -translate-x-1/2',
+          'max-h-[70vh] overflow-y-auto overscroll-contain rounded-3xl p-1.5',
+          LIQUID_GLASS_CLASS,
           SHEET_ANIM_CLASS,
         )}
-        contentClassName="android-model-glass-content"
       >
         {switching && (
           <div className="absolute inset-0 z-10 flex items-center justify-center rounded-3xl bg-black/10 dark:bg-black/25">
@@ -175,8 +174,6 @@ export function AndroidModelGlass({ open, onClose }: AndroidModelGlassProps) {
               <button
                 type="button"
                 onClick={() => handleSelectProvider(provider)}
-                aria-expanded={isExpanded}
-                aria-controls={isExpanded ? `provider-models-${provider.id}` : undefined}
                 className={cn(
                   'flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-left transition-colors',
                   isExpanded ? 'bg-foreground/[0.06] dark:bg-white/[0.08]' : 'active:bg-foreground/[0.04] dark:active:bg-white/[0.06]',
@@ -197,12 +194,7 @@ export function AndroidModelGlass({ open, onClose }: AndroidModelGlassProps) {
               </button>
 
               {isExpanded && (
-                <div
-                  id={`provider-models-${provider.id}`}
-                  role="region"
-                  aria-label={`${provider.display_name || provider.id} models`}
-                  className="liquid-glass-disclosure ml-3 border-l border-black/10 pl-1 dark:border-white/15"
-                >
+                <div className="ml-3 border-l border-black/10 dark:border-white/15 pl-1">
                   {loadingProvider === provider.id && !models ? (
                     <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
                       <Loader2 className="h-3 w-3 animate-spin" />
@@ -234,7 +226,7 @@ export function AndroidModelGlass({ open, onClose }: AndroidModelGlassProps) {
             </div>
           )
         })}
-      </LiquidGlassSurface>
+      </div>
     </div>,
     document.body,
   )

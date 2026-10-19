@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { ArrowUp, LayoutGrid, AlertCircle, WifiOff, Mic, Volume2, Loader2, Rocket, GitPullRequest, Compass, Bug, Check, ChevronDown, FolderOpen, FolderPlus, Send, MessageCircle } from 'lucide-react'
 import { useSessionStore } from '@/store/session'
+import { ingestSessionEvent } from '@/store/eventBus'
 import { useSettingsStore } from '@/store/settings'
 import { useConnectionStore } from '@/store/connection'
+import { useSessionStreamStore } from '@/store/sessionStream'
 import { useAppStore } from '@/store/app'
 import { useProjectsStore } from '@/store/projects'
 import { apiClient, HakusAIError, isRuntimeMissingThreadError } from '@/api/client'
@@ -10,6 +12,7 @@ import type { AgentEvent, ToolCall, QuestionAskedEvent, TaskProgressEvent, TaskP
 import { MessageBubble } from './MessageBubble'
 import { InlineToolCallBubble } from './InlineToolCallBubble'
 import { ApprovalDialog } from './ApprovalDialog'
+import { SshPasswordDialog, type SshPasswordApproval } from './SshPasswordDialog'
 import { Composer, type QueuedComposerMessage } from './Composer'
 import { ChatNavButtons } from './ChatNavButtons'
 import { MessageNavRail } from './MessageNavRail'
@@ -35,7 +38,7 @@ import { isProviderConfigured } from '@/lib/providerState'
 import { confirmProjectAccess, pickProjectFolder } from '@/api/tauriBridge'
 import { assignSessionWorkspace } from '@/lib/sessionWorkspaces'
 import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
-import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
+import { DeferredRemoteProjectWizard } from '@/components/settings/panels/DeferredRemoteProjectWizard'
 import { executeAgentBrowserAction } from '@/lib/agentBrowser'
 
 interface TimelineMessageItem {
@@ -55,6 +58,8 @@ interface TimelineMessageItem {
 interface TimelineToolCallItem {
   kind: 'tool_call'
   toolCall: ToolCall
+  /** 同组内按执行顺序排列的全部连续工具调用（用于折叠堆叠渲染）。 */
+  group: ToolCall[]
 }
 
 type TimelineItem = TimelineMessageItem | TimelineToolCallItem
@@ -152,9 +157,18 @@ function buildTimeline(messages: ChatMessage[]): TimelineItem[] {
     // Walk tool calls in execution order. After each tool call, emit the
     // segment that follows it (if any), so the interleaving matches the
     // model's actual output order: text → tool → text → tool → text.
+    // Consecutive tool calls with no text between them are emitted as one
+    // group so the renderer can fold them into a single stacked card.
     for (let i = 0; i < toolCalls.length; i++) {
       const tc = toolCalls[i]
-      items.push({ kind: 'tool_call', toolCall: tc })
+      const groupStart = i
+      while (i + 1 < toolCalls.length && !segByAfterCall.has(toolCalls[i].call_id)) {
+        i += 1
+      }
+      const group = toolCalls.slice(groupStart, i + 1)
+      for (const member of group) {
+        items.push({ kind: 'tool_call', toolCall: member, group })
+      }
       const afterIdx = segByAfterCall.get(tc.call_id)
       if (afterIdx !== undefined) {
         emitSegment(afterIdx, !!msg.streaming && afterIdx === textSegs.length - 1)
@@ -198,6 +212,7 @@ export function ChatView() {
   const renameSession = useSessionStore((s) => s.renameSession)
   // 五档权限审批卡（approval_required SSE 事件驱动）
   const [pendingApproval, setPendingApproval] = useState<ApprovalRecord | null>(null)
+  const [pendingSshPassword, setPendingSshPassword] = useState<SshPasswordApproval | null>(null)
   const isStreaming = useSessionStore((s) => s.isStreaming)
   const setStreaming = useSessionStore((s) => s.setStreaming)
   const persistNewMessage = useSessionStore((s) => s.persistNewMessage)
@@ -248,6 +263,8 @@ export function ChatView() {
   const [longRunningArmed, setLongRunningArmed] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const fleetStreamsRef = useRef<Map<string, AbortController>>(new Map())
+  const resolvedFleetApprovalsRef = useRef<Set<string>>(new Set())
   const sendQueueRef = useRef<QueuedSendMessage[]>([])
   const runSendRef = useRef<((text: string, sessionId: string, longRunningGoal?: boolean) => Promise<void>) | null>(null)
   const voiceConversationRef = useRef<VoiceConversation | null>(null)
@@ -257,6 +274,19 @@ export function ChatView() {
   const activeSession = sessions.find((s) => s.id === activeId)
   const activeMessages = activeId ? messages[activeId] || [] : []
   const activeQueuedMessages = activeId ? sendQueue.filter((item) => item.sessionId === activeId) : []
+  // Phase 6 Slice C: per-session turn-stream phase drives the reconnect /
+  // failed / permission banner below and the panels' stale badge.
+  const streamPhase = useSessionStreamStore((s) => (activeId ? s.phases[activeId] : undefined))
+
+  // When the Runtime becomes unreachable, bus-driven panel projections
+  // freeze at their last event; mark the session stale so panels can say so
+  // instead of implying liveness. A hard stream failure or a permission
+  // wall is never downgraded to stale.
+  useEffect(() => {
+    if (connState !== 'error' || !activeId) return
+    useSessionStreamStore.getState().markStale(activeId)
+  }, [connState, activeId])
+
   const activeTaskProgress = [...activeMessages]
     .reverse()
     .find((msg) => msg.role === 'assistant' && (msg.streaming || msg.task_progress) && msg.task_progress)
@@ -395,7 +425,7 @@ export function ChatView() {
         apiClient.chatStream(
           text,
           threadId,
-          (chunk, event) => {
+          (chunk, event, ledgerSeq) => {
             // Defensive guard: if the stream has been aborted by rewind
             // or stop, streamingLogId[session] is null and assistantMsgId
             // has been (or will be) removed from the store. Drop any
@@ -406,6 +436,13 @@ export function ChatView() {
             if (!currentLogId || currentLogId !== assistantMsgId) return
 
             if (event) {
+              // Shared workbench fan-out: panels subscribe to this session's
+              // events via the event bus; ChatView remains the stream
+              // producer. Replays (seq <= cursor) are dropped inside ingest.
+              // A delivered event also proves the stream is live, clearing
+              // any reconnecting/stale state (idempotent).
+              useSessionStreamStore.getState().markLive(sessionId)
+              ingestSessionEvent(sessionId, event, ledgerSeq)
               handleAgentEvent(event, sessionId)
               return
             }
@@ -435,11 +472,17 @@ export function ChatView() {
           useProjectsStore.getState().activeProject?.id,
           activeModel,
           longRunningGoal || goal?.status === 'active',
+          undefined,
+          // Slice C: surface mid-turn SSE resume attempts to the per-session
+          // stream state so the banner and panel badges render them.
+          (_state, attempt) => useSessionStreamStore.getState().markReconnecting(sessionId, attempt),
         )
 
       try {
         try {
           await streamTurn(session?.remote_session_id || sessionId)
+          // A turn that ran to a terminal event leaves the stream healthy.
+          useSessionStreamStore.getState().markLive(sessionId)
         } catch (e) {
           // `remote_session_id` is a client-side pointer into the Runtime's
           // thread store and goes stale when the Runtime restarts onto a
@@ -452,11 +495,15 @@ export function ChatView() {
           const freshThreadId = await rbindSessionThread(sessionId)
           if (!freshThreadId) throw e
           await streamTurn(freshThreadId)
+          useSessionStreamStore.getState().markLive(sessionId)
         }
         updateMessage(sessionId, assistantMsgId, { streaming: false })
         void persistMessage(sessionId, assistantMsgId)
       } catch (e: any) {
         if (e?.name === 'AbortError') {
+          // The user stopped the turn on purpose: the stream state must not
+          // keep claiming a problem after the intended end.
+          useSessionStreamStore.getState().clearSessionStream(sessionId)
           // Only append "_Stopped_" if the assistant message still
           // exists in the store. If rewind already removed it, the
           // updateMessage call below is a no-op — and we should NOT
@@ -472,6 +519,11 @@ export function ChatView() {
             void persistMessage(sessionId, assistantMsgId)
           }
         } else {
+          // Slice C: the client-side resume budget is already exhausted
+          // here; record the terminal phase. AbortError was handled above
+          // (classify returns null for it); 401/403 land on
+          // permission_required, everything else on failed.
+          useSessionStreamStore.getState().reportStreamFailure(sessionId, e, Number.MAX_SAFE_INTEGER)
           const msg = e instanceof HakusAIError ? e.message : 'Failed to send message'
           updateMessage(sessionId, assistantMsgId, {
             error: msg,
@@ -492,6 +544,73 @@ export function ChatView() {
   useEffect(() => {
     runSendRef.current = runSend
   }, [runSend])
+
+  // Fleet approvals live on the Fleet run stream, not on a session turn
+  // stream. Keep one cancellable subscription per active run so an SSH
+  // password request can reach the same secure-input dialog as other runtime
+  // approvals.
+  useEffect(() => {
+    if (!apiClient.usesEmbeddedRuntime) return
+    let disposed = false
+    let syncInFlight = false
+    const streams = fleetStreamsRef.current
+    const watchRun = async (runId: string) => {
+      if (disposed || streams.has(runId)) return
+      const controller = new AbortController()
+      streams.set(runId, controller)
+      try {
+        await apiClient.streamRuntimeFleetEvents(
+          runId,
+          (event, envelope) => {
+            const approvalId = String(envelope?.payload?.approval_id || '')
+            if (envelope?.event === 'approval_decided' && approvalId) {
+              resolvedFleetApprovalsRef.current.add(approvalId)
+              setPendingSshPassword((current) => current?.approvalId === approvalId ? null : current)
+              return
+            }
+            if (!event || event.event_type !== 'ssh_password_required') return
+            const approval = (event as any).approval as SshPasswordApproval | undefined
+            if (
+              approval?.approvalId
+              && approval.runId
+              && approval.workerId
+              && !resolvedFleetApprovalsRef.current.has(approval.approvalId)
+            ) setPendingSshPassword(approval)
+          },
+          controller.signal,
+        )
+      } catch (error) {
+        if (!controller.signal.aborted) console.warn('[runtime] Fleet event stream ended:', error)
+      } finally {
+        streams.delete(runId)
+      }
+    }
+    const syncFleetStreams = async () => {
+      if (syncInFlight) return
+      syncInFlight = true
+      try {
+        const response = await apiClient.listRuntimeFleetRuns<any>()
+        const activeRuns = Array.isArray(response?.runs)
+          ? response.runs.filter((run: any) => ['queued', 'running', 'paused'].includes(String(run?.lifecycle_status)))
+          : []
+        for (const run of activeRuns) {
+          if (run?.id) void watchRun(String(run.id))
+        }
+      } catch (error) {
+        if (!disposed) console.warn('[runtime] Fleet run discovery failed:', error)
+      } finally {
+        syncInFlight = false
+      }
+    }
+    void syncFleetStreams()
+    const timer = window.setInterval(() => void syncFleetStreams(), 2000)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+      for (const controller of streams.values()) controller.abort()
+      streams.clear()
+    }
+  }, [])
 
   useEffect(() => {
     abortCtrlRef.current = abortCtrl
@@ -735,6 +854,11 @@ export function ChatView() {
         if (ap && ap.id) setPendingApproval(ap)
         break
       }
+      case 'ssh_password_required': {
+        const approval = (event as any).approval as SshPasswordApproval | undefined
+        if (approval?.approvalId && approval.runId && approval.workerId) setPendingSshPassword(approval)
+        break
+      }
       case 'tool_call_finished':
         // Materialize: the tool card only appears when the call is fully done,
         // with complete arguments and result, so the user never sees a stack
@@ -831,7 +955,31 @@ export function ChatView() {
         break
       }
       case 'task_progress': {
-        const p = event as TaskProgressEvent
+        const p = event as TaskProgressEvent & {
+          items?: Array<{ id?: number; content?: string; status?: string }>
+        }
+        // The Runtime carries the whole list with each row's own status, so the
+        // card shows what actually happened per row. The legacy server sent only
+        // a growing `tasks` string array plus a completed count, which is kept
+        // as the fallback for sessions that still replay those frames.
+        const reported = Array.isArray(p.items) ? p.items : []
+        if (reported.length > 0) {
+          updateMessage(sessionId, messageId, {
+            task_progress: {
+              completed: p.completed,
+              total: p.total,
+              current_task: p.current_task,
+              tasks: reported
+                .map((item) => String(item.content || ''))
+                .filter((content) => content.length > 0),
+              items: reported.map((item) => ({
+                content: String(item.content || ''),
+                status: String(item.status || 'pending'),
+              })),
+            } as TaskProgressAttachment,
+          })
+          break
+        }
         const prev = useSessionStore.getState().messages[sessionId]?.find((m) => m.id === messageId)?.task_progress
         const tasks = prev?.tasks ? [...prev.tasks] : []
         if (p.current_task && !tasks.includes(p.current_task)) {
@@ -924,11 +1072,22 @@ export function ChatView() {
   const handleCreateWorkspace = async () => {
     try {
       const selected = await pickProjectFolder()
-      if (!selected) return
+      if (!selected) {
+        // A silent return here reads as "the picker did nothing". Android's
+        // SAF bridge can drop the activity result across foreground
+        // transitions, so tell the user the pick did not land and to retry.
+        toast.info(
+          locale.startsWith('zh')
+            ? '未获取到所选文件夹，请重试一次'
+            : 'Folder selection did not land — please try again',
+        )
+        return
+      }
       const allowed = await confirmProjectAccess()
       if (!allowed) return
       const name = selected.name || selected.path.split(/[\\/]/).filter(Boolean).pop() || 'Untitled'
       const project = await createProject({ name, path: selected.path, source_uri: selected.sourceUri })
+      setActiveProject(project.id)
       await startWorkspaceSession(project.id)
     } catch (e: unknown) {
       const detail = e instanceof Error ? e.message : String(e)
@@ -973,6 +1132,39 @@ export function ChatView() {
           <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => connCheck()}>
             {t('retry')}
           </Button>
+        </div>
+      )}
+
+      {/* Per-session turn-stream state (Phase 6 Slice C): reconnecting,
+          failed, and permission-required render consistently here and on
+          the bus-consuming panels' stale badge. */}
+      {(streamPhase === 'reconnecting' || streamPhase === 'failed' || streamPhase === 'permission_required') && (
+        <div
+          className={cn(
+            'flex items-center justify-between gap-3 border-b px-4 py-2 text-xs',
+            streamPhase === 'reconnecting'
+              ? 'border-amber-500/20 bg-amber-500/5 text-amber-600 dark:text-amber-400'
+              : 'border-destructive/20 bg-destructive/5 text-destructive',
+          )}
+        >
+          <div className="flex items-center gap-2">
+            {streamPhase === 'reconnecting'
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <WifiOff className="h-3.5 w-3.5" />}
+            <span>
+              {streamPhase === 'reconnecting' &&
+                (locale.startsWith('zh') ? '执行流中断，正在从 ledger 恢复…' : 'Event stream interrupted, resuming from the ledger…')}
+              {streamPhase === 'failed' &&
+                (locale.startsWith('zh') ? '执行流已断开：多次恢复失败，重新发送消息可重试。' : 'Event stream lost: reconnect failed. Send a message to retry.')}
+              {streamPhase === 'permission_required' &&
+                (locale.startsWith('zh') ? 'Runtime 返回 401/403：请检查凭据或权限设置。' : 'Runtime answered 401/403: check credentials or permissions.')}
+            </span>
+          </div>
+          {streamPhase !== 'reconnecting' && (
+            <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => connCheck()}>
+              {t('retry')}
+            </Button>
+          )}
         </div>
       )}
 
@@ -1082,7 +1274,13 @@ export function ChatView() {
                   />
                 )
               }
-              return <InlineToolCallBubble key={item.toolCall.call_id} toolCall={item.toolCall} />
+              return (
+                <InlineToolCallBubble
+                  key={item.toolCall.call_id}
+                  toolCall={item.toolCall}
+                  siblings={item.group}
+                />
+              )
             })}
             <div ref={messagesEndRef} className="h-4" />
           </div>
@@ -1117,6 +1315,10 @@ export function ChatView() {
       <ApprovalDialog
         approval={pendingApproval}
         onClose={() => setPendingApproval(null)}
+      />
+      <SshPasswordDialog
+        approval={pendingSshPassword}
+        onClose={() => setPendingSshPassword(null)}
       />
     </div>
   )
@@ -1255,7 +1457,7 @@ function WorkspaceLaunchpad({
       onLocal={onCreateWorkspace}
       onRemote={() => { setProjectSourceOpen(false); setRemoteWizardOpen(true) }}
     />
-    <RemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
+    <DeferredRemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
     </>
   )
 }

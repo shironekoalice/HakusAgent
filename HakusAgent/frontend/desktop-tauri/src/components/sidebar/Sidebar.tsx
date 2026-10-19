@@ -38,7 +38,7 @@ import type { ChatSession, Project } from '@/api/types'
 import { useI18n } from '@/lib/i18n'
 import { confirmProjectAccess, pickProjectFolder } from '@/api/tauriBridge'
 import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
-import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
+import { DeferredRemoteProjectWizard } from '@/components/settings/panels/DeferredRemoteProjectWizard'
 import {
   readSessionWorkspaceMap,
   writeSessionWorkspaceMap,
@@ -328,7 +328,10 @@ export function Sidebar() {
     setCreatingProject(true)
     try {
       const selected = await pickProjectFolder()
-      if (!selected) return
+      if (!selected) {
+        toast.info(locale.startsWith('zh') ? '未获取到所选文件夹，请重试一次' : 'Folder selection did not land — please try again')
+        return
+      }
       const allowed = await confirmProjectAccess()
       if (!allowed) return
       const name = selected.name || selected.path.split(/[\\/]/).filter(Boolean).pop() || 'Untitled'
@@ -569,7 +572,7 @@ export function Sidebar() {
         onLocal={() => void handleCreateWorkspace()}
         onRemote={() => { setProjectSourceOpen(false); setRemoteWizardOpen(true) }}
       />
-      <RemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
+      <DeferredRemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
     </aside>
   )
 }

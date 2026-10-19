@@ -1,9 +1,8 @@
-import { memo, useState } from 'react'
+import { memo, useMemo, useState, type ReactNode } from 'react'
 import {
   ArrowRightLeft,
   Check,
   CheckCheck,
-  ChevronDown,
   ChevronRight,
   Copy,
   ExternalLink,
@@ -22,17 +21,9 @@ import {
 import type { ToolCall } from '@/api/types'
 import { cn, copyToClipboard } from '@/lib/utils'
 
-interface InlineToolCallBubbleProps {
-  toolCall: ToolCall
-}
-
-/**
- * InlineToolCallBubble — 工具调用披露行。
- *
- * 折叠态是一行紧凑摘要：图标 + 工具名 + 截断的参数摘要 + 耗时 + 状态，
- * 绝不平铺 raw JSON。点击整行展开参数与结果的格式化 JSON（缩进、
- * max-height 内滚动）。
- */
+const RESULT_DISPLAY_CHARS = 1200
+/** 一个堆叠组里最多直接显示几行；其余折叠成 "还有 N 个工具调用"。 */
+const VISIBLE_ROWS = 3
 
 const TOOL_LABELS: Record<string, string> = {
   bash: '执行命令',
@@ -64,9 +55,7 @@ const TOOL_LABELS: Record<string, string> = {
   handoff_thread: '移交会话',
 }
 
-const RESULT_DISPLAY_CHARS = 1200
-
-function toolIcon(name: string) {
+function toolIcon(name: string): ReactNode {
   switch (name) {
     case 'bash':
     case 'shell':
@@ -191,7 +180,13 @@ function formatResult(result: string): { text: string; isJson: boolean } {
   return { text: result, isJson: false }
 }
 
-export const InlineToolCallBubble = memo(function InlineToolCallBubble({ toolCall }: InlineToolCallBubbleProps) {
+interface ToolRowProps {
+  toolCall: ToolCall
+  inGroup: boolean
+}
+
+/** 单行工具摘要（ZCode ToolSummaryRow 模式）：紧凑、可展开、状态在右。 */
+const ToolRow = memo(function ToolRow({ toolCall, inGroup }: ToolRowProps) {
   const [expanded, setExpanded] = useState(false)
   const [showFullResult, setShowFullResult] = useState(false)
   const [copiedArgs, setCopiedArgs] = useState(false)
@@ -232,8 +227,6 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({ toolCal
   }
 
   const pretty = toolCall.result ? formatResult(toolCall.result) : null
-  // JSON 结果直接完整缩进展示（pre 自带 max-height 滚动）；
-  // 普通长文本先截断，可通过「展开全部」查看。
   const resultText = pretty
     ? pretty.isJson || showFullResult
       ? pretty.text
@@ -241,22 +234,28 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({ toolCal
     : ''
 
   return (
-    <div className="chat-tool-call w-full min-w-0 py-0.5" data-tool-call={toolCall.call_id}>
-      {/* 折叠态：单行紧凑摘要 */}
+    <div className="min-w-0" data-tool-call={toolCall.call_id}>
+      {/* 折叠态：单行紧凑摘要（ZCode ToolSummaryRow：图标 + 类别 + 参数摘要 + 状态 + chevron） */}
       <button
         type="button"
         onClick={() => hasDetails && setExpanded((v) => !v)}
         disabled={!hasDetails}
         aria-expanded={expanded}
         className={cn(
-          'group/tool-row flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-2 pr-1.5 text-left transition-colors',
+          'group/tool-row flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 text-left transition-colors',
+          inGroup ? 'px-2' : 'pl-2 pr-1.5',
           hasDetails ? 'cursor-pointer hover:bg-[var(--cx-ghost-hover)]' : 'cursor-default',
         )}
       >
         <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground">
           {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : toolIcon(toolCall.name)}
         </span>
-        <span className={cn('shrink-0 text-xs font-medium', success && !pending ? 'text-foreground/85' : success ? 'text-foreground/60' : 'text-destructive')}>
+        <span
+          className={cn(
+            'shrink-0 text-xs font-medium',
+            success && !pending ? 'text-foreground/85' : success ? 'text-foreground/60' : 'text-destructive',
+          )}
+        >
           {summary.title}
         </span>
         {summary.detail && (
@@ -286,9 +285,9 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({ toolCal
         </span>
       </button>
 
-      {/* 展开态：参数 + 结果的格式化 JSON，max-height 内滚动 */}
+      {/* 展开态：参数 + 结果的格式化 JSON，左侧缩进对齐父行（ZCode NESTED_TOOLCALL_CONTAINER 模式） */}
       {expanded && hasDetails && (
-        <div className="liquid-glass-disclosure mb-1.5 ml-2 mr-1 mt-0.5 space-y-2 p-2.5 pl-5">
+        <div className={cn('mb-1.5 space-y-2', inGroup ? 'ml-4 border-l border-border/60 pl-3' : 'ml-2 mr-1 mt-0.5 pl-5')}>
           {hasArgs && (
             <div className="group/block relative">
               <button
@@ -354,11 +353,85 @@ export const InlineToolCallBubble = memo(function InlineToolCallBubble({ toolCal
               onClick={() => setExpanded(false)}
               className="ml-auto inline-flex items-center gap-1 transition-colors hover:text-foreground"
             >
-              <ChevronDown className="h-3 w-3" />
+              <ChevronRight className="h-3 w-3 rotate-90" />
               收起
             </button>
           </div>
         </div>
+      )}
+    </div>
+  )
+})
+
+interface InlineToolCallBubbleProps {
+  toolCall: ToolCall
+  /** 同一组连续工具调用（父组件把相邻的 tool_call 聚合成组传入）。 */
+  siblings?: ToolCall[]
+}
+
+/**
+ * InlineToolCallBubble — 连续工具调用的折叠堆叠组。
+ *
+ * 学习 ZCode/Codex 的 transcript 模式：相邻的已完成工具调用合并进一个
+ * 视觉容器（左侧竖线 + 每行一条紧凑摘要 + 默认只显示前 VISIBLE_ROWS 行），
+ * 其余折叠为「还有 N 个工具调用」；任意一行可单独展开参数/结果。
+ * 组内任一行运行中/失败时不折叠（运行态需要始终可见，失败需要被看见）。
+ */
+export const InlineToolCallBubble = memo(function InlineToolCallBubble({
+  toolCall,
+  siblings,
+}: InlineToolCallBubbleProps) {
+  const [showAll, setShowAll] = useState(false)
+
+  const group = useMemo(() => {
+    if (!siblings || siblings.length === 0) return [toolCall]
+    return siblings
+  }, [siblings, toolCall])
+
+  // 折叠条件：组内所有调用都已完成（无 pending）且无失败。
+  const allSettled = group.every((tc) => !(tc.success === undefined && !tc.result) && tc.success !== false)
+  const collapsible = group.length > VISIBLE_ROWS && allSettled && !showAll
+  const visible = collapsible ? group.slice(0, VISIBLE_ROWS) : group
+  const hiddenCount = group.length - visible.length
+  // 折叠头部（被藏起来的行）里若全部成功则计数即可；这里 simply 计数。
+  const inGroup = group.length > 1
+
+  if (group.length === 1) {
+    return <ToolRow toolCall={group[0]} inGroup={false} />
+  }
+
+  return (
+    <div
+      className={cn(
+        'chat-tool-call-group w-full min-w-0 py-0.5',
+        'rounded-xl border border-border/40 bg-foreground/[0.02]',
+      )}
+      data-tool-call={toolCall.call_id}
+    >
+      <div className="space-y-0.5 p-1">
+        {visible.map((tc) => (
+          <ToolRow key={tc.call_id} toolCall={tc} inGroup={inGroup} />
+        ))}
+      </div>
+      {collapsible && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="flex w-full items-center gap-2 rounded-b-xl px-3 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-[var(--cx-ghost-hover)] hover:text-foreground"
+        >
+          <ChevronRight className="h-3 w-3" />
+          还有 {hiddenCount} 个工具调用
+        </button>
+      )}
+      {showAll && group.length > VISIBLE_ROWS && allSettled && (
+        <button
+          type="button"
+          onClick={() => setShowAll(false)}
+          className="flex w-full items-center gap-2 rounded-b-xl px-3 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-[var(--cx-ghost-hover)] hover:text-foreground"
+        >
+          <ChevronRight className="h-3 w-3 rotate-90" />
+          收起工具调用
+        </button>
       )}
     </div>
   )

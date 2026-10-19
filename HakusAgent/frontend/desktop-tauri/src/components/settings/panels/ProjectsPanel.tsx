@@ -36,7 +36,7 @@ import { confirmProjectAccess, pickProjectFolder } from '@/api/tauriBridge'
 import { cn, displayPath } from '@/lib/utils'
 import type { Project } from '@/api/types'
 import { useI18n } from '@/lib/i18n'
-import { RemoteProjectWizard } from './RemoteProjectWizard'
+import { DeferredRemoteProjectWizard } from './DeferredRemoteProjectWizard'
 import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
 
 const IS_ANDROID = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
@@ -90,7 +90,10 @@ export function ProjectsPanel() {
     setAdding(true)
     try {
       const selected = await pickProjectFolder()
-      if (!selected) return
+      if (!selected) {
+        toast.info(copy('未获取到所选文件夹，请重试一次', 'Folder selection did not land — please try again'))
+        return
+      }
       const allowed = await confirmProjectAccess()
       if (!allowed) return
       const name = selected.name || selected.path.split(/[\\/]/).filter(Boolean).pop() || 'Untitled'
@@ -410,7 +413,7 @@ export function ProjectsPanel() {
           {IS_ANDROID ? 'Android private workspace/projects.json' : '~/.hakus/projects.json'}
         </code>{copy('，可手动备份或迁移。', '; you can back it up or migrate it manually.')}
       </p>
-      <RemoteProjectWizard
+      <DeferredRemoteProjectWizard
         open={remoteWizardOpen}
         onOpenChange={(nextOpen) => {
           setRemoteWizardOpen(nextOpen)

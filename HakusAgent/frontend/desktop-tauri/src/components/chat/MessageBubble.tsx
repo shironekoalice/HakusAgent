@@ -1,17 +1,18 @@
-import { memo, useEffect, useRef, useState } from 'react'
-import { Check, Copy, PanelRight, RefreshCw, Undo2, HelpCircle, ListTodo, CheckCircle2, ArrowRight, X, ChevronDown, ChevronRight } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
+import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react'
+import { Check, Copy, PanelRight, RefreshCw, Undo2, HelpCircle, ArrowRight, X, ChevronDown, ChevronRight } from 'lucide-react'
 import type { ChatMessage } from '@/api/types'
 import { cn, copyToClipboard, formatTime } from '@/lib/utils'
 import { translateError } from '@/lib/errorTranslate'
 import { ReasoningLogItem } from './ReasoningLogItem'
-import { CodeBlock } from './CodeBlock'
+import { TaskPlanReceipt } from './TaskPlanPanel'
 import { Button } from '@/components/ui/button'
 import { useSettingsStore } from '@/store/settings'
 import { useAppStore } from '@/store/app'
 import { useI18n } from '@/lib/i18n'
+
+const MarkdownMessage = lazy(() =>
+  import('./MarkdownMessage').then((module) => ({ default: module.MarkdownMessage })),
+)
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -144,13 +145,9 @@ export const MessageBubble = memo(function MessageBubble({
             )}
             {isAssistant ? (
               <div className="markdown-body leading-relaxed">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-                  components={{ pre: CodeBlock }}
-                >
-                  {segmentText}
-                </ReactMarkdown>
+                <Suspense fallback={<div className="whitespace-pre-wrap break-words">{segmentText}</div>}>
+                  <MarkdownMessage content={segmentText} />
+                </Suspense>
                 {isStreamingCursor && (
                   <span className="ml-0.5 inline-block h-3.5 w-[2px] animate-pulse-dot bg-foreground/70 align-text-bottom" />
                 )}
@@ -169,49 +166,13 @@ export const MessageBubble = memo(function MessageBubble({
           )
         )}
 
-        {/* Task progress — only on the last segment of the assistant turn */}
+        {/* Plan receipt — only on the last segment of the assistant turn.
+            Deliberately a one-line receipt rather than the full plan card: the
+            live plan already docks above the composer, so a second expanded
+            copy here duplicated every row and scrolled away exactly when the
+            user scrolled up to read it. */}
         {isLastSegmentOfAssistantTurn && message.task_progress && (
-          <div className="w-full rounded-2xl border border-primary/30 bg-primary/10 px-5 py-4">
-            <div className="mb-4 flex items-center gap-3 text-base font-semibold text-primary">
-              <ListTodo className="h-5 w-5" />
-              <span>执行计划</span>
-              <span className="ml-auto text-sm font-normal text-muted-foreground">
-                {message.task_progress.completed}/{message.task_progress.total}
-              </span>
-            </div>
-            {message.task_progress.total > 0 && (
-              <div className="mb-5 h-3 w-full overflow-hidden rounded-full bg-background/60">
-                <div
-                  className="h-full rounded-full bg-primary transition-all duration-500"
-                  style={{ width: `${Math.max(0, Math.min(100, (message.task_progress.completed / message.task_progress.total) * 100))}%` }}
-                />
-              </div>
-            )}
-            {message.task_progress.tasks && message.task_progress.tasks.length > 0 && (
-              <div className="space-y-3">
-                {message.task_progress.tasks.map((task, idx) => {
-                  const isCurrent = task === message.task_progress?.current_task
-                  const isDone = idx < (message.task_progress?.completed || 0)
-                  return (
-                    <div key={idx} className="flex items-start gap-3 text-base">
-                      <CheckCircle2
-                        className={cn(
-                          'mt-0.5 h-5 w-5 shrink-0',
-                          isDone ? 'text-emerald-500' : isCurrent ? 'text-primary' : 'text-muted-foreground/50',
-                        )}
-                      />
-                      <span className={cn(isDone && 'text-muted-foreground line-through', isCurrent && 'font-semibold text-foreground')}>
-                        {task}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            {!message.task_progress.tasks?.length && message.task_progress.current_task && (
-              <div className="text-base font-semibold text-foreground">{message.task_progress.current_task}</div>
-            )}
-          </div>
+          <TaskPlanReceipt progress={message.task_progress} />
         )}
 
         {/* Interactive question — only on the last segment */}
@@ -471,7 +432,7 @@ const ErrorBlock = memo(function ErrorBlock({ raw }: { raw: string }) {
         )}
       </div>
       {hasDetail && expanded && (
-        <pre className="liquid-glass-disclosure mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all px-2 py-1.5 text-[10px] leading-relaxed text-destructive/80">
+        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-destructive/5 px-2 py-1.5 text-[10px] leading-relaxed text-destructive/80">
           {translated.detail}
         </pre>
       )}

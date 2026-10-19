@@ -21,7 +21,6 @@ import {
   FolderOpen,
   FolderPlus,
   Image as ImageIcon,
-  ListChecks,
   LoaderCircle,
   Loader2,
   Mic,
@@ -63,6 +62,7 @@ import {
 import { apiClient } from '@/api/client'
 import { confirmProjectAccess, pickProjectFolder } from '@/api/tauriBridge'
 import type { AgentMode, PermissionMode, ProviderInfo, ProviderModel, TaskProgressAttachment, ThreadGoal } from '@/api/types'
+import { TaskPlanPanel } from './TaskPlanPanel'
 import {
   getReasoningEffortMeta,
 } from '@/lib/agentModes'
@@ -79,10 +79,9 @@ import { LongRunningTaskVisual } from './LongRunningTaskVisual'
 import { ContextUsageMeter } from './ContextUsageMeter'
 import { useToast } from '@/components/ui/toast'
 import { ProviderLogo } from '@/components/ui/provider-logo'
-import { LiquidGlassSurface } from '@/components/ui/liquid-glass-surface'
 import { isProviderConfigured, getHiddenProviders } from '@/lib/providerState'
 import { ProjectSourceDialog } from '@/components/projects/ProjectSourceDialog'
-import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
+import { DeferredRemoteProjectWizard } from '@/components/settings/panels/DeferredRemoteProjectWizard'
 import { useI18n } from '@/lib/i18n'
 
 interface Attachment {
@@ -1235,7 +1234,10 @@ export function Composer({
     setCreatingProject(true)
     try {
       const selected = await pickProjectFolder()
-      if (!selected) return
+      if (!selected) {
+        toast.info('未获取到所选文件夹，请重试一次')
+        return
+      }
       const allowed = await confirmProjectAccess()
       if (!allowed) return
       const name = selected.name || selected.path.split(/[\\/]/).filter(Boolean).pop() || 'Untitled'
@@ -1257,10 +1259,9 @@ export function Composer({
   const hasExpandedContent = attachments.length > 0 || Boolean(taskProgress) || pendingQueue.length > 0
 
   const mentionMenu = mentionOpen ? (
-    <LiquidGlassSurface
+    <div
       ref={menuRef}
-      className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 overflow-auto"
-      contentClassName="composer-mention-menu-content"
+      className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 overflow-auto rounded-2xl border border-border bg-popover p-1.5 shadow-lg"
     >
       <div className="hakus-mobile-menu-header composer-mention-header">
         <span>{copy('@ 上下文与 Skills', '@ Context & skills')}</span>
@@ -1307,14 +1308,11 @@ export function Composer({
           })
         )}
       </div>
-    </LiquidGlassSurface>
+    </div>
   ) : null
 
   const slashMenu = slashOpen ? (
-    <LiquidGlassSurface
-      className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 w-72 overflow-auto"
-      contentClassName="composer-mention-menu-content"
-    >
+    <div className="composer-mention-menu absolute bottom-full left-2 z-50 mb-2 max-h-72 w-72 overflow-auto rounded-2xl border border-border bg-popover p-1.5 shadow-lg">
       <div className="composer-mention-desktop-heading">
         <span>{copy('命令', 'Commands')}</span>
       </div>
@@ -1345,7 +1343,7 @@ export function Composer({
           )
         })
       )}
-    </LiquidGlassSurface>
+    </div>
   ) : null
 
   return (
@@ -1357,12 +1355,12 @@ export function Composer({
       {IS_ANDROID && (
         <div className="relative mb-1.5 flex items-center gap-2 px-0.5">
           {androidReasoningOpen && (
-            <LiquidGlassSurface
+            <div
               className={cn(
-                '!absolute bottom-11 left-0 z-50 w-[min(80vw,280px)]',
+                'absolute bottom-11 left-0 z-50 w-[min(80vw,280px)] rounded-3xl p-3',
+                LIQUID_GLASS_CLASS,
                 'origin-bottom-left animate-in fade-in zoom-in-95 duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]',
               )}
-              contentClassName="android-reasoning-glass-content"
             >
               <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wide text-foreground/85 dark:text-white/45">
                 {copy('思考强度', 'Reasoning effort')}
@@ -1425,7 +1423,7 @@ export function Composer({
               <div className="mt-2 px-1 text-[10px] leading-relaxed text-foreground/55 dark:text-white/40">
                 {copy('左右拖动或点按切换档位', 'Drag or tap to change the effort level')}
               </div>
-            </LiquidGlassSurface>
+            </div>
           )}
           <button
             type="button"
@@ -1521,51 +1519,14 @@ export function Composer({
             </div>
           )}
 
-          {(taskProgress || pendingQueue.length > 0 || isStreaming) && (
+          {/* The plan docks above the composer as its own surface, matching
+              DSH's `conversation.input.dock` slot. It is rendered outside the
+              queue/streaming wrapper so it keeps its own chrome and its own
+              collapse state instead of being visually merged with them. */}
+          <TaskPlanPanel progress={taskProgress} />
+
+          {(pendingQueue.length > 0 || (isStreaming && !taskProgress)) && (
             <div className="space-y-2 rounded-2xl border border-border/65 bg-background/60 px-2.5 py-2">
-              {taskProgress && (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="flex min-w-0 items-center gap-1.5 font-medium">
-                      <ListChecks className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={1.75} />
-                      <span className="truncate">{taskProgress.current_task || "Task running"}</span>
-                    </span>
-                    {taskProgress.total > 0 && (
-                      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                        {taskProgress.completed}/{taskProgress.total}
-                      </span>
-                    )}
-                  </div>
-                  {taskProgress.total > 0 && (
-                    <div className="h-1 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary transition-all"
-                        style={{ width: `${Math.max(0, Math.min(100, (taskProgress.completed / taskProgress.total) * 100))}%` }}
-                      />
-                    </div>
-                  )}
-                  {taskProgress.tasks && taskProgress.tasks.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {taskProgress.tasks.slice(-4).map((task, index) => {
-                        const absoluteIndex = Math.max(0, taskProgress.tasks!.length - 4) + index
-                        const done = absoluteIndex < taskProgress.completed
-                        const current = task === taskProgress.current_task
-                        return (
-                          <span
-                            key={`${task}-${absoluteIndex}`}
-                            className={cn(
-                              "max-w-[180px] truncate rounded-full px-1.5 py-0.5 text-[10px]",
-                              done ? "bg-emerald-500/10 text-emerald-500" : current ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
-                            )}
-                          >
-                            {task}
-                          </span>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
               {pendingQueue.length > 0 && (
                 <div className="space-y-1.5 border-t border-border/60 pt-2 first:border-t-0 first:pt-0">
                   <div className="flex items-center justify-between text-[11px] text-muted-foreground">
@@ -2149,8 +2110,6 @@ export function Composer({
                           type="button"
                           onClick={() => void toggleProviderModels(provider.id)}
                           aria-current={isCurrent ? 'true' : undefined}
-                          aria-expanded={isExpanded}
-                          aria-controls={isExpanded ? `provider-models-${provider.id}` : undefined}
                           className={cn(
                             'flex w-full items-start gap-2 rounded-lg border border-transparent px-2 py-2 text-left text-sm transition-colors hover:bg-[var(--cx-ghost-hover)]',
                             isCurrent && 'border-primary/15 bg-primary/[0.06]',
@@ -2175,12 +2134,7 @@ export function Composer({
 
                         {/* Collapsible model list for this provider. */}
                         {isExpanded && (
-                          <div
-                            id={`provider-models-${provider.id}`}
-                            role="region"
-                            aria-label={`${provider.display_name} models`}
-                            className="liquid-glass-disclosure ml-3 mt-1 space-y-0.5 p-1.5"
-                          >
+                          <div className="ml-3 border-l border-border/60 pl-1.5">
                             {modelsLoading && !models ? (
                               <div className="flex items-center gap-2 px-2 py-2 text-xs text-muted-foreground">
                                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -2409,7 +2363,7 @@ export function Composer({
       onLocal={() => void handleCreateProject()}
       onRemote={() => { setProjectSourceOpen(false); setRemoteWizardOpen(true) }}
     />
-    <RemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
+    <DeferredRemoteProjectWizard open={remoteWizardOpen} onOpenChange={setRemoteWizardOpen} />
     <AndroidModelGlass open={androidModelGlassOpen} onClose={() => setAndroidModelGlassOpen(false)} />
     </>
   )
