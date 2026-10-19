@@ -1226,11 +1226,16 @@ export function ChatView() {
       {/* Messages — wrapped in a relative container so the floating
           nav buttons (ChatNavButtons) can anchor to its top-right
           corner. The buttons live OUTSIDE the scroll div so they
-          don't scroll with the content. */}
-      <div className="relative min-h-0 flex-1">
-        {/* 悬浮工具簇：检查点 + 子代理。有消息时显示。 */}
+          don't scroll with the content.
+          On phone viewports the scroller extends under the composer
+          island (negative bottom margin) so content visibly flows
+          behind the glass — a bottom fade scrim keeps the seam soft. */}
+      <div className="chat-messages-region relative min-h-0 flex-1">
+        {/* 悬浮工具簇：检查点 + 子代理。有消息时显示。
+            Phone: anchored below the topbar INSIDE the safe zone and the
+            user bubble gets top padding so text never slides underneath. */}
         {activeMessages.length > 0 && (
-          <div className="absolute right-3 top-3 z-10 flex gap-1.5">
+          <div className="absolute right-3 top-3 z-10 flex gap-1.5 max-[767px]:right-2">
             <CheckpointList messages={activeMessages} onRewind={handleRewind} />
             <SubagentsPanel sessionId={activeId || undefined} />
           </div>
@@ -1247,7 +1252,7 @@ export function ChatView() {
           scrollRef={scrollRef}
           messagesKey={`${activeMessages.length}#${activeMessages[activeMessages.length - 1]?.id ?? ''}`}
         />
-        <div ref={scrollRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto">
+        <div ref={scrollRef} className="chat-scroll h-full min-w-0 overflow-x-hidden overflow-y-auto">
         {activeMessages.length === 0 ? (
           <EmptyStateHero
             projectName={activeProject ? activeProject.name : t('currentDirectory')}
@@ -1256,7 +1261,7 @@ export function ChatView() {
         ) : (
           // 宽度上限由 index.css 的 .chat-timeline 提供（它覆盖了
           // @layer utilities 的 max-width:100%，Tailwind 的 max-w-* 在此无效）。
-          <div className="chat-timeline mx-auto min-w-0 w-full py-6">
+          <div className="chat-timeline mx-auto min-w-0 w-full max-[767px]:pb-36 py-6">
             {buildTimeline(activeMessages).map((item, idx, arr) => {
               if (item.kind === 'message') {
                 return (

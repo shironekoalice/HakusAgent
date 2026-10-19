@@ -79,14 +79,14 @@ export function ApprovalDialog({ approval, onClose }: ApprovalDialogProps) {
     <div className="fixed inset-0 z-[520] flex items-center justify-center p-4" data-hakus-overlay="approval-dialog">
       {/* glass backdrop */}
       <div
-        className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/40 backdrop-blur-md"
         onClick={() => void handleDecide('deny')}
         role="presentation"
       />
       <div
         role="alertdialog"
         aria-modal="true"
-        className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/15 bg-card/70 shadow-2xl backdrop-blur-xl dark:bg-card/60"
+        className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/15 bg-card/92 shadow-2xl backdrop-blur-xl dark:bg-card/85"
       >
         <div className="flex items-start gap-3 border-b border-white/10 bg-white/[0.03] px-5 py-4 dark:bg-white/[0.02]">
           <div className={cn(
