@@ -113,7 +113,7 @@
     /* Shadow system */
     --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.04);
     --shadow-md: 0 4px 10px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12);
+    --shadow-lg: 0 8px 20px rgba(0, 0, 0, 0.10);
 
     /* ===== 解码资产布局 token（亮/暗共用）=====
      * --thread-content-max-width: 40rem（app-initial CSS 原文）
@@ -187,7 +187,7 @@
 
     --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.28);
     --shadow-md: 0 6px 14px rgba(0, 0, 0, 0.34), 0 1px 2px rgba(0, 0, 0, 0.22);
-    --shadow-lg: 0 14px 32px rgba(0, 0, 0, 0.42);
+    --shadow-lg: 0 10px 24px rgba(0, 0, 0, 0.28);
   }
 }
 
@@ -203,8 +203,8 @@
   border-radius: 8px;
   background: hsl(var(--popover) / 0.96);
   color: hsl(var(--popover-foreground));
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.28), 0 2px 8px rgb(0 0 0 / 0.16);
-  backdrop-filter: blur(18px);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.16), 0 2px 5px rgb(0 0 0 / 0.10);
+  backdrop-filter: blur(14px);
 }
 
 .text-context-menu-item {
@@ -700,20 +700,8 @@
 }
 
 .composer-mention-menu {
-  position: absolute !important;
   width: min(340px, calc(100% - 1rem));
   max-width: calc(100% - 1rem);
-  border: 0 !important;
-  background: transparent !important;
-  padding: 0 !important;
-  box-shadow: none !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-
-.composer-mention-menu-content {
-  width: 100%;
-  padding: 0.375rem;
 }
 
 /* ========================================================================
@@ -724,6 +712,9 @@
  * two-column starter grid, and a two-row composer with secondary controls
  * behind the existing More menu. Tablet and desktop layout stay unchanged.
  * ====================================================================== */
+/* Mobile category navigation is JSX-driven (settings-mobile-root); the old
+   GlassSelect picker is retired. Keep the class as a no-op hook so stale
+   references cannot render. */
 .settings-dialog-mobile-picker {
   display: none;
 }
@@ -944,38 +935,6 @@
     padding: 1rem 1rem 0.875rem;
   }
 
-  .settings-dialog-mobile-picker {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    min-height: 3.5rem;
-    border-bottom: 1px solid hsl(var(--border) / 0.7);
-    background: hsl(var(--muted) / 0.24);
-    padding: 0.625rem 1rem;
-    color: hsl(var(--muted-foreground));
-    font-size: 0.75rem;
-    font-weight: 600;
-  }
-
-  .settings-dialog-mobile-picker select {
-    min-width: 0;
-    max-width: 68%;
-    border: 1px solid hsl(var(--border) / 0.8);
-    border-radius: 0.75rem;
-    background: hsl(var(--card));
-    color: hsl(var(--foreground));
-    padding: 0.625rem 0.75rem;
-    font: inherit;
-    font-weight: 500;
-    outline: none;
-  }
-
-  .settings-dialog-mobile-picker select:focus-visible {
-    border-color: hsl(var(--ring));
-    box-shadow: 0 0 0 2px hsl(var(--ring) / 0.2);
-  }
-
   .settings-dialog-body {
     flex-direction: column;
     min-width: 0;
@@ -1051,6 +1010,25 @@
     min-height: var(--titlebar-total);
   }
 
+  /* Landscape phones keep the desktop settings split: the portrait card
+     grid is too tall for short viewports. Re-enable the nav (hidden by the
+     shared ≤767px block above) and hide the card root. */
+  .settings-dialog-body {
+    flex-direction: row;
+  }
+
+  .settings-dialog-nav {
+    display: block;
+  }
+
+  .settings-mobile-root {
+    display: none !important;
+  }
+
+  .settings-desktop-panel {
+    display: block !important;
+  }
+
   .topbar-icon-button,
   .topbar-settings-button {
     width: 2.5rem !important;
@@ -1111,12 +1089,6 @@
   .settings-dialog-header {
     padding-top: 0.75rem;
     padding-bottom: 0.625rem;
-  }
-
-  .settings-dialog-mobile-picker {
-    min-height: 2.75rem;
-    padding-top: 0.375rem;
-    padding-bottom: 0.375rem;
   }
 
   .settings-dialog-panel > div {
@@ -2096,6 +2068,15 @@ body,
   background: hsl(var(--background));
 }
 
+/* Tauri desktop windows are transparent so the native Mica/Acrylic material
+   can remain visible behind the navigation chrome. The browser preview keeps
+   the themed canvas above as a deterministic fallback. */
+:root.is-tauri-window,
+:root.is-tauri-window body,
+:root.is-tauri-window #root {
+  background: transparent;
+}
+
 body {
   letter-spacing: 0;
 }
@@ -2142,7 +2123,7 @@ select:focus-visible {
 .titlebar {
   height: var(--titlebar-total);
   min-height: var(--titlebar-total);
-  box-shadow: 0 1px 0 hsl(var(--foreground) / 0.04);
+  box-shadow: none;
 }
 
 .topbar-session > span:first-child {
@@ -2324,12 +2305,12 @@ select:focus {
   border-color: hsl(var(--foreground) / 0.16) !important;
   border-radius: 1.5rem !important;
   background: hsl(var(--card) / 0.74) !important;
-  box-shadow: 0 12px 34px hsl(240 20% 3% / 0.16), inset 0 1px 0 hsl(var(--foreground) / 0.07) !important;
+  box-shadow: 0 8px 20px hsl(240 20% 3% / 0.10), inset 0 1px 0 hsl(var(--foreground) / 0.06) !important;
 }
 
 .composer-box:focus-within {
   border-color: hsl(var(--primary) / 0.52) !important;
-  box-shadow: 0 12px 34px hsl(240 20% 3% / 0.18), 0 0 0 3px hsl(var(--primary) / 0.13), inset 0 1px 0 hsl(var(--foreground) / 0.08) !important;
+  box-shadow: 0 8px 20px hsl(240 20% 3% / 0.12), 0 0 0 3px hsl(var(--primary) / 0.11), inset 0 1px 0 hsl(var(--foreground) / 0.07) !important;
 }
 
 /* A tiny CSS-only status signal keeps the live composer responsive. The
@@ -2522,8 +2503,8 @@ select:focus {
  *
  * Liquid Glass belongs to the navigation layer: the titlebar, side panes,
  * status bar, and menus float above a quieter content canvas. Keeping the
- * chat canvas uses a restrained translucent tint so the native window
- * material can contribute a little desktop colour without reducing legibility.
+ * chat canvas opaque prevents glass-on-glass stacking and preserves reading
+ * contrast while the shell still feels native on macOS, Windows, and Linux.
  * ====================================================================== */
 @media (min-width: 768px) {
   :root {
@@ -2538,7 +2519,8 @@ select:focus {
        becomes a black ring in undecorated Tauri windows and is especially
        visible during resize or first paint. */
     padding: 0;
-    background: transparent !important;
+    background: transparent;
+    box-shadow: none;
   }
 
   .app-main {
@@ -2633,7 +2615,7 @@ select:focus {
   .composer-box {
     border-radius: 1.125rem !important;
     background: hsl(var(--card) / 0.94) !important;
-    box-shadow: 0 10px 26px hsl(240 20% 2% / 0.13), inset 0 1px 0 hsl(var(--foreground) / 0.07) !important;
+    box-shadow: 0 8px 20px hsl(240 20% 2% / 0.09), inset 0 1px 0 hsl(var(--foreground) / 0.06) !important;
   }
 
   /* Content-layer cards stay quiet and legible; only the shell is glass. */
@@ -2641,7 +2623,7 @@ select:focus {
     background: hsl(var(--card) / 0.94) !important;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-    box-shadow: 0 5px 14px hsl(240 20% 2% / 0.08), inset 0 1px 0 hsl(var(--foreground) / 0.06);
+    box-shadow: 0 4px 10px hsl(240 20% 2% / 0.06), inset 0 1px 0 hsl(var(--foreground) / 0.05);
   }
 
   .starter-card-grid button:hover,
@@ -2732,9 +2714,6 @@ select:focus {
   .statusbar,
   .composer-shell,
   .composer-box,
-  .app-content,
-  .app-content > .workspace-launchpad,
-  .app-content > .app-chat,
   .sidebar-wrapper,
   .right-panel-wrapper,
   .settings-dialog-content,
@@ -2745,10 +2724,6 @@ select:focus {
     background: hsl(var(--card)) !important;
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
-  }
-
-  .app-shell {
-    background: hsl(var(--background)) !important;
   }
 
   .app-panel-scrim,
@@ -2811,7 +2786,7 @@ a:focus-visible,
   border-radius: var(--ui-radius-surface, 0.75rem) !important;
   background: hsl(var(--popover)) !important;
   padding: 0.25rem !important;
-  box-shadow: 0 12px 28px hsl(240 20% 2% / 0.18) !important;
+  box-shadow: 0 8px 20px hsl(240 20% 2% / 0.10) !important;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
@@ -2823,7 +2798,7 @@ a:focus-visible,
 }
 
 .glass-list [role="option"][aria-selected="true"] {
-  background: hsl(var(--foreground) / 0.08) !important;
+  background: hsl(var(--primary) / 0.12) !important;
   color: hsl(var(--foreground)) !important;
 }
 
@@ -4018,7 +3993,7 @@ select:focus-visible {
   border-radius: 1.25rem;
   background: hsl(var(--card) / 0.96);
   padding: clamp(1.5rem, 5vw, 2.5rem);
-  box-shadow: 0 24px 70px hsl(240 20% 3% / 0.28), inset 0 1px 0 hsl(var(--foreground) / 0.08);
+  box-shadow: 0 14px 36px hsl(240 20% 3% / 0.16), inset 0 1px 0 hsl(var(--foreground) / 0.07);
   animation: first-run-surface-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -4280,7 +4255,7 @@ select:focus-visible {
     border-color: hsl(var(--foreground) / 0.14) !important;
     border-radius: 999px !important;
     background: hsl(var(--card) / 0.84) !important;
-    box-shadow: 0 5px 14px hsl(240 20% 2% / 0.14), inset 0 1px 0 hsl(var(--foreground) / 0.06);
+    box-shadow: 0 4px 10px hsl(240 20% 2% / 0.09), inset 0 1px 0 hsl(var(--foreground) / 0.05);
     -webkit-backdrop-filter: blur(20px) saturate(135%);
     backdrop-filter: blur(20px) saturate(135%);
   }
@@ -4317,7 +4292,7 @@ select:focus-visible {
  * message surface. Individual controls retain their own keyboard focus state. */
 .composer-box:focus-within {
   border-color: hsl(var(--foreground) / 0.16) !important;
-  box-shadow: 0 12px 34px hsl(240 20% 3% / 0.16), inset 0 1px 0 hsl(var(--foreground) / 0.07) !important;
+  box-shadow: 0 8px 20px hsl(240 20% 3% / 0.10), inset 0 1px 0 hsl(var(--foreground) / 0.06) !important;
 }
 
 /* ========================================================================
@@ -4341,6 +4316,15 @@ select:focus-visible {
   position: relative;
   z-index: 45;
   border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+
+/* The native frame already supplies the window boundary. A CSS shadow here
+   creates a second dark halo around rounded transparent corners. */
+:root.is-tauri-window,
+:root.is-tauri-window body,
+:root.is-tauri-window #root,
+:root.is-tauri-window .app-shell {
   box-shadow: none !important;
 }
 
@@ -4803,7 +4787,7 @@ body > [data-radix-popper-content-wrapper] {
   background: hsl(var(--card) / 0.88) !important;
   -webkit-backdrop-filter: blur(32px) saturate(170%);
   backdrop-filter: blur(32px) saturate(170%);
-  box-shadow: 0 -18px 50px hsl(240 24% 3% / 0.36) !important;
+  box-shadow: 0 -12px 30px hsl(240 24% 3% / 0.22) !important;
   animation: hakus-sheet-up 460ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
 :root.is-phone [data-hakus-overlay="dialog-content"]:not(.settings-dialog-content):not(.mobile-settings-sheet)::before,
@@ -4841,7 +4825,7 @@ body > [data-radix-popper-content-wrapper] {
   background: hsl(var(--card) / 0.88) !important;
   -webkit-backdrop-filter: blur(32px) saturate(170%);
   backdrop-filter: blur(32px) saturate(170%);
-  box-shadow: 0 -18px 50px hsl(240 24% 3% / 0.36) !important;
+  box-shadow: 0 -12px 30px hsl(240 24% 3% / 0.22) !important;
   animation: hakus-sheet-up 460ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
 
@@ -4896,32 +4880,9 @@ body > [data-radix-popper-content-wrapper] {
   border: 0 !important;
   border-radius: 0 !important;
   padding: 0 !important;
-  background: transparent !important;
+  background: hsl(var(--background) / 0.98);
   box-shadow: none !important;
   z-index: 120;
-}
-
-:root.is-phone .composer-mention-menu > .liquid-glass-surface,
-:root.is-phone .composer-mention-menu > .liquid-glass-surface-fallback {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-}
-
-:root.is-phone .composer-mention-menu .liquid-glass-surface > .glass,
-:root.is-phone .composer-mention-menu .liquid-glass-surface-fallback {
-  min-height: 0;
-  border-radius: 0 !important;
-  background: hsl(var(--background) / 0.9) !important;
-  box-shadow: none !important;
-}
-
-:root.is-phone .composer-mention-menu .composer-mention-menu-content {
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: auto;
-  padding: max(0.75rem, env(safe-area-inset-top)) 0.75rem max(0.75rem, env(safe-area-inset-bottom));
 }
 
 /* ========================================================================
@@ -4991,7 +4952,7 @@ body > [data-radix-popper-content-wrapper] {
   background: hsl(var(--popover) / 0.86) !important;
   -webkit-backdrop-filter: blur(32px) saturate(170%);
   backdrop-filter: blur(32px) saturate(170%);
-  box-shadow: 0 -18px 50px hsl(240 24% 3% / 0.36) !important;
+  box-shadow: 0 -12px 30px hsl(240 24% 3% / 0.22) !important;
   animation: hakus-sheet-up 460ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
 
@@ -5677,8 +5638,8 @@ body > [data-radix-popper-content-wrapper] {
 .settings-dialog-panel textarea:focus,
 .settings-dialog-panel select:focus,
 .settings-dialog-panel [role="combobox"][aria-expanded="true"] {
-  border-color: hsl(var(--foreground) / 0.24) !important;
-  box-shadow: 0 0 0 2px hsl(var(--foreground) / 0.08) !important;
+  border-color: hsl(var(--ring) / 0.7) !important;
+  box-shadow: 0 0 0 3px hsl(var(--ring) / 0.12) !important;
 }
 
 .settings-dialog-panel button:not([role="switch"]),
@@ -5766,13 +5727,13 @@ body > [data-radix-popper-content-wrapper] {
 }
 
 .settings-dialog-content .glass-list {
-  border-color: transparent !important;
+  border-color: hsl(var(--foreground) / 0.14) !important;
   border-radius: 0.6rem !important;
-  background: transparent !important;
-  padding: 0 !important;
-  box-shadow: none !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
+  background: hsl(var(--popover)) !important;
+  padding: 0.25rem !important;
+  box-shadow: 0 8px 20px hsl(240 20% 2% / 0.10) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .settings-dialog-content .glass-list [role="option"] {
@@ -5782,7 +5743,7 @@ body > [data-radix-popper-content-wrapper] {
 }
 
 .settings-dialog-content .glass-list [role="option"][aria-selected="true"] {
-  background: hsl(var(--foreground) / 0.08) !important;
+  background: hsl(var(--primary) / 0.12) !important;
   color: hsl(var(--foreground)) !important;
 }
 
@@ -5901,7 +5862,7 @@ body > [data-radix-popper-content-wrapper] {
   --cx-ghost-active: rgba(13, 13, 13, 0.12);
   --cx-content-bg: #ffffff;
   --cx-glass-bg: rgb(255 255 255 / 0.72);
-  --cx-toolbar-glass-bg: rgb(255 255 255 / 0.88);
+  --cx-toolbar-glass-bg: rgb(255 255 255 / 0.56);
   --cx-group-glass-bg: rgb(255 255 255 / 0.26);
   --cx-group-title-color: #555555;
   --cx-elevated: #ececec;
@@ -5928,7 +5889,7 @@ body > [data-radix-popper-content-wrapper] {
   --cx-ghost-active: rgba(255, 255, 255, 0.12);
   --cx-content-bg: #181818;
   --cx-glass-bg: rgb(24 24 24 / 0.72);
-  --cx-toolbar-glass-bg: rgb(24 24 24 / 0.82);
+  --cx-toolbar-glass-bg: rgb(24 24 24 / 0.56);
   --cx-group-glass-bg: rgb(255 255 255 / 0.1);
   --cx-group-title-color: #b0b0b0;
   --cx-elevated: #303030;
@@ -7085,9 +7046,18 @@ button:focus-visible .cx-rail-marker::before {
   border-color: hsl(var(--border));
 }
 
-.rp-scope-menu-content {
-  width: 9.5rem;
+.rp-scope-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.25rem);
+  z-index: 30;
+  min-width: 9.5rem;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border) / 0.75);
+  border-radius: 0.75rem;
+  background: hsl(var(--popover));
   padding: 0.25rem;
+  box-shadow: 0 10px 28px hsl(220 20% 4% / 0.16), 0 2px 6px hsl(220 20% 4% / 0.08);
 }
 
 .rp-scope-item {
@@ -7104,8 +7074,7 @@ button:focus-visible .cx-rail-marker::before {
   transition: background-color 150ms ease;
 }
 
-.rp-scope-item:hover,
-.rp-scope-item[data-highlighted] {
+.rp-scope-item:hover {
   background: var(--cx-ghost-hover);
 }
 
@@ -8295,7 +8264,7 @@ textarea.flow-field-inline-control {
   border: 1px solid hsl(var(--border) / 0.7);
   border-radius: 0.7rem;
   background: hsl(var(--popover, var(--card)) / 0.98);
-  box-shadow: 0 18px 40px -12px hsl(0 0% 0% / 0.55);
+  box-shadow: 0 12px 28px -12px hsl(0 0% 0% / 0.30);
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
@@ -8411,7 +8380,7 @@ textarea.flow-field-inline-control {
   border: 1px solid hsl(var(--border) / 0.6);
   border-radius: 0.6rem;
   background: hsl(var(--card) / 0.92);
-  box-shadow: 0 6px 18px -8px hsl(0 0% 0% / 0.5);
+  box-shadow: 0 5px 14px -8px hsl(0 0% 0% / 0.28);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
 }
@@ -8539,22 +8508,19 @@ textarea.flow-field-inline-control {
 
 /* ── Canvas context menu ────────────────────────────────────── */
 .flow-menu {
-  position: absolute !important;
+  position: absolute;
   z-index: 40;
   min-width: 208px;
   max-width: 260px;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  box-shadow: none;
-  color: hsl(var(--popover-foreground));
-}
-
-.flow-menu-surface-content {
   display: flex;
   flex-direction: column;
   gap: 1px;
   padding: 0.3rem;
+  border: 1px solid hsl(var(--border) / 0.7);
+  border-radius: 0.7rem;
+  background: hsl(var(--popover));
+  box-shadow: 0 10px 24px -12px hsl(0 0% 0% / 0.28);
+  color: hsl(var(--popover-foreground));
 }
 
 .flow-menu-item {
@@ -8730,269 +8696,6 @@ body > [data-radix-popper-content-wrapper] {
 
 .settings-dialog-content .glass-list [role="option"] {
   border-radius: var(--ui-radius-compact) !important;
-}
-
-/* Shared transient material. The host remains the stable layout box while
- * liquid-glass-react paints only the surface inside it. */
-.liquid-glass-surface-host {
-  display: grid;
-  position: relative;
-  min-width: 0;
-  isolation: isolate;
-}
-
-.liquid-glass-surface-host > * {
-  grid-area: 1 / 1;
-}
-
-.liquid-glass-surface-host > .liquid-glass-surface,
-.liquid-glass-surface-host > .liquid-glass-surface-fallback {
-  width: 100%;
-  min-width: 0;
-  height: 100%;
-}
-
-.liquid-glass-surface-host > .liquid-glass-surface > .glass {
-  display: flex !important;
-  width: 100%;
-  min-width: 0;
-  height: 100%;
-  gap: 0 !important;
-  padding: 0 !important;
-  border: 1px solid hsl(var(--foreground) / 0.13);
-  background: color-mix(in srgb, hsl(var(--popover)) 76%, transparent) !important;
-  box-shadow: 0 14px 34px hsl(240 20% 2% / 0.2), inset 0 1px 0 hsl(var(--foreground) / 0.09) !important;
-}
-
-.liquid-glass-surface-host > .liquid-glass-surface > .glass > .glass__warp {
-  opacity: 0.92;
-}
-
-:root:not(.dark) .liquid-glass-surface-host > .liquid-glass-surface > .glass > .glass__warp {
-  filter: none !important;
-}
-
-:root:not(.dark) .liquid-glass-surface-host > .liquid-glass-surface > .glass {
-  background: color-mix(in srgb, hsl(var(--popover)) 58%, transparent) !important;
-  -webkit-backdrop-filter: blur(30px) saturate(160%);
-  backdrop-filter: blur(30px) saturate(160%);
-}
-
-.liquid-glass-surface-host > .liquid-glass-surface > .glass > div:last-child {
-  width: 100%;
-  min-width: 0;
-  color: hsl(var(--popover-foreground)) !important;
-  font: inherit !important;
-  text-shadow: none !important;
-}
-
-.liquid-glass-surface-content,
-.liquid-glass-surface-fallback {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  color: hsl(var(--popover-foreground));
-  font: inherit;
-  text-shadow: none !important;
-}
-
-.liquid-glass-surface-content > *,
-.liquid-glass-surface-fallback > * {
-  min-width: 0;
-}
-
-.liquid-glass-surface-fallback {
-  overflow: hidden;
-  border: 1px solid hsl(var(--foreground) / 0.14);
-  border-radius: var(--ui-radius-surface);
-  background: hsl(var(--popover));
-  box-shadow: 0 12px 28px hsl(240 20% 2% / 0.18);
-}
-
-.hakus-menu-surface-content {
-  width: 100%;
-  padding: 0.375rem;
-}
-
-.hakus-menu-surface-content .hakus-mobile-menu-body {
-  width: 100%;
-  min-width: 0;
-}
-
-.android-model-glass-content {
-  max-height: min(70vh, 36rem);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 0.375rem;
-}
-
-.android-reasoning-glass-content {
-  padding: 0.75rem;
-}
-
-/* Content disclosures are not popovers: keep their glass treatment quiet and
- * inexpensive, with enough opacity for code and long-form text to stay clear. */
-.liquid-glass-disclosure {
-  border: 1px solid hsl(var(--foreground) / 0.1);
-  border-radius: var(--ui-radius-control);
-  background: color-mix(in srgb, hsl(var(--card)) 82%, transparent);
-  box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.035);
-  -webkit-backdrop-filter: blur(14px) saturate(118%);
-  backdrop-filter: blur(14px) saturate(118%);
-}
-
-/* Select lists keep scrolling on the host so the trigger-to-list geometry is
- * not changed by the inner material wrapper. */
-.glass-list {
-  position: fixed !important;
-  overflow-y: auto !important;
-  overscroll-behavior: contain;
-  padding: 0 !important;
-  border: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-
-.glass-list > .liquid-glass-surface > .glass,
-.glass-list > .liquid-glass-surface-fallback {
-  min-height: 100%;
-  border-radius: var(--ui-radius-surface) !important;
-}
-
-.glass-list .liquid-glass-surface-content,
-.glass-list .liquid-glass-surface-fallback {
-  padding: 0.375rem;
-}
-
-.glass-list [role="option"] {
-  min-height: 2rem;
-  border-radius: var(--ui-radius-compact) !important;
-  padding: 0.45rem 0.6rem !important;
-}
-
-.glass-list [role="option"][aria-selected="true"] {
-  background: hsl(var(--foreground) / 0.08) !important;
-  color: hsl(var(--foreground)) !important;
-}
-
-.glass-select-trigger[aria-expanded="true"] {
-  border-color: hsl(var(--foreground) / 0.24) !important;
-}
-
-.glass-select-trigger:focus-visible {
-  outline: 1px solid hsl(var(--foreground) / 0.32) !important;
-  outline-offset: 1px !important;
-  box-shadow: none !important;
-}
-
-.glass-list [role="option"]:hover,
-.glass-list [role="option"]:focus-visible {
-  background: hsl(var(--foreground) / 0.07) !important;
-}
-
-.text-context-menu {
-  overflow: visible;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
-.text-context-menu > .liquid-glass-surface,
-.text-context-menu > .liquid-glass-surface-fallback {
-  max-height: min(70vh, 420px);
-}
-
-.text-context-menu .liquid-glass-surface-content,
-.text-context-menu .liquid-glass-surface-fallback {
-  max-height: min(70vh, 420px);
-  overflow: auto;
-  padding: 0.3125rem;
-}
-
-/* The sheet owns its rounded top edge; the Radix positioning node remains
- * transparent so it cannot paint a second border or a grey strip. */
-:root.is-phone [data-hakus-overlay="menu-content"],
-:root.is-phone [data-hakus-overlay="menu-sub-content"] {
-  border-color: transparent !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-
-[data-hakus-overlay="menu-content"],
-[data-hakus-overlay="menu-sub-content"] {
-  border-color: transparent !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-
-@media (min-width: 768px) {
-  .hakus-dropdown-content {
-    max-height: min(var(--radix-dropdown-menu-content-available-height, 70vh), 70vh, 32rem) !important;
-  }
-}
-
-:root.is-phone [data-hakus-overlay="menu-content"] > .liquid-glass-surface,
-:root.is-phone [data-hakus-overlay="menu-sub-content"] > .liquid-glass-surface,
-:root.is-phone [data-hakus-overlay="menu-content"] > .liquid-glass-surface-fallback,
-:root.is-phone [data-hakus-overlay="menu-sub-content"] > .liquid-glass-surface-fallback {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-}
-
-:root.is-phone [data-hakus-overlay="menu-content"] .liquid-glass-surface > .glass,
-:root.is-phone [data-hakus-overlay="menu-sub-content"] .liquid-glass-surface > .glass,
-:root.is-phone [data-hakus-overlay="menu-content"] .liquid-glass-surface-fallback,
-:root.is-phone [data-hakus-overlay="menu-sub-content"] .liquid-glass-surface-fallback {
-  min-height: 0;
-  border-radius: 1.75rem 1.75rem 0 0 !important;
-  background: hsl(var(--popover) / 0.88) !important;
-  box-shadow: 0 -18px 50px hsl(240 24% 3% / 0.3) !important;
-}
-
-:root.is-phone [data-hakus-overlay="menu-content"] .hakus-menu-surface-content,
-:root.is-phone [data-hakus-overlay="menu-sub-content"] .hakus-menu-surface-content {
-  min-height: 0;
-  flex: 1 1 auto;
-  padding: 0;
-}
-
-@media (min-width: 768px) {
-  :root[data-window-material="light"] {
-    --ios-material: rgb(255 255 255 / 0.8);
-    --ios-sidebar-material: rgb(255 255 255 / 0.9);
-  }
-
-  .dark[data-window-material="dark"] {
-    --ios-material: rgb(24 24 24 / 0.8);
-    --ios-sidebar-material: rgb(24 24 24 / 0.9);
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  .liquid-glass-surface-host > .liquid-glass-surface > .glass {
-    background: hsl(var(--popover)) !important;
-    box-shadow: 0 8px 20px hsl(240 20% 2% / 0.16) !important;
-  }
-
-  .liquid-glass-disclosure {
-    background: hsl(var(--card));
-    box-shadow: none;
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
 }
 
 .browser-tab-strip {
