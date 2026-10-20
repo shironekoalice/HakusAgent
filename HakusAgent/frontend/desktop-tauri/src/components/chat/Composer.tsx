@@ -1348,7 +1348,7 @@ export function Composer({
 
   return (
       <>
-      <div className="composer-shell bg-transparent px-4 pb-4 pt-2">
+      <div className="composer-shell composer-seat-fade relative bg-transparent px-4 pb-4 pt-2">
       {/* Android liquid-glass row: a collapsed brain icon that expands into
           the sliding reasoning-effort ladder, plus the context ring —
           floating just above the composer box (no bar attached). */}
@@ -1453,10 +1453,10 @@ export function Composer({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           className={cn(
-            'composer-box relative flex flex-col gap-1.5 rounded-[var(--composer-radius)] border border-border/75 bg-card/95 p-2.5 shadow-lg shadow-black/10 transition-colors',
+            'composer-box composer-glass relative flex flex-col gap-1.5 rounded-[var(--composer-radius)] p-2.5 transition-colors',
             conversationState !== 'idle' && 'voice-composer-active',
             !hasExpandedContent && 'p-2',
-            dragOver && 'border-primary/50 bg-accent/20 ring-1 ring-primary/25',
+            dragOver && 'ring-1 ring-primary/25',
           )}
         >
           <input
@@ -1469,6 +1469,8 @@ export function Composer({
               e.target.value = ''
             }}
           />
+          {/* Liquid-glass rim light (1px gradient hairline). */}
+          <span className="composer-rim" aria-hidden />
 
           {/* Phone: portal the mention sheet to <body> so its viewport
               geometry is deterministic (no transformed ancestor can trap

@@ -276,7 +276,10 @@ export function TopBar({ onToggleSidebar, onToggleRightPanel, showSidebarToggle 
     >
       {/* The leading strip drags the window too — only its buttons opt out.
           This satisfies "the drag region covers the whole top bar" without
-          making the controls themselves grab windows. */}
+          making the controls themselves grab windows.
+          Phone: the strip collapses to just the sidebar toggle — the fixed
+          312px width plus the mode segment control is what made narrow
+          viewports render the desktop two-column header. */}
       <div className={cn('topbar-leading cx-leading relative z-10 flex w-[312px] shrink-0 items-center gap-1.5 pl-2', isMac && 'pl-[72px]')} data-tauri-drag-region>
         {showSidebarToggle && (
           <button

@@ -5,7 +5,11 @@ import path from "path";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
-// Browser-preview audit: route Runtime to the MuMu adb-forward proxy when set.
+
+// Browser-preview audit can point the Runtime at the MuMu adb-forward proxy
+// instead of a local sidecar (HAKUS_RUNTIME_TARGET=http://127.0.0.1:48090).
+// Unset means the normal local-runtime development setup.
+// @ts-expect-error process is a nodejs global
 const runtimeTarget = process.env.HAKUS_RUNTIME_TARGET || "http://127.0.0.1:48081";
 
 // https://vite.dev/config/

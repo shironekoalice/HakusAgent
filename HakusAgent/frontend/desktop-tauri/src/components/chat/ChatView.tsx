@@ -1226,26 +1226,18 @@ export function ChatView() {
       {/* Messages — wrapped in a relative container so the floating
           nav buttons (ChatNavButtons) can anchor to its top-right
           corner. The buttons live OUTSIDE the scroll div so they
-          don't scroll with the content.
-          On phone viewports the scroller extends under the composer
-          island (negative bottom margin) so content visibly flows
-          behind the glass — a bottom fade scrim keeps the seam soft. */}
+          don't scroll with the content. */}
       <div className="chat-messages-region relative min-h-0 flex-1">
-        {/* 悬浮工具簇：检查点 + 子代理。有消息时显示。
-            Phone: the user bubble is right-aligned, so the cluster would sit
-            on top of it — tuck it into the top-right gutter with a compact
-            size instead of pushing the whole timeline down. */}
+        {/* 悬浮工具簇：检查点 + 子代理。有消息时显示。 */}
         {activeMessages.length > 0 && (
-          <div className="floating-tool-cluster absolute right-3 top-3 z-10 flex gap-1.5 max-[767px]:right-2 max-[767px]:top-2 max-[767px]:scale-90 max-[767px]:origin-top-right">
+          <div className="absolute right-3 top-3 z-10 flex gap-1.5">
             <CheckpointList messages={activeMessages} onRewind={handleRewind} />
             <SubagentsPanel sessionId={activeId || undefined} />
           </div>
         )}
         <ChatNavButtons
           scrollRef={scrollRef}
-          // Desktop: below the topbar. Phone: vertically centered — a
-          // top-anchored rail collides with the first user bubble.
-          offsetTop="top-[4.75rem] max-[767px]:top-[38%]"
+          offsetTop="top-[4.75rem]"
           // Re-evaluate button visibility whenever the message count
           // or the last message id changes (new content arrived).
           messagesKey={`${activeMessages.length}#${activeMessages[activeMessages.length - 1]?.id ?? ''}`}
@@ -1255,7 +1247,7 @@ export function ChatView() {
           scrollRef={scrollRef}
           messagesKey={`${activeMessages.length}#${activeMessages[activeMessages.length - 1]?.id ?? ''}`}
         />
-        <div ref={scrollRef} className="chat-scroll h-full min-w-0 overflow-x-hidden overflow-y-auto">
+        <div ref={scrollRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto">
         {activeMessages.length === 0 ? (
           <EmptyStateHero
             projectName={activeProject ? activeProject.name : t('currentDirectory')}
@@ -1264,7 +1256,7 @@ export function ChatView() {
         ) : (
           // 宽度上限由 index.css 的 .chat-timeline 提供（它覆盖了
           // @layer utilities 的 max-width:100%，Tailwind 的 max-w-* 在此无效）。
-          <div className="chat-timeline mx-auto min-w-0 w-full max-[767px]:pb-36 py-6">
+          <div className="chat-timeline mx-auto min-w-0 w-full py-6">
             {buildTimeline(activeMessages).map((item, idx, arr) => {
               if (item.kind === 'message') {
                 return (

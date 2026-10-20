@@ -1313,8 +1313,62 @@
     backdrop-filter: blur(28px) saturate(150%);
   }
 
+  /* Topbar shares the composer's liquid-glass language: translucent pane,
+     specular arc along the top edge, rim light instead of a flat border. */
+  .titlebar.cx-titlebar {
+    background: hsl(0 0% 100% / 0.55) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(1.7);
+    backdrop-filter: blur(22px) saturate(1.7);
+    border-bottom-color: transparent !important;
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.5) inset,
+      0 -1px 0 hsl(0 0% 100% / 0.2) inset,
+      0 8px 24px hsl(240 20% 4% / 0.06);
+  }
+
+  .dark .titlebar.cx-titlebar {
+    background: hsl(240 8% 14% / 0.55) !important;
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.16) inset,
+      0 -1px 0 hsl(0 0% 100% / 0.06) inset,
+      0 8px 24px hsl(0 0% 0% / 0.24);
+  }
+
   .titlebar {
     border-bottom-color: hsl(var(--foreground) / 0.1);
+  }
+
+  /* Phone header is a single row: sidebar toggle + centered title +
+     actions. The desktop leading strip is a fixed 312px that holds the
+     Work/Code/Flow segment control — on a 402px viewport it squeezed the
+     title into a two-column desktop-looking bar. Collapse it to the
+     toggle only and drop the mode segment (reachable from Settings). */
+  .topbar-leading.cx-leading {
+    width: auto !important;
+    flex: none !important;
+    padding-left: 0.5rem !important;
+    padding-right: 0 !important;
+    gap: 0 !important;
+  }
+
+  .topbar-leading .cx-segment {
+    display: none !important;
+  }
+
+  .topbar-session {
+    align-items: flex-start !important;
+    padding-left: 0.25rem !important;
+    padding-right: 0.25rem !important;
+  }
+
+  .topbar-session .cx-title-main {
+    font-size: 0.875rem !important;
+    font-weight: 600 !important;
+    max-width: 100%;
+  }
+
+  .topbar-session .cx-title-sub {
+    font-size: 0.6875rem !important;
   }
 
   .app-panel-scrim {
@@ -2126,46 +2180,6 @@ select:focus-visible {
   box-shadow: none;
 }
 
-/* Phone: the topbar becomes a floating glass island mirroring the
-   composer — inset from every screen edge, same radius/glass/shadow
-   family, so chat content visibly scrolls past behind it. */
-@media (max-width: 767px) {
-  .titlebar {
-    position: relative;
-    z-index: 45;
-    height: 3.5rem;
-    min-height: 3.5rem;
-    margin: 0.5rem var(--composer-island-gap) 0.25rem;
-    border: 1px solid transparent !important;
-    border-radius: 1.5rem !important;
-    background: var(--composer-glass-bg) !important;
-    -webkit-backdrop-filter: blur(22px) saturate(1.5);
-    backdrop-filter: blur(22px) saturate(1.5);
-    box-shadow:
-      0 8px 28px hsl(240 20% 3% / 0.18),
-      inset 0 1px 0 hsl(0 0% 100% / 0.5),
-      inset 0 -1px 1px hsl(0 0% 100% / 0.16) !important;
-    overflow: hidden;
-  }
-
-  /* chat region starts under the floating topbar island */
-  .app-chat > .chat-messages-region {
-    margin-top: -0.25rem;
-  }
-
-  /* Bottom status strip: keep it transparent so it reads as part of the
-     island gap instead of a second opaque bar under the composer. */
-  .statusbar {
-    border-top: 0 !important;
-    background: transparent !important;
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-    padding-inline: calc(var(--composer-island-gap) + 0.25rem);
-    padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0px));
-    color: hsl(var(--muted-foreground) / 0.75);
-  }
-}
-
 .topbar-session > span:first-child {
   font-size: 0.9375rem;
   font-weight: 650;
@@ -2336,126 +2350,311 @@ select:focus {
   box-shadow: none !important;
 }
 
-/* Composer as an inset system surface.
-   Liquid-glass floating island (Apple HIG "regular" variant):
-   low-alpha background + heavy blur so chat content stays readable as it
-   scrolls past underneath, specular inset highlights, gradient border.
-   The island floats with a visible gap on all sides instead of butting
-   into the screen edges — content continues behind it. */
-:root {
-  /* Border gradient stops adapt per theme. */
-  --composer-glass-bg: hsl(0 0% 100% / 0.42);
-  --composer-glass-border-hi: hsl(0 0% 100% / 0.85);
-  --composer-glass-border-lo: hsl(0 0% 100% / 0.25);
-  --composer-island-gap: 0.75rem;
-  --composer-island-gap-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+/* ==========================================================================
+ * Liquid Glass — 真折射玻璃表面
+ *
+ * 三层叠加，缺一不可：
+ *   .liquid-glass-backdrop  折射体（由内联 SVG filter 扭曲，厚度决定 alpha）
+ *   .liquid-glass-specular  顶部镜面高光弧（模拟光源在玻璃上缘的反射）
+ *   .liquid-glass-rim       边缘 rim light（让玻璃和背景分开，代替硬描边）
+ *
+ * 动画：入场 spring、按压回弹、指针柔光跟随；全部尊重 reduced-motion。
+ * ========================================================================== */
+.liquid-glass {
+  --lg-radius: inherit;
+  isolation: isolate;
+  transition:
+    transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow:
+    0 10px 34px hsl(240 20% 4% / 0.16),
+    0 2px 8px hsl(240 20% 4% / 0.08);
 }
 
-.dark {
-  --composer-glass-bg: hsl(240 6% 13% / 0.38);
-  --composer-glass-border-hi: hsl(0 0% 100% / 0.22);
-  --composer-glass-border-lo: hsl(0 0% 100% / 0.06);
+.liquid-glass-backdrop {
+  border-radius: var(--lg-radius);
+  /* 厚度驱动底色浓度：薄=高度透光，厚=更实但不糊 */
+  background: hsl(0 0% 100% / calc(0.10 + var(--lg-thickness, 0.6) * 0.34));
+  /* 背后内容的模糊只做「失焦」，折射由 SVG filter 负责 */
+  -webkit-backdrop-filter: blur(calc(6px + var(--lg-thickness, 0.6) * 14px)) saturate(1.6);
+  backdrop-filter: blur(calc(6px + var(--lg-thickness, 0.6) * 14px)) saturate(1.6);
 }
 
-.composer-shell {
-  padding-top: 0.75rem;
-  /* transparent shell: the glass lives on .composer-box itself */
+.dark .liquid-glass-backdrop {
+  background: hsl(240 8% 14% / calc(0.22 + var(--lg-thickness, 0.6) * 0.34));
 }
 
-/* Gradient 1px border drawn with mask-composite so it hugs the radius. */
-.composer-box::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
+/* 顶部高光：一条贴着上缘的镜面弧，随厚度增强 */
+.liquid-glass-specular {
+  border-radius: var(--lg-radius);
+  background:
+    radial-gradient(
+      120% 60% at 50% 0%,
+      hsl(0 0% 100% / calc(0.30 + var(--lg-thickness, 0.6) * 0.42)) 0%,
+      hsl(0 0% 100% / 0.06) 42%,
+      transparent 70%
+    );
+  mix-blend-mode: plus-lighter;
+}
+
+/* 边缘 rim：代替 1px 硬描边，让玻璃边有厚度感 */
+.liquid-glass-rim {
+  border-radius: var(--lg-radius);
   padding: 1px;
-  background: linear-gradient(180deg, var(--composer-glass-border-hi), var(--composer-glass-border-lo));
+  background: linear-gradient(
+    180deg,
+    hsl(0 0% 100% / 0.7) 0%,
+    hsl(0 0% 100% / 0.12) 38%,
+    hsl(0 0% 100% / 0.04) 62%,
+    hsl(0 0% 100% / 0.34) 100%
+  );
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
-  z-index: 1;
 }
 
+.dark .liquid-glass-rim {
+  background: linear-gradient(
+    180deg,
+    hsl(0 0% 100% / 0.42) 0%,
+    hsl(0 0% 100% / 0.08) 40%,
+    hsl(0 0% 100% / 0.03) 64%,
+    hsl(0 0% 100% / 0.2) 100%
+  );
+}
+
+/* 指针柔光：交互时跟随手指/鼠标 */
+.liquid-glass-glow {
+  border-radius: var(--lg-radius);
+  background: radial-gradient(
+    38% 46% at var(--lg-glow-x, 50%) var(--lg-glow-y, 0%),
+    hsl(0 0% 100% / 0.5) 0%,
+    transparent 68%
+  );
+  opacity: 0;
+  transition: opacity 220ms ease;
+  mix-blend-mode: plus-lighter;
+  pointer-events: none;
+}
+
+.liquid-glass:hover .liquid-glass-glow,
+.liquid-glass:focus-visible .liquid-glass-glow {
+  opacity: 1;
+}
+
+/* 按压：玻璃被"压薄"——轻微收缩 + 高光增强，回弹走 spring 曲线 */
+.liquid-glass-pressed {
+  transform: scale(0.982);
+  box-shadow:
+    0 4px 16px hsl(240 20% 4% / 0.2),
+    inset 0 1px 0 hsl(0 0% 100% / 0.4);
+  transition:
+    transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 140ms ease;
+}
+
+/* 入场：从下方轻微弹起 */
+.liquid-glass-enter {
+  animation: liquid-glass-enter 520ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes liquid-glass-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liquid-glass,
+  .liquid-glass-pressed,
+  .liquid-glass-enter {
+    transition: none;
+    animation: none;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .liquid-glass-backdrop {
+    background: hsl(var(--card)) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .liquid-glass-glow,
+  .liquid-glass-specular {
+    display: none;
+  }
+}
+
+/* Composer — mirrors DeepSeek Harness (packages/client/ui-conversation):
+   `InputBar.module.css` (.root/.card) + `ConversationRoot.module.css`
+   (.composerSeat). The input is an OPAQUE card inset from the sides, sitting
+   just above the bottom edge; the transcript dissolves under a fixed 36px
+   gradient band at the seat's top rather than blurring through glass. */
+:root {
+  --composer-side-clearance: 16px;
+  --composer-dock-inset: 4px;
+  --composer-seat-fade: 36px;
+}
+
+.composer-shell {
+  padding-top: 0.75rem;
+  /* Side pads ride the shared clearance (InputBar .root: 0 [side] 4px). */
+  padding-left: var(--composer-side-clearance);
+  padding-right: var(--composer-side-clearance);
+  padding-bottom: var(--composer-dock-inset);
+  background: transparent !important;
+  position: relative;
+  z-index: 5;
+}
+
+/* Edge-to-edge scroll: the transcript runs UNDER the glass card so the
+   refraction has something to bend. Without this the card floats over a
+   blank strip and any glass effect reads as an opaque white panel. */
+@media (max-width: 767px), (max-device-width: 767px) {
+  .chat-messages-region {
+    margin-bottom: calc(-1 * var(--composer-overlap, 140px));
+  }
+
+  /* The composer seat owns the fade; the transcript keeps clear space at
+     its tail so the last message can still sit above the card. */
+  .chat-messages-region .chat-timeline {
+    padding-bottom: calc(var(--composer-overlap, 140px) + 1rem);
+  }
+}
+
+/* Input card: liquid glass surface (see the Liquid Glass block above), with
+   the DSH geometry — inset from the sides, just above the bottom edge. */
 .composer-box {
   border-color: transparent !important;
-  border-radius: 1.75rem !important;
-  background: var(--composer-glass-bg) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
-  backdrop-filter: blur(22px) saturate(1.5);
+  border-radius: 28px !important;
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none !important;
+  isolation: isolate;
+}
+
+.composer-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: inherit;
+  background: hsl(0 0% 100% / 0.55);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  backdrop-filter: blur(22px) saturate(1.7);
+  transition: background-color 260ms ease;
+}
+
+.dark .composer-glass::before {
+  background: hsl(240 8% 14% / 0.5);
+}
+
+.composer-glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      130% 62% at 50% 0%,
+      hsl(0 0% 100% / 0.5) 0%,
+      hsl(0 0% 100% / 0.08) 44%,
+      transparent 72%
+    );
+  mix-blend-mode: plus-lighter;
+}
+
+/* Rim light: a 1px gradient hairline hugging the radius, drawn with
+   mask-composite so it never eats layout. */
+.composer-glass {
   box-shadow:
-    0 12px 40px hsl(240 20% 3% / 0.22),
-    inset 0 1px 0 hsl(0 0% 100% / 0.5),
-    inset 0 -1px 1px hsl(0 0% 100% / 0.18) !important;
+    0 12px 38px hsl(240 20% 4% / 0.18),
+    0 2px 10px hsl(240 20% 4% / 0.08) !important;
+  /* Glass settles rather than snaps: spring-ish ease on the transform. */
+  transition:
+    transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 300ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+  animation: composer-glass-enter 560ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
-.composer-box:focus-within {
-  border-color: transparent !important;
+@keyframes composer-glass-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Press: the pane compresses slightly and its highlight tightens. */
+.composer-glass:active {
+  transform: scale(0.994);
+}
+
+.composer-glass:focus-within {
   box-shadow:
-    0 12px 44px hsl(240 20% 3% / 0.26),
-    0 0 0 3px hsl(var(--primary) / 0.14),
-    inset 0 1px 0 hsl(0 0% 100% / 0.55),
-    inset 0 -1px 1px hsl(0 0% 100% / 0.2) !important;
+    0 14px 44px hsl(240 20% 4% / 0.22),
+    0 0 0 3px hsl(var(--primary) / 0.12) !important;
+  transform: translateY(-1px);
 }
 
-/* Floating island: keep the shell transparent and pad it so the glass
-   box hovers with a gap; the scroller above already extends behind it. */
-@media (max-width: 767px) {
-  .composer-shell {
-    padding-left: var(--composer-island-gap);
-    padding-right: var(--composer-island-gap);
-    padding-bottom: var(--composer-island-gap-bottom);
-  }
-
-  /* Edge-to-edge: the message scroller flows behind the composer island.
-     The island's own glass + this bottom scrim keep text legible at the
-     seam (HIG "scroll edge effect" equivalent). */
-  .chat-messages-region {
-    /* island height ≈ 121px + gap 12px; pull the scroller under it */
-    margin-bottom: calc(-1 * (var(--composer-island-height, 133px)));
-    pointer-events: none;
-  }
-
-  .chat-messages-region > * {
-    pointer-events: auto;
-  }
-
-  /* First message clears the floating tool cluster horizontally instead
-     of vertically: the cluster sits top-right, so the timeline only needs
-     a small top offset — avoiding the dead band above the first bubble. */
-  .chat-messages-region .chat-timeline {
-    padding-top: 0;
-  }
-
-  .chat-messages-region .chat-timeline > *:first-child {
-    margin-top: 0.75rem;
-  }
-
-  /* The first user bubble is right-aligned; keep its text clear of the
-     floating cluster by reserving the right gutter on the first row. */
-  .chat-messages-region .chat-timeline > *:first-child .chat-message-body {
-    padding-right: 4.5rem;
+@media (prefers-reduced-motion: reduce) {
+  .composer-glass,
+  .composer-glass:active,
+  .composer-glass:focus-within {
+    animation: none;
+    transition: none;
+    transform: none;
   }
 }
 
-/* Bottom fade scrim behind the composer island (phone only). */
-@media (max-width: 767px) {
-  .composer-shell::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: -3rem;
-    height: 3rem;
-    pointer-events: none;
-    background: linear-gradient(180deg, transparent, hsl(var(--background) / 0.9));
-    z-index: 0;
-  }
+.composer-glass > .composer-rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    hsl(0 0% 100% / 0.72) 0%,
+    hsl(0 0% 100% / 0.14) 38%,
+    hsl(0 0% 100% / 0.05) 62%,
+    hsl(0 0% 100% / 0.36) 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+}
 
-  .composer-shell {
-    position: relative;
-  }
+/* Sticky seat fade (ConversationRoot .composerSeat): fixed 36px band where
+   the transcript fades into the page background, solid below. */
+.composer-seat-fade::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: var(--composer-seat-fade);
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent 0px,
+    hsl(var(--background)) var(--composer-seat-fade)
+  );
 }
 
 /* A tiny CSS-only status signal keeps the live composer responsive. The
@@ -2758,14 +2957,9 @@ select:focus {
   }
 
   .composer-box {
-    border-radius: 1.5rem !important;
-    background: var(--composer-glass-bg) !important;
-    -webkit-backdrop-filter: blur(22px) saturate(1.5);
-    backdrop-filter: blur(22px) saturate(1.5);
-    box-shadow:
-      0 12px 40px hsl(240 20% 2% / 0.16),
-      inset 0 1px 0 hsl(0 0% 100% / 0.5),
-      inset 0 -1px 1px hsl(0 0% 100% / 0.18) !important;
+    border-radius: 1.125rem !important;
+    background: hsl(var(--card) / 0.94) !important;
+    box-shadow: 0 8px 20px hsl(240 20% 2% / 0.09), inset 0 1px 0 hsl(var(--foreground) / 0.06) !important;
   }
 
   /* Content-layer cards stay quiet and legible; only the shell is glass. */
@@ -6539,6 +6733,31 @@ body > [data-radix-popper-content-wrapper] {
   box-shadow: none !important;
   -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
   backdrop-filter: blur(18px) saturate(150%) !important;
+}
+
+/* Phone: the topbar is a liquid-glass pane matching the composer card —
+   translucent surface, specular arc on the top edge, soft rim instead of a
+   flat hairline, and the same spring transition. */
+@media (max-width: 767px), (max-device-width: 767px) {
+  .titlebar.cx-titlebar {
+    background: hsl(0 0% 100% / 0.55) !important;
+    border-bottom-color: transparent !important;
+    -webkit-backdrop-filter: blur(22px) saturate(1.7) !important;
+    backdrop-filter: blur(22px) saturate(1.7) !important;
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.55),
+      inset 0 -1px 0 hsl(0 0% 100% / 0.22),
+      0 8px 24px hsl(240 20% 4% / 0.06) !important;
+    transition: box-shadow 300ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .dark .titlebar.cx-titlebar {
+    background: hsl(240 8% 14% / 0.55) !important;
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.16),
+      inset 0 -1px 0 hsl(0 0% 100% / 0.06),
+      0 8px 24px hsl(0 0% 0% / 0.24) !important;
+  }
 }
 
 .cx-leading {

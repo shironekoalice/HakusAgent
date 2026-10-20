@@ -17,7 +17,7 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 const args = process.argv.slice(2)
 const portFlag = args.indexOf('--port')
 const PORT = portFlag >= 0 ? args[portFlag + 1] : '9222'
-const rest = args.filter((a, i) => i !== portFlag && i !== portFlag + 1)
+const rest = args.filter((a, i) => i !== portFlag && i !== portFlag + 1 && !a.startsWith('--device='))
 const [cmd, ...rest2] = rest
 
 const targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()
@@ -49,8 +49,18 @@ const evalJS = async (expr) => {
 }
 
 // Re-assert phone emulation on every connect (Chrome drops it on reload/navigation).
-await send('Emulation.setDeviceMetricsOverride', { width: 412, height: 915, deviceScaleFactor: 2, mobile: true })
+// Device presets: iPhone 16 Pro is the baseline; Android sizes for cross-checking.
+const DEVICES = {
+  'iphone16pro': { width: 402, height: 874, dpr: 3, ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' },
+  'iphone16': { width: 393, height: 852, dpr: 3, ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' },
+  'pixel9': { width: 412, height: 915, dpr: 2.625, ua: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36' },
+  'small': { width: 360, height: 740, dpr: 3, ua: 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36' },
+}
+const devFlag = args.find(a => a.startsWith('--device='))
+const device = DEVICES[devFlag ? devFlag.split('=')[1] : 'iphone16pro'] || DEVICES['iphone16pro']
+await send('Emulation.setDeviceMetricsOverride', { width: device.width, height: device.height, deviceScaleFactor: device.dpr, mobile: true })
 await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
+await send('Emulation.setUserAgentOverride', { userAgent: device.ua })
 
 mkdirSync('scripts/audit', { recursive: true })
 const shot = async (clip, name) => {
