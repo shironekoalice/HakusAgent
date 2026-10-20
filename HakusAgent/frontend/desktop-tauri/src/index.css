@@ -2126,6 +2126,46 @@ select:focus-visible {
   box-shadow: none;
 }
 
+/* Phone: the topbar becomes a floating glass island mirroring the
+   composer — inset from every screen edge, same radius/glass/shadow
+   family, so chat content visibly scrolls past behind it. */
+@media (max-width: 767px) {
+  .titlebar {
+    position: relative;
+    z-index: 45;
+    height: 3.5rem;
+    min-height: 3.5rem;
+    margin: 0.5rem var(--composer-island-gap) 0.25rem;
+    border: 1px solid transparent !important;
+    border-radius: 1.5rem !important;
+    background: var(--composer-glass-bg) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
+    backdrop-filter: blur(22px) saturate(1.5);
+    box-shadow:
+      0 8px 28px hsl(240 20% 3% / 0.18),
+      inset 0 1px 0 hsl(0 0% 100% / 0.5),
+      inset 0 -1px 1px hsl(0 0% 100% / 0.16) !important;
+    overflow: hidden;
+  }
+
+  /* chat region starts under the floating topbar island */
+  .app-chat > .chat-messages-region {
+    margin-top: -0.25rem;
+  }
+
+  /* Bottom status strip: keep it transparent so it reads as part of the
+     island gap instead of a second opaque bar under the composer. */
+  .statusbar {
+    border-top: 0 !important;
+    background: transparent !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    padding-inline: calc(var(--composer-island-gap) + 0.25rem);
+    padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0px));
+    color: hsl(var(--muted-foreground) / 0.75);
+  }
+}
+
 .topbar-session > span:first-child {
   font-size: 0.9375rem;
   font-weight: 650;
@@ -2381,16 +2421,21 @@ select:focus {
     pointer-events: auto;
   }
 
-  /* First message must clear the floating tool cluster at the very top
-     of the scroll (cluster ~32px + nav rail). Applied to the first
-     timeline child only — padding the whole timeline left a permanent
-     dead zone above the first message. */
+  /* First message clears the floating tool cluster horizontally instead
+     of vertically: the cluster sits top-right, so the timeline only needs
+     a small top offset — avoiding the dead band above the first bubble. */
   .chat-messages-region .chat-timeline {
     padding-top: 0;
   }
 
   .chat-messages-region .chat-timeline > *:first-child {
-    margin-top: 3.25rem;
+    margin-top: 0.75rem;
+  }
+
+  /* The first user bubble is right-aligned; keep its text clear of the
+     floating cluster by reserving the right gutter on the first row. */
+  .chat-messages-region .chat-timeline > *:first-child .chat-message-body {
+    padding-right: 4.5rem;
   }
 }
 

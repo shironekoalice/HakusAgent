@@ -1232,10 +1232,11 @@ export function ChatView() {
           behind the glass — a bottom fade scrim keeps the seam soft. */}
       <div className="chat-messages-region relative min-h-0 flex-1">
         {/* 悬浮工具簇：检查点 + 子代理。有消息时显示。
-            Phone: anchored below the topbar INSIDE the safe zone and the
-            user bubble gets top padding so text never slides underneath. */}
+            Phone: the user bubble is right-aligned, so the cluster would sit
+            on top of it — tuck it into the top-right gutter with a compact
+            size instead of pushing the whole timeline down. */}
         {activeMessages.length > 0 && (
-          <div className="absolute right-3 top-3 z-10 flex gap-1.5 max-[767px]:right-2">
+          <div className="floating-tool-cluster absolute right-3 top-3 z-10 flex gap-1.5 max-[767px]:right-2 max-[767px]:top-2 max-[767px]:scale-90 max-[767px]:origin-top-right">
             <CheckpointList messages={activeMessages} onRewind={handleRewind} />
             <SubagentsPanel sessionId={activeId || undefined} />
           </div>
