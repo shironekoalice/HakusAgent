@@ -2493,15 +2493,17 @@ select:focus {
   }
 }
 
-/* Composer — mirrors DeepSeek Harness (packages/client/ui-conversation):
-   `InputBar.module.css` (.root/.card) + `ConversationRoot.module.css`
-   (.composerSeat). The input is an OPAQUE card inset from the sides, sitting
-   just above the bottom edge; the transcript dissolves under a fixed 36px
-   gradient band at the seat's top rather than blurring through glass. */
+/* Composer — floating liquid-glass island. Mirrors the DSH input-bar
+   geometry (inset card, sticky seat) but detaches it from every screen edge:
+   side clearance on the left/right and a real gap at the bottom, so the
+   transcript flows behind a genuinely floating pane. */
 :root {
   --composer-side-clearance: 16px;
   --composer-dock-inset: 4px;
   --composer-seat-fade: 36px;
+  /* Island gap: how far the pane floats off each edge. */
+  --composer-island-gap: 12px;
+  --composer-island-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
 }
 
 .composer-shell {
@@ -2513,6 +2515,28 @@ select:focus {
   background: transparent !important;
   position: relative;
   z-index: 5;
+}
+
+/* Phone: a fully floating island — gap on all four edges. */
+@media (max-width: 767px), (max-device-width: 767px) {
+  .composer-shell {
+    padding-left: var(--composer-island-gap);
+    padding-right: var(--composer-island-gap);
+    padding-bottom: var(--composer-island-bottom);
+    padding-top: 0.5rem;
+  }
+
+  .composer-box {
+    border-radius: 26px !important;
+  }
+
+  /* The model/chars strip rides inside the island's lower gap instead of
+     adding a second row of chrome under it. */
+  .composer-shell .composer-status,
+  .composer-shell [class*="composer-status"] {
+    padding-inline: calc(var(--composer-island-gap) + 0.5rem);
+    font-size: 0.625rem;
+  }
 }
 
 /* Edge-to-edge scroll: the transcript runs UNDER the glass card so the
@@ -6735,20 +6759,44 @@ body > [data-radix-popper-content-wrapper] {
   backdrop-filter: blur(18px) saturate(150%) !important;
 }
 
-/* Phone: the topbar is a liquid-glass pane matching the composer card —
-   translucent surface, specular arc on the top edge, soft rim instead of a
-   flat hairline, and the same spring transition. */
+/* Phone: the topbar is a floating liquid-glass island matching the composer —
+   gap on every edge, big radius, specular arc on the top edge, soft rim. */
 @media (max-width: 767px), (max-device-width: 767px) {
   .titlebar.cx-titlebar {
+    height: 3.25rem !important;
+    min-height: 3.25rem !important;
+    margin: calc(var(--composer-island-gap, 12px) - 4px) var(--composer-island-gap, 12px) 0 !important;
+    border-radius: 1.375rem !important;
     background: hsl(0 0% 100% / 0.55) !important;
     border-bottom-color: transparent !important;
     -webkit-backdrop-filter: blur(22px) saturate(1.7) !important;
     backdrop-filter: blur(22px) saturate(1.7) !important;
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.55),
-      inset 0 -1px 0 hsl(0 0% 100% / 0.22),
-      0 8px 24px hsl(240 20% 4% / 0.06) !important;
-    transition: box-shadow 300ms cubic-bezier(0.22, 1, 0.36, 1);
+      inset 0 1px 0 hsl(0 0% 100% / 0.6),
+      inset 0 -1px 0 hsl(0 0% 100% / 0.24),
+      0 10px 30px hsl(240 20% 4% / 0.14),
+      0 2px 8px hsl(240 20% 4% / 0.06) !important;
+    transition:
+      box-shadow 300ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    /* Specular arc along the top edge of the pane. */
+    position: relative;
+    overflow: hidden;
+  }
+
+  .titlebar.cx-titlebar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(
+      130% 90% at 50% 0%,
+      hsl(0 0% 100% / 0.55) 0%,
+      hsl(0 0% 100% / 0.1) 46%,
+      transparent 72%
+    );
+    mix-blend-mode: plus-lighter;
   }
 
   .dark .titlebar.cx-titlebar {
@@ -6756,7 +6804,8 @@ body > [data-radix-popper-content-wrapper] {
     box-shadow:
       inset 0 1px 0 hsl(0 0% 100% / 0.16),
       inset 0 -1px 0 hsl(0 0% 100% / 0.06),
-      0 8px 24px hsl(0 0% 0% / 0.24) !important;
+      0 10px 30px hsl(0 0% 0% / 0.3),
+      0 2px 8px hsl(0 0% 0% / 0.16) !important;
   }
 }
 
