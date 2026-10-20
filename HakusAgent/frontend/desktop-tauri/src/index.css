@@ -2381,10 +2381,16 @@ select:focus {
     pointer-events: auto;
   }
 
-  /* First message must clear the floating tool cluster AND the
-     up/down chat nav rail (cluster 32px + gap + two 32px buttons). */
+  /* First message must clear the floating tool cluster at the very top
+     of the scroll (cluster ~32px + nav rail). Applied to the first
+     timeline child only — padding the whole timeline left a permanent
+     dead zone above the first message. */
   .chat-messages-region .chat-timeline {
-    padding-top: 6.5rem;
+    padding-top: 0;
+  }
+
+  .chat-messages-region .chat-timeline > *:first-child {
+    margin-top: 3.25rem;
   }
 }
 

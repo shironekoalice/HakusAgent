@@ -1242,7 +1242,9 @@ export function ChatView() {
         )}
         <ChatNavButtons
           scrollRef={scrollRef}
-          offsetTop="top-[4.75rem]"
+          // Desktop: below the topbar. Phone: vertically centered — a
+          // top-anchored rail collides with the first user bubble.
+          offsetTop="top-[4.75rem] max-[767px]:top-[38%]"
           // Re-evaluate button visibility whenever the message count
           // or the last message id changes (new content arrived).
           messagesKey={`${activeMessages.length}#${activeMessages[activeMessages.length - 1]?.id ?? ''}`}
