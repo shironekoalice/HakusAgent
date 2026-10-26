@@ -1,32 +1,25 @@
-//! Desktop voice-process controls.
+//! Desktop voice extension lifecycle controls.
 //!
-//! The old Electron shell exposed a small Celia process lifecycle API. Keep
-//! the same renderer contract in Rust so the settings panel remains useful in
-//! packaged Tauri builds without granting the webview a general shell API.
+//! Celia is hosted through the reviewed `hakus.extension.v1` boundary. The
+//! webview can request lifecycle actions, but it cannot provide an executable,
+//! source directory, or policy/ledger access.
 
 use serde::{Deserialize, Serialize};
-use std::{
-    path::Path,
-    process::{Child, Command, Stdio},
-    sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use serde_json::Value;
+use std::{sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 
 #[derive(Default)]
 pub struct VoiceProcessState {
-    child: Mutex<Option<Child>>,
     started_at: Mutex<Option<u64>>,
     last_error: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct VoiceStartOptions {
-    #[serde(default, alias = "celiaPath")]
-    pub celia_path: Option<String>,
     #[serde(default, alias = "configPath")]
     pub config_path: Option<String>,
-    #[serde(default, alias = "pythonCommand")]
-    pub python_command: Option<String>,
+    #[serde(default, alias = "threadId")]
+    pub thread_id: Option<String>,
     #[serde(default, alias = "openInTerminal")]
     pub open_in_terminal: Option<bool>,
 }
@@ -49,6 +42,15 @@ pub struct VoiceProcessResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RuntimeExtensionStatus {
+    running: bool,
+    pid: Option<u32>,
+    error: Option<String>,
+}
+
+const RUNTIME_EXTENSION_URL: &str = "http://127.0.0.1:48081/v1/extensions/voice.celia";
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -56,43 +58,26 @@ fn now_millis() -> u64 {
         .unwrap_or_default()
 }
 
-fn refresh_child(child: &mut Option<Child>) -> Result<(), String> {
-    let Some(process) = child.as_mut() else {
-        return Ok(());
-    };
-    match process.try_wait().map_err(|error| error.to_string())? {
-        Some(_) => *child = None,
-        None => {}
-    }
-    Ok(())
-}
-
 fn status_inner(state: &VoiceProcessState) -> Result<VoiceProcessStatus, String> {
-    let mut child = state.child.lock().map_err(|_| "voice state poisoned".to_string())?;
-    refresh_child(&mut child)?;
-    let running = child.is_some();
-    let pid = child.as_ref().map(Child::id);
+    let cached_error = state.last_error.lock().map_err(|_| "voice state poisoned".to_string())?.clone();
+    let (running, pid, remote_error) = match reqwest::blocking::Client::new()
+        .get(RUNTIME_EXTENSION_URL)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+    {
+        Ok(response) if response.status().is_success() => match response.json::<RuntimeExtensionStatus>() {
+            Ok(status) => (status.running, status.pid, status.error),
+            Err(error) => (false, None, Some(format!("Runtime extension status was malformed: {error}"))),
+        },
+        Ok(response) => (false, None, Some(format!("Runtime extension status failed: HTTP {}", response.status()))),
+        Err(error) => (false, None, Some(format!("Runtime extension status unavailable: {error}"))),
+    };
     if !running {
-        *state
-            .started_at
-            .lock()
-            .map_err(|_| "voice state poisoned".to_string())? = None;
+        *state.started_at.lock().map_err(|_| "voice state poisoned".to_string())? = None;
     }
-    let last_error = state
-        .last_error
-        .lock()
-        .map_err(|_| "voice state poisoned".to_string())?
-        .clone();
-    let started_at = *state
-        .started_at
-        .lock()
-        .map_err(|_| "voice state poisoned".to_string())?;
-    Ok(VoiceProcessStatus {
-        running,
-        pid,
-        started_at,
-        last_error,
-    })
+    let last_error = remote_error.or(cached_error);
+    let started_at = *state.started_at.lock().map_err(|_| "voice state poisoned".to_string())?;
+    Ok(VoiceProcessStatus { running, pid, started_at, last_error })
 }
 
 #[tauri::command]
@@ -106,166 +91,63 @@ pub fn voice_start_celia(
     options: Option<VoiceStartOptions>,
 ) -> Result<VoiceProcessResult, String> {
     let options = options.unwrap_or_default();
-    let celia_path = options
-        .celia_path
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "请先在设置中填写 Celia 项目路径".to_string())?;
-    let celia_root = Path::new(&celia_path);
-    let run_py = celia_root.join("run.py");
-    if !run_py.is_file() {
-        let error = format!("Celia run.py not found: {}", run_py.display());
-        *state
-            .last_error
-            .lock()
-            .map_err(|_| "voice state poisoned".to_string())? = Some(error.clone());
-        return Ok(VoiceProcessResult {
-            ok: false,
-            running: false,
-            pid: None,
-            error: Some(error),
-        });
+    let current = status_inner(&state)?;
+    if current.running {
+        return Ok(VoiceProcessResult { ok: true, running: true, pid: current.pid, error: None });
     }
 
-    let mut child_slot = state.child.lock().map_err(|_| "voice state poisoned".to_string())?;
-    refresh_child(&mut child_slot)?;
-    if let Some(child) = child_slot.as_ref() {
-        return Ok(VoiceProcessResult {
-            ok: true,
-            running: true,
-            pid: Some(child.id()),
-            error: None,
-        });
-    }
-
-    let python = options
-        .python_command
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            if cfg!(windows) {
-                "python".to_string()
-            } else {
-                "python3".to_string()
-            }
-        });
-    let config_path = options
+    let config_name = options
         .config_path
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "config.yaml".to_string());
-
-    let mut command = Command::new(&python);
-    command
-        .args(["run.py", "--voice", "--config"])
-        .arg(config_path)
-        .current_dir(celia_root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // Keep the optional terminal mode, while avoiding a hidden console for
-        // the normal background process.
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(if options.open_in_terminal.unwrap_or(false) {
-            CREATE_NEW_CONSOLE
-        } else {
-            CREATE_NO_WINDOW
-        });
+        .as_deref()
+        .and_then(|value| value.rsplit(['/', '\\']).next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("config.yaml");
+    let payload = serde_json::json!({
+        "backend": "celia",
+        "config": config_name,
+        "open_in_terminal": options.open_in_terminal.unwrap_or(false),
+    });
+    let mut request = serde_json::Map::new();
+    request.insert("event_type".to_string(), Value::String("voice.start".to_string()));
+    request.insert("payload".to_string(), payload);
+    if let Some(thread_id) = options.thread_id.filter(|value| !value.trim().is_empty()) {
+        request.insert("thread_id".to_string(), Value::String(thread_id));
     }
-
-    let child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            let message = format!("启动 Celia 失败: {error}");
-            *state
-                .last_error
-                .lock()
-                .map_err(|_| "voice state poisoned".to_string())? = Some(message.clone());
-            return Ok(VoiceProcessResult {
-                ok: false,
-                running: false,
-                pid: None,
-                error: Some(message),
-            });
-        }
-    };
-    let pid = child.id();
-    *child_slot = Some(child);
-    drop(child_slot);
-    *state
-        .started_at
-        .lock()
-        .map_err(|_| "voice state poisoned".to_string())? = Some(now_millis());
-    *state
-        .last_error
-        .lock()
-        .map_err(|_| "voice state poisoned".to_string())? = None;
-    Ok(VoiceProcessResult {
-        ok: true,
-        running: true,
-        pid: Some(pid),
-        error: None,
-    })
+    let response = reqwest::blocking::Client::new()
+        .post(format!("{RUNTIME_EXTENSION_URL}/start"))
+        .json(&request)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|error| format!("Runtime extension start unavailable: {error}"))?;
+    let status: RuntimeExtensionStatus = response
+        .json()
+        .map_err(|error| format!("Runtime extension start response was malformed: {error}"))?;
+    if !status.running {
+        let message = status.error.unwrap_or_else(|| "Celia extension is unavailable".to_string());
+        *state.last_error.lock().map_err(|_| "voice state poisoned".to_string())? = Some(message.clone());
+        return Ok(VoiceProcessResult { ok: false, running: false, pid: None, error: Some(message) });
+    }
+    *state.started_at.lock().map_err(|_| "voice state poisoned".to_string())? = Some(now_millis());
+    *state.last_error.lock().map_err(|_| "voice state poisoned".to_string())? = None;
+    Ok(VoiceProcessResult { ok: true, running: true, pid: status.pid, error: None })
 }
 
 #[tauri::command]
 pub fn voice_stop_celia(
     state: tauri::State<'_, VoiceProcessState>,
 ) -> Result<VoiceProcessResult, String> {
-    let mut child_slot = state.child.lock().map_err(|_| "voice state poisoned".to_string())?;
-    refresh_child(&mut child_slot)?;
-    let Some(mut child) = child_slot.take() else {
-        *state
-            .started_at
-            .lock()
-            .map_err(|_| "voice state poisoned".to_string())? = None;
-        return Ok(VoiceProcessResult {
-            ok: true,
-            running: false,
-            pid: None,
-            error: None,
-        });
-    };
-    let pid = child.id();
-    if let Err(error) = child.kill() {
-        let message = format!("停止 Celia 失败: {error}");
-        *state
-            .last_error
-            .lock()
-            .map_err(|_| "voice state poisoned".to_string())? = Some(message.clone());
-        *child_slot = Some(child);
-        return Ok(VoiceProcessResult {
-            ok: false,
-            running: true,
-            pid: Some(pid),
-            error: Some(message),
-        });
-    }
-    let _ = child.wait();
-    *state
-        .started_at
-        .lock()
-        .map_err(|_| "voice state poisoned".to_string())? = None;
-    Ok(VoiceProcessResult {
-        ok: true,
-        running: false,
-        pid: None,
-        error: None,
-    })
+    let response = reqwest::blocking::Client::new()
+        .post(format!("{RUNTIME_EXTENSION_URL}/stop"))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|error| format!("Runtime extension stop unavailable: {error}"))?;
+    let status: RuntimeExtensionStatus = response
+        .json()
+        .map_err(|error| format!("Runtime extension stop response was malformed: {error}"))?;
+    *state.started_at.lock().map_err(|_| "voice state poisoned".to_string())? = None;
+    Ok(VoiceProcessResult { ok: status.error.is_none(), running: status.running, pid: status.pid, error: status.error })
 }
 
-/// Best-effort cleanup used by every desktop exit path. Tauri drops managed
-/// state after the event loop ends, so explicitly terminate the child first.
 pub fn stop_process(state: &VoiceProcessState) {
-    if let Ok(mut child_slot) = state.child.lock() {
-        if let Some(mut child) = child_slot.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-    if let Ok(mut started_at) = state.started_at.lock() {
-        *started_at = None;
-    }
+    if let Ok(mut started_at) = state.started_at.lock() { *started_at = None; }
 }
