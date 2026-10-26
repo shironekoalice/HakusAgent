@@ -1,0 +1,18 @@
+[package]
+name = "hakus-android-asr"
+links = "hakus-android-asr"
+version = "0.1.0"
+description = "Android microphone and external sherpa-onnx ASR boundary for HakusAI"
+edition = "2021"
+
+[lib]
+name = "hakus_android_asr"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

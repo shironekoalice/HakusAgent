@@ -82,11 +82,13 @@ fn spawn_runtime(
     // page and killed the whole process (STATUS_STACK_OVERFLOW). hakus-tui's
     // own binary runs its workers on 16 MiB stacks for exactly this reason
     // (hakus_tui::build_runtime); the embedded runtime gets the same
-    // treatment on a dedicated owner thread.
+    // treatment on a dedicated owner thread. Keep the embedded stack aligned
+    // with the standalone Runtime worker stack so its reservation does not
+    // inflate the desktop process footprint.
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
     std::thread::Builder::new()
         .name("hakus-runtime".to_string())
-        .stack_size(64 * 1024 * 1024)
+        .stack_size(16 * 1024 * 1024)
         .spawn(move || {
             let runtime = match hakus_tui::build_runtime() {
                 Ok(runtime) => runtime,

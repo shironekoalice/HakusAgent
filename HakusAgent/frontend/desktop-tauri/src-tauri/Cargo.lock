@@ -1421,6 +1421,7 @@ dependencies = [
 name = "desktop-tauri"
 version = "0.3.0"
 dependencies = [
+ "hakus-android-asr",
  "hakus-folder-picker",
  "hakus-tui",
  "jni 0.21.1",
@@ -1440,7 +1441,9 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "url",
+ "webview2-com",
  "windows 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -2465,6 +2468,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hakus-android-asr"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "hakus-build-support"
 version = "0.9.10"
 
@@ -2634,6 +2647,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tracing",
 ]
 
@@ -2703,6 +2717,7 @@ dependencies = [
  "hakus-protocol",
  "hakus-release",
  "hakus-secrets",
+ "hakus-state",
  "hakus-telemetry",
  "hakus-tools",
  "hakus-wechat",

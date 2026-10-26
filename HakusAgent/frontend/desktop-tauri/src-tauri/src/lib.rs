@@ -14,7 +14,9 @@ mod clipboard_cmds;
 // Available on every platform (including Android) so the Flow HTTP node works
 // there too — it must therefore be registered in BOTH invoke handlers below.
 mod http_cmds;
-// Filesystem access for the Flow file nodes (root-confined, see fs_cmds.rs).
+// Filesystem access for the Flow file nodes (operator-confirmed root, then
+// root-confined path — see fs_cmds.rs and flow_roots.rs).
+mod flow_roots;
 mod fs_cmds;
 #[cfg(not(target_os = "android"))]
 mod git_cmds;
@@ -22,6 +24,9 @@ mod git_cmds;
 mod remote_cmds;
 #[cfg(not(target_os = "android"))]
 mod browser_cmds;
+
+#[cfg(target_os = "android")]
+use hakus_android_asr;
 
 #[cfg(not(target_os = "android"))]
 use tauri::{
@@ -132,8 +137,8 @@ pub(crate) fn toggle_main_window(app: &tauri::AppHandle) {
 /// Opt the main window into Windows 11 rounded corners.
 ///
 /// With `decorations: false` the DWM draws square corners by default; the
-/// explicit `DWMWCP_ROUND` preference restores the native rounded frame
-/// (plus the system drop shadow enabled in tauri.conf.json).
+/// explicit `DWMWCP_ROUND` preference restores the native rounded frame while
+/// the Tauri window shadow remains disabled in `tauri.conf.json`.
 #[cfg(target_os = "windows")]
 fn apply_rounded_corners(app: &tauri::AppHandle) {
     use windows::Win32::Foundation::HWND;
@@ -161,6 +166,74 @@ fn apply_rounded_corners(app: &tauri::AppHandle) {
     }
 }
 
+/// Apply WebView2's supported memory target level.
+///
+/// The production default is `low` so the desktop can meet its whole-app idle
+/// budget. `HAKUS_WEBVIEW2_MEMORY_USAGE_TARGET=normal` remains an explicit
+/// rollback/diagnostic override; an invalid value fails closed to `low`.
+#[cfg(target_os = "windows")]
+fn apply_webview_memory_usage_target(app: &tauri::AppHandle) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL, ICoreWebView2_19,
+    };
+    use windows_core::Interface;
+
+    let configured_target = std::env::var("HAKUS_WEBVIEW2_MEMORY_USAGE_TARGET");
+    let target = match configured_target {
+        Ok(value) => {
+            eprintln!("[setup] WebView2 memory target requested: {value:?}");
+            value.trim().to_ascii_lowercase()
+        }
+        Err(_) => {
+            eprintln!("[setup] WebView2 memory target requested: default low");
+            "low".to_string()
+        }
+    };
+    let level = match target.as_str() {
+        "low" => 1,
+        "normal" => 0,
+        _ => {
+            eprintln!(
+                "[setup] Invalid HAKUS_WEBVIEW2_MEMORY_USAGE_TARGET={target:?}; using low"
+            );
+            1
+        }
+    };
+    let applied_target = if level == 1 { "low" } else { "normal" }.to_string();
+
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!(
+            "[setup] Main WebView is unavailable for memory target {applied_target}"
+        );
+        return;
+    };
+    let callback_target = applied_target.clone();
+    let result = window.with_webview(move |webview| {
+        let result = (|| -> Result<(), String> {
+            let core = unsafe { webview.controller().CoreWebView2() }
+                .map_err(|error| error.to_string())?;
+            let extended = core.cast::<ICoreWebView2_19>().map_err(|error| error.to_string())?;
+            unsafe {
+                extended
+                    .SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(level))
+                    .map_err(|error| error.to_string())?;
+            }
+            eprintln!("[setup] WebView2 memory target applied: {callback_target}");
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!(
+                "[setup] Failed to set WebView2 memory target {callback_target}: {error}"
+            );
+        }
+    });
+    if let Err(error) = result {
+        eprintln!(
+            "[setup] WebView2 memory target callback failed for {applied_target}: {error}"
+        );
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn apply_window_material(app: &tauri::AppHandle) {
     use tauri::window::{Effect, EffectsBuilder};
@@ -176,11 +249,15 @@ fn apply_window_material(app: &tauri::AppHandle) {
             Some("dark") => false,
             _ => matches!(window.theme(), Ok(tauri::Theme::Light)),
         };
-        let effect = if light { Effect::MicaLight } else { Effect::MicaDark };
+        let effect = if light {
+            Effect::MicaLight
+        } else {
+            Effect::MicaDark
+        };
         if let Err(error) = window.set_effects(EffectsBuilder::new().effect(effect).build()) {
             eprintln!("[setup] Mica material unavailable, falling back to Acrylic: {error}");
             if let Err(error) =
-                window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build())
+                window.set_effects(EffectsBuilder::new().effect(Effect::Acrylic).build())
             {
                 eprintln!("[setup] Failed to apply the native window material: {error}");
             }
@@ -313,6 +390,9 @@ pub fn run() {
                     let _ = window.show();
                 }
 
+                #[cfg(target_os = "windows")]
+                apply_webview_memory_usage_target(app.handle());
+
                 // Windows 11: restore rounded corners on the undecorated
                 // window (they default to square without OS decorations).
                 #[cfg(target_os = "windows")]
@@ -383,6 +463,7 @@ pub fn run() {
         // below because the official dialog plugin has no folder picker on Android.
         builder = builder.plugin(tauri_plugin_dialog::init());
         builder = builder.plugin(hakus_folder_picker::init());
+        builder = builder.plugin(hakus_android_asr::init());
         // Android has no bundled Python interpreter. Start the shared Rust
         // Runtime API in-process and keep all state under app_data_dir().
         builder = builder.setup(|app| {
@@ -413,7 +494,6 @@ pub fn run() {
         window_cmds::window_toggle_maximize,
         window_cmds::window_close,
         window_cmds::window_is_maximized,
-        window_cmds::window_set_material,
         window_cmds::finish_splash,
         // Tray
         tray_cmds::tray_get_config,
@@ -438,10 +518,8 @@ pub fn run() {
         clipboard_cmds::copy_text,
         clipboard_cmds::read_clipboard_text,
         // Git review / worktree / dependency doctor
-        git_cmds::git_apply_patch,
         git_cmds::git_branch_list,
         git_cmds::git_worktree_list,
-        git_cmds::git_worktree_add,
         git_cmds::git_pr_list,
         git_cmds::git_pr_checks,
         git_cmds::doctor_check_dependencies,
@@ -449,6 +527,10 @@ pub fn run() {
         fs_cmds::fs_read_text,
         fs_cmds::fs_write_text,
         fs_cmds::fs_list_dir,
+        flow_roots::flow_roots_list,
+        flow_roots::flow_root_check,
+        flow_roots::flow_root_confirm,
+        flow_roots::flow_root_revoke,
         remote_cmds::remote_list_targets,
         remote_cmds::remote_list_ssh_hosts,
         remote_cmds::remote_connect,
@@ -485,6 +567,10 @@ pub fn run() {
         fs_cmds::fs_read_text,
         fs_cmds::fs_write_text,
         fs_cmds::fs_list_dir,
+        flow_roots::flow_roots_list,
+        flow_roots::flow_root_check,
+        flow_roots::flow_root_confirm,
+        flow_roots::flow_root_revoke,
     ]);
 
     let app = builder

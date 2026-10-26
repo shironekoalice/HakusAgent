@@ -5,6 +5,7 @@
   "windows": ["main"],
   "platforms": ["android"],
   "permissions": [
-    "hakus-folder-picker:default"
+    "hakus-folder-picker:default",
+    "hakus-android-asr:default"
   ]
 }

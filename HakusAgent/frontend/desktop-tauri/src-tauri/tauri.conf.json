@@ -24,7 +24,8 @@
         "decorations": false,
         "shadow": false,
         "transparent": true,
-        "visible": false
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --single-process --disable-gpu --in-process-gpu --disable-gpu-compositing --disable-extensions --disable-background-networking --disable-component-update --disable-default-apps --disable-sync --js-flags=--max-old-space-size=64"
       }
     ],
     "security": {

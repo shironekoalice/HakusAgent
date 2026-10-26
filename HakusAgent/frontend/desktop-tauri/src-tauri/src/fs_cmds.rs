@@ -2,16 +2,26 @@
  * Filesystem commands for the Flow canvas node.
  *
  * File access from a graph is powerful, so it is deliberately constrained:
- * - every path is resolved INSIDE a root the caller passes, and `..` cannot
- *   escape it (checked after canonicalisation, not by string matching);
+ * - the requested root must have been **confirmed by the operator** before any
+ *   access uses it (`flow_roots::authorize`). The root still comes from the
+ *   graph, but a graph is an importable JSON document, so its choice of root is
+ *   a proposal the operator agrees to rather than an assertion that takes
+ *   effect;
+ * - every path is resolved INSIDE that root, and `..` cannot escape it (checked
+ *   after canonicalisation, not by string matching);
  * - writes only ever create or replace a file — never a directory tree walk;
  * - size caps bound memory.
  *
- * The node's root comes from the graph, not from this layer, so the operator
- * decides which folder a workflow may touch.
+ * The two layers are complementary and neither is sufficient alone: the
+ * confirmation decides *which folder* is in play, and `resolve_within` decides
+ * *what inside it* is reachable.
  */
 
 use std::path::{Path, PathBuf};
+
+use tauri::AppHandle;
+
+use crate::flow_roots;
 
 const MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_WRITE_BYTES: usize = 2 * 1024 * 1024;
@@ -70,18 +80,6 @@ fn resolve_within(root: &Path, relative: &str, create_parents: bool) -> Result<P
     Ok(resolved)
 }
 
-fn root_from(raw: &str) -> Result<PathBuf, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("A root directory is required for file access".to_string());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err(format!("Root must be an absolute path: {trimmed}"));
-    }
-    Ok(path)
-}
-
 /// Strip the Verbatim prefix that Windows canonicalisation adds, so paths in
 /// the UI and in graph data stay the ones the operator typed.
 fn display_path(path: &Path) -> String {
@@ -107,8 +105,12 @@ pub struct DirEntry {
 }
 
 #[tauri::command]
-pub async fn fs_read_text(root: String, path: String) -> Result<FileReadResult, String> {
-    let root = root_from(&root)?;
+pub async fn fs_read_text(
+    app: AppHandle,
+    root: String,
+    path: String,
+) -> Result<FileReadResult, String> {
+    let root = flow_roots::authorize(&app, &root, false)?;
     let target = resolve_within(&root, &path, false)?;
     let meta = tokio::fs::metadata(&target)
         .await
@@ -135,11 +137,12 @@ pub async fn fs_read_text(root: String, path: String) -> Result<FileReadResult, 
 
 #[tauri::command]
 pub async fn fs_write_text(
+    app: AppHandle,
     root: String,
     path: String,
     content: String,
 ) -> Result<String, String> {
-    let root = root_from(&root)?;
+    let root = flow_roots::authorize(&app, &root, true)?;
     if content.len() > MAX_WRITE_BYTES {
         return Err(format!(
             "Content is {} bytes, over the {} byte write limit",
@@ -160,8 +163,12 @@ pub async fn fs_write_text(
 }
 
 #[tauri::command]
-pub async fn fs_list_dir(root: String, path: String) -> Result<Vec<DirEntry>, String> {
-    let root = root_from(&root)?;
+pub async fn fs_list_dir(
+    app: AppHandle,
+    root: String,
+    path: String,
+) -> Result<Vec<DirEntry>, String> {
+    let root = flow_roots::authorize(&app, &root, false)?;
     let target = resolve_within(&root, &path, false)?;
     let mut entries = Vec::new();
     let mut reader = tokio::fs::read_dir(&target)

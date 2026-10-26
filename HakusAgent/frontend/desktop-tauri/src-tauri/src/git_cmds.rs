@@ -3,9 +3,8 @@
  * dependency probes that the embedded Runtime may not expose yet.
  */
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(serde::Serialize, Clone)]
 pub struct WorktreeInfo {
@@ -69,64 +68,18 @@ fn run_cmd(program: &str, args: &[&str], workdir: Option<&Path>) -> Result<Strin
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn git_apply_stdin(dir: &Path, patch: &str, args: &[&str]) -> Result<(), String> {
-    let mut cmd = command_base("git");
-    cmd.args(args)
-        .current_dir(dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("git apply spawn failed: {e}"))?;
-    {
-        let stdin = child.stdin.as_mut().ok_or("git apply: no stdin")?;
-        stdin
-            .write_all(patch.as_bytes())
-            .map_err(|e| format!("write patch: {e}"))?;
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("git apply wait: {e}"))?;
-    if !out.status.success() {
-        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if msg.is_empty() {
-            "git apply rejected the patch".to_string()
-        } else {
-            msg
-        });
-    }
-    Ok(())
-}
+// `git_apply_stdin` lived here too, feeding a patch to `git apply` over stdin.
+// It was only ever called by `git_apply_patch`; both are gone now that hunk
+// staging goes through the Runtime, and leaving an unused patch-applier in the
+// Tauri process would invite it being wired up again.
 
-/// `git apply` against a workdir. `reverse` undoes the patch; `cached` targets the index.
-#[tauri::command]
-pub fn git_apply_patch(
-    workdir: String,
-    patch: String,
-    reverse: bool,
-    cached: bool,
-) -> Result<(), String> {
-    let dir = PathBuf::from(&workdir);
-    if !dir.is_dir() {
-        return Err(format!("workdir does not exist: {workdir}"));
-    }
-    if patch.trim().is_empty() {
-        return Err("patch is empty".into());
-    }
-    let mut check: Vec<&str> = vec!["apply", "--check", "--3way"];
-    let mut apply: Vec<&str> = vec!["apply", "--3way"];
-    if reverse {
-        check.push("-R");
-        apply.push("-R");
-    }
-    if cached {
-        check.push("--cached");
-        apply.push("--cached");
-    }
-    git_apply_stdin(&dir, &patch, &check)?;
-    git_apply_stdin(&dir, &patch, &apply)
-}
+// `git_apply_patch` used to live here. It spawned `git apply --3way` in the
+// Tauri process against a caller-supplied `workdir` and arbitrary patch text,
+// which made the desktop a second place where a repository could be mutated —
+// choosing both the repository and the change. Staging and reverting a hunk now
+// goes through the Rust Runtime's `POST /v1/workspace/apply-hunk`, which is
+// bound to the workspace it serves and validates the path as workspace-relative.
+// See `frontend/terminal/crates/tui/src/runtime_api/workspace.rs`.
 
 /// List local branches (names only) for the review branch picker.
 #[tauri::command]
@@ -185,29 +138,6 @@ pub fn git_worktree_list(workdir: String) -> Result<Vec<WorktreeInfo>, String> {
         trees.push(t);
     }
     Ok(trees)
-}
-
-/// Create a git worktree at `path` on an existing or new branch.
-#[tauri::command]
-pub fn git_worktree_add(
-    workdir: String,
-    path: String,
-    branch: Option<String>,
-    new_branch: Option<String>,
-) -> Result<(), String> {
-    let dir = PathBuf::from(&workdir);
-    let mut args: Vec<String> = vec!["worktree".to_string(), "add".to_string()];
-    if let Some(nb) = new_branch.filter(|s| !s.trim().is_empty()) {
-        args.push("-b".to_string());
-        args.push(nb);
-    }
-    args.push(path);
-    if let Some(b) = branch.filter(|s| !s.trim().is_empty()) {
-        args.push(b);
-    }
-    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run_cmd("git", &refs, Some(&dir))?;
-    Ok(())
 }
 
 /// PR list via GitHub CLI when available; empty list otherwise.
