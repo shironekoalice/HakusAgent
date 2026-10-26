@@ -36,6 +36,12 @@ from .base_client import (
     ModelConfig,
 )
 from .client_factory import create_client, create_client_from_config
+from .legacy_provider_adapter import (
+    LegacyProviderAdapter,
+    LegacyProviderRouteError,
+    LegacyProviderStatus,
+    redact_provider_diagnostic,
+)
 from .provider_registry import PROVIDERS, get_provider_ids, is_valid_provider
 
 __all__ = [
@@ -55,6 +61,10 @@ __all__ = [
     "ModelConfig",
     "create_client",
     "create_client_from_config",
+    "LegacyProviderAdapter",
+    "LegacyProviderRouteError",
+    "LegacyProviderStatus",
+    "redact_provider_diagnostic",
     # Provider registry
     "PROVIDERS",
     "get_provider_ids",

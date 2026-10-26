@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Iterator
 
 from utils.logger import get_logger
+from .compat_writers import writers_frozen
 
 logger = get_logger(__name__)
 
@@ -108,7 +109,8 @@ class RolloutRecorder:
         if rollout_dir is None:
             rollout_dir = os.path.join(project_root or ".", ".hakus", "rollouts")
         self._rollout_dir = rollout_dir
-        os.makedirs(rollout_dir, exist_ok=True)
+        if not writers_frozen():
+            os.makedirs(rollout_dir, exist_ok=True)
 
         self._filepath = os.path.join(
             rollout_dir, f"rollout_{session_id}.jsonl"
@@ -129,7 +131,10 @@ class RolloutRecorder:
 
     def start(self) -> None:
         """Start recording."""
+        if writers_frozen():
+            return
         with self._lock:
+            os.makedirs(self._rollout_dir, exist_ok=True)
             self._file = open(self._filepath, "a", encoding="utf-8")
             self._started = True
             self._write_event(RolloutEvent(
@@ -412,6 +417,8 @@ class RolloutRecorder:
 
     def _write_event(self, event: RolloutEvent) -> None:
         """Write an event to the JSONL file."""
+        if writers_frozen():
+            return
         if not self._session_id:
             event.session_id = self._session_id
 

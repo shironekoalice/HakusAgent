@@ -44,6 +44,27 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::(-?[^}]*))?\}")
 
 
+def redact_provider_text(value: Any, *, secrets: Tuple[str, ...] = ()) -> str:
+    """Return bounded provider diagnostics without credentials or env values."""
+    text = str(value or "")
+    for secret in secrets:
+        if secret and len(secret) >= 3:
+            text = text.replace(secret, "<redacted>")
+    text = re.sub(r"(?i)(bearer\s+)[^\s,;\"']+", r"\1<redacted>", text)
+    text = re.sub(
+        r"(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)[^\s&,}\"']+",
+        r"\1\2<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:api[_-]?key|token|secret|password)=)[^&\s]+",
+        r"\1<redacted>",
+        text,
+    )
+    text = re.sub(r"\$\{[^}]+\}", "<env-redacted>", text)
+    return text[:500]
+
+
 def resolve_placeholder(val: str) -> str:
     """Resolve ${VAR:default} placeholders using env vars.
 
@@ -83,7 +104,7 @@ def looks_like_placeholder(val: str) -> bool:
     return bool(_PLACEHOLDER_RE.search(val))
 
 
-# --- provider metadata (must match server.py PROVIDER_META) ---
+# --- provider metadata (single source for provider APIs) ---
 
 PROVIDER_META: Dict[str, Dict[str, Any]] = {
     "opencode":  {"key_name": "opencode_api_key",  "has_url": True,  "display": "OpenCode",            "default_url": "https://api.opencode.ai/v1",     "default_model": "deepseek-v4-flash-free"},
@@ -94,6 +115,11 @@ PROVIDER_META: Dict[str, Dict[str, Any]] = {
     "gemini":    {"key_name": "gemini_api_key",    "has_url": True,  "display": "Gemini",              "default_url": "https://generativelanguage.googleapis.com/v1beta/openai", "default_model": "gemini-1.5-flash"},
     "glm":       {"key_name": "glm_api_key",       "has_url": True,  "display": "GLM (智谱)",          "default_url": "https://open.bigmodel.cn/api/paas/v4", "default_model": "glm-4-flash"},
     "mimo":      {"key_name": "mimo_api_key",      "has_url": True,  "display": "MiMo (小米)",         "default_url": "https://api.mimo.xiaomi.com/v1", "default_model": "mimo-7b-rl"},
+    # AISZ is an OpenAI-compatible gateway.  The existing config uses the
+    # shared openai_api_key field for this provider.
+    "aisz":      {"key_name": "openai_api_key",     "has_url": True,  "display": "AISZ GPT",             "default_url": "https://api1.aisz.mom/v1",     "default_model": "gpt-5.6-luna"},
+    "sensenova": {"key_name": "sensenova_api_key", "has_url": True,  "display": "SenseNova",             "default_url": "https://token.sensenova.cn/v1",     "default_model": "glm-5.2"},
+    "stepfun":   {"key_name": "stepfun_api_key",   "has_url": True,  "display": "StepFun",               "default_url": "https://api.stepfun.com/v1",         "default_model": "step-5-preview"},
     "ollama":    {"key_name": "",                  "has_url": True,  "display": "Ollama (本地)",       "default_url": "http://localhost:11434/v1",      "default_model": "qwen2.5:7b"},
 }
 
@@ -103,7 +129,7 @@ PROVIDER_GROUPS: List[Tuple[str, List[str]]] = [
     ("国内",      ["deepseek", "qwen", "glm", "mimo"]),
     ("国际",      ["openai", "anthropic", "gemini"]),
     ("本地",      ["ollama"]),
-    ("聚合",      ["opencode"]),
+    ("聚合",      ["opencode", "aisz", "sensenova", "stepfun"]),
 ]
 
 
@@ -132,8 +158,16 @@ def list_known_providers() -> List[Dict[str, Any]]:
 
 # --- raw config reader (single source of truth) ---
 
-def _load_raw_config() -> dict:
-    config_path = Path(os.path.expanduser("~/.hakus/config.yaml"))
+def _config_path() -> Path:
+    """Return the provider config path, honoring an explicit runtime override."""
+    override = os.environ.get("HAKUS_CONFIG_PATH", "").strip()
+    if override:
+        return Path(os.path.expandvars(os.path.expanduser(override)))
+    return Path(os.path.expanduser("~/.hakus/config.yaml"))
+
+
+def _load_raw_config(config_path: Optional[Path] = None) -> dict:
+    config_path = config_path or _config_path()
     if not config_path.exists():
         return {}
     try:
@@ -143,9 +177,9 @@ def _load_raw_config() -> dict:
 
 
 def _save_raw_config(raw: dict) -> None:
-    config_dir = Path(os.path.expanduser("~/.hakus"))
+    config_path = _config_path()
+    config_dir = config_path.parent
     config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "config.yaml"
     config_path.write_text(
         _yaml.dump(raw, allow_unicode=True, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
@@ -166,13 +200,23 @@ def _resolve_provider_config(provider_id: str, raw: Optional[dict] = None) -> Di
 
     api_keys = raw.get("api_keys", {}) or {}
     models_cfg = raw.get("models", {}) or {}
-    prov_cfg = models_cfg.get(provider_id, {}) or {}
+    # New config files group provider overrides under models.providers, while
+    # older installations stored them directly under models.  Read both so
+    # health checks and the chat path resolve the same user-visible settings.
+    prov_cfg = _provider_config_block(models_cfg, provider_id)
 
     key_name = meta["key_name"]
     # api_key must also be resolved — otherwise "${OPENAI_API_KEY:sk-xxx}"
     # gets passed to httpx as a literal Bearer token and connection test
     # always 401s.
-    api_key_raw = api_keys.get(key_name, "") if key_name else ""
+    # Current configs keep credentials beside the provider definition.  Older
+    # configs keep them under top-level api_keys; accept both, preferring the
+    # provider-local value so a shared key name (AISZ/OpenAI) is unambiguous.
+    api_key_raw = prov_cfg.get("api_key", "") if isinstance(prov_cfg, dict) else ""
+    if not api_key_raw and key_name:
+        api_key_raw = api_keys.get(key_name, "")
+    if not api_key_raw and provider_id == "aisz":
+        api_key_raw = api_keys.get("aisz_api_key", "")
     api_key = resolve_placeholder(api_key_raw) if api_key_raw else ""
     base_url = resolve_placeholder(prov_cfg.get("base_url", "") or meta["default_url"])
     model_name = resolve_placeholder(prov_cfg.get("model_name", "") or meta["default_model"])
@@ -189,12 +233,24 @@ def _resolve_provider_config(provider_id: str, raw: Optional[dict] = None) -> Di
     }
 
 
+def _provider_config_block(models_cfg: dict, provider_id: str) -> dict:
+    """Read a provider block from current or legacy model config layouts."""
+    provider_cfgs = models_cfg.get("providers", {}) or {}
+    nested = provider_cfgs.get(provider_id, {}) if isinstance(provider_cfgs, dict) else {}
+    legacy = models_cfg.get(provider_id, {})
+    if isinstance(nested, dict) and nested:
+        return nested
+    return legacy if isinstance(legacy, dict) else {}
+
+
 # --- connection test ---
 
 @dataclass
 class ConnectionTestResult:
     ok: bool
     message: str
+    # Stable machine-readable state for UI and automation consumers.
+    status: str = "error"
     detail: Optional[str] = None
     latency_ms: Optional[int] = None
 
@@ -220,7 +276,9 @@ async def test_provider_connection(
     """
     meta = PROVIDER_META.get(provider_id)
     if not meta:
-        return ConnectionTestResult(ok=False, message=f"未知 provider: {provider_id}")
+        return ConnectionTestResult(
+            ok=False, message=f"未知 provider: {provider_id}", status="unknown_provider"
+        )
 
     cfg = _resolve_provider_config(provider_id)
     api_key = override_api_key or cfg["api_key"]
@@ -232,6 +290,7 @@ async def test_provider_connection(
         return ConnectionTestResult(
             ok=False,
             message=f"未配置 {meta['display']} 的 API Key，无法测试连接",
+            status="unconfigured",
             detail="请在配置中填入 API Key 后再点测试按钮。",
         )
 
@@ -268,12 +327,14 @@ async def test_provider_connection(
             return ConnectionTestResult(
                 ok=True,
                 message=f"{meta['display']} 连接成功 ({latency} ms)",
+                status="healthy",
                 latency_ms=latency,
             )
         elif resp.status_code == 401:
             return ConnectionTestResult(
                 ok=False,
                 message="API Key 无效或已过期",
+                status="unauthorized",
                 detail=f"HTTP 401 — 服务端拒绝了你的 API Key。请检查 Key 是否正确，是否对应当前选择的 provider。",
                 latency_ms=latency,
             )
@@ -281,6 +342,7 @@ async def test_provider_connection(
             return ConnectionTestResult(
                 ok=False,
                 message="API Key 权限不足",
+                status="forbidden",
                 detail=f"HTTP 403 — Key 有效但无权限访问 {model_name}。检查该 Key 是否开通了对应模型权限。",
                 latency_ms=latency,
             )
@@ -288,21 +350,24 @@ async def test_provider_connection(
             return ConnectionTestResult(
                 ok=False,
                 message="Base URL 错误 (404)",
-                detail=f"{base_url} 返回 404。请检查 Base URL 是否正确（注意是否带 /v1 后缀）。",
+                status="misconfigured",
+                detail=f"{redact_provider_text(base_url, secrets=(api_key,))} 返回 404。请检查 Base URL 是否正确（注意是否带 /v1 后缀）。",
                 latency_ms=latency,
             )
         elif resp.status_code == 429:
             return ConnectionTestResult(
                 ok=False,
                 message="请求频率超限 (429)",
+                status="rate_limited",
                 detail="Key 连接是通的，但当前请求频率超限。稍后再试。",
                 latency_ms=latency,
             )
         else:
-            body_excerpt = (resp.text or "")[:300]
+            body_excerpt = redact_provider_text(resp.text, secrets=(api_key,))
             return ConnectionTestResult(
                 ok=False,
                 message=f"HTTP {resp.status_code}",
+                status="error",
                 detail=body_excerpt,
                 latency_ms=latency,
             )
@@ -311,20 +376,30 @@ async def test_provider_connection(
         return ConnectionTestResult(
             ok=False,
             message="无法连接到服务器",
-            detail=f"ConnectError: {e}\n检查 Base URL 是否正确，以及网络/代理是否拦截了请求。",
+            status="unavailable",
+            detail=redact_provider_text(
+                f"ConnectError: {e}\n检查 Base URL 是否正确，以及网络/代理是否拦截了请求。",
+                secrets=(api_key,),
+            ),
         )
     except httpx.TimeoutException:
         return ConnectionTestResult(
             ok=False,
             message=f"连接超时 (>{timeout:.0f}s)",
+            status="unavailable",
             detail="服务端未在超时时间内响应。可能 Base URL 错误，或网络不通。",
         )
     except Exception as e:
-        logger.warning(f"test_provider_connection({provider_id}) failed: {e!r}")
+        logger.warning(
+            "test_provider_connection(%s) failed: %s",
+            provider_id,
+            redact_provider_text(repr(e), secrets=(api_key,)),
+        )
         return ConnectionTestResult(
             ok=False,
             message=f"测试失败: {type(e).__name__}",
-            detail=str(e)[:500],
+            status="error",
+            detail=redact_provider_text(str(e), secrets=(api_key,)),
         )
 
 
@@ -395,7 +470,7 @@ async def fetch_provider_models(
                 ok=False,
                 models=[],
                 message=f"获取模型列表失败 (HTTP {resp.status_code})",
-                detail=(resp.text or "")[:500],
+                detail=redact_provider_text(resp.text, secrets=(api_key,)),
             )
 
         data = resp.json()
@@ -406,7 +481,10 @@ async def fetch_provider_models(
                 ok=False,
                 models=[],
                 message="响应格式异常",
-                detail=f"expected list, got {type(raw_models).__name__}: {str(data)[:200]}",
+                detail=redact_provider_text(
+                    f"expected list, got {type(raw_models).__name__}: {data}",
+                    secrets=(api_key,),
+                ),
             )
 
         models: List[Dict[str, Any]] = []
@@ -434,7 +512,7 @@ async def fetch_provider_models(
             ok=False,
             models=[],
             message="无法连接到服务器",
-            detail=f"ConnectError: {e}",
+            detail=redact_provider_text(f"ConnectError: {e}", secrets=(api_key,)),
         )
     except httpx.TimeoutException:
         return FetchModelsResult(
@@ -443,12 +521,16 @@ async def fetch_provider_models(
             message=f"连接超时 (>{timeout:.0f}s)",
         )
     except Exception as e:
-        logger.warning(f"fetch_provider_models({provider_id}) failed: {e!r}")
+        logger.warning(
+            "fetch_provider_models(%s) failed: %s",
+            provider_id,
+            redact_provider_text(repr(e), secrets=(api_key,)),
+        )
         return FetchModelsResult(
             ok=False,
             models=[],
             message=f"获取失败: {type(e).__name__}",
-            detail=str(e)[:500],
+            detail=redact_provider_text(str(e), secrets=(api_key,)),
         )
 
 
@@ -488,12 +570,13 @@ def list_provider_keys(provider_id: str) -> List[Dict[str, Any]]:
         return []
 
     out: List[Dict[str, Any]] = []
-    key_name = meta["key_name"]
-    primary_raw = api_keys.get(key_name, "") if key_name else ""
+    # Use the same resolver as connection tests so provider-local credentials
+    # and legacy top-level credentials produce the same primary entry.
+    primary_raw = _resolve_provider_config(provider_id, raw)["api_key"]
     # Resolve ${VAR:default} so the masked_key shown in UI is the real key
     # (or a friendly "<未设置>" hint if env var not set), not the literal
     # "${OPENAI_API_KEY:sk-xxx}" template.
-    primary = resolve_placeholder(primary_raw) if primary_raw else ""
+    primary = primary_raw
     if primary:
         out.append({
             "id": "__primary__",

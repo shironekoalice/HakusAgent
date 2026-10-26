@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from utils.logger import get_logger
+from .compat_writers import writers_frozen
 
 logger = get_logger(__name__)
 
@@ -139,6 +140,8 @@ class SessionLogRecorder:
     # ------------------------------------------------------------------
 
     def _ensure_dir(self) -> None:
+        if writers_frozen():
+            return
         if self._dir_created:
             return
         try:
@@ -149,6 +152,8 @@ class SessionLogRecorder:
 
     def _write_line(self, obj: Dict[str, Any]) -> None:
         """Append one JSON line to the file. Must hold self._lock."""
+        if writers_frozen():
+            return
         try:
             line = json.dumps(obj, ensure_ascii=False, default=str)
             with open(self._path, "a", encoding="utf-8") as f:
@@ -159,6 +164,8 @@ class SessionLogRecorder:
 
     def _maybe_compact(self) -> None:
         """If the log exceeds thresholds, archive the oldest half."""
+        if writers_frozen():
+            return
         try:
             size = self._path.stat().st_size
         except Exception:
@@ -402,6 +409,8 @@ class SessionLogRecorder:
         not append-only in the strict sense, but it's necessary to keep
         the log consistent with the message store after a rewind.
         """
+        if writers_frozen():
+            return
         with self._lock:
             try:
                 with open(self._path, "r", encoding="utf-8") as f:
@@ -423,6 +432,8 @@ class SessionLogRecorder:
     def clear(self) -> None:
         """Delete both the live log and the archive. Used when a session
         is deleted entirely."""
+        if writers_frozen():
+            return
         with self._lock:
             for p in [self._path, self._archive]:
                 try:

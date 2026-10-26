@@ -44,7 +44,27 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hakus.compat_writers import (
+    PythonWritersFrozen,
+    assert_writers_open as _assert_writers_open,
+    writers_frozen,
+)
+
 logger = logging.getLogger(__name__)
+
+# Phase 0 migration gate (REFACTOR_STATUS "freeze new Python
+# transcript/checkpoint writers"). Once the Rust Runtime owns the canonical
+# ledger, new Python transcript rows must not appear: every extra row
+# widens the drift the Phase 1 importer has to reconcile. Setting
+# HAKUS_FREEZE_PYTHON_WRITERS freezes the new-data writers (messages, events,
+# truncation markers, sessions, and compatibility automations) — reads remain
+# available, while state mutations (including updates to existing rows) raise
+# PythonWritersFrozen. The Rust Runtime owns the default automation path, so
+# the Python scheduler is disabled while this compatibility boundary is read-
+# only. The bulk importer is the one deliberate write exception because it is
+# the sanctioned migration path. Checkpoint disk persistence
+# (hakus.checkpoint.CheckpointManager.persist) enforces the same flag.
+
 
 # Where the DB file lives. Respects $HAKUS_HOME override (used by tests
 # and by the Electron launcher when running portably).
@@ -290,6 +310,7 @@ def create_session(
     origin: str = "user",
 ) -> Dict[str, Any]:
     """Insert a new session row. Idempotent on id (raises if collision)."""
+    _assert_writers_open("create_session", f"session={session_id}")
     import time as _time
     now = int(_time.time() * 1000)
     conn = _get_conn()
@@ -344,6 +365,7 @@ def update_session(
         args.append(1 if pinned else 0)
     if not sets and not touch_updated:
         return get_session(session_id)
+    _assert_writers_open("update_session", f"session={session_id}")
     if touch_updated:
         import time as _time
         sets.append("updated_at=?")
@@ -360,6 +382,7 @@ def update_session(
 
 def delete_session(session_id: str) -> bool:
     """Delete a session + cascade messages. Returns True if a row was deleted."""
+    _assert_writers_open("delete_session", f"session={session_id}")
     conn = _get_conn()
     with _lock:
         cur = conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
@@ -461,6 +484,11 @@ def add_message(
     updated_at: Optional[int] = None,
 ) -> Dict[str, Any]:
     import time as _time
+    if writers_frozen():
+        raise PythonWritersFrozen(
+            f"add_message refused: Python transcript writers are frozen "
+            f"(HAKUS_FREEZE_PYTHON_WRITERS); session={session_id}"
+        )
     now = int(_time.time() * 1000)
     conn = _get_conn()
     with _lock:
@@ -546,6 +574,11 @@ def update_message(
         args.append(1 if streaming else 0)
     if not sets:
         return None
+    if writers_frozen():
+        raise PythonWritersFrozen(
+            f"update_message refused: Python transcript writers are frozen "
+            f"(HAKUS_FREEZE_PYTHON_WRITERS); message={message_id}"
+        )
 
     import time as _time
     sets.append("updated_at=?")
@@ -597,6 +630,7 @@ def update_message(
 
 
 def delete_message(message_id: str) -> bool:
+    _assert_writers_open("delete_message", f"message={message_id}")
     conn = _get_conn()
     with _lock:
         cur = conn.execute("DELETE FROM messages WHERE id=?", (message_id,))
@@ -608,6 +642,7 @@ def clear_session_messages(session_id: str) -> int:
     (append-only ledger — rows are NOT physically deleted). Returns the
     number of messages now hidden. Used by the TopBar 'clear conversation'
     button — user wants to start fresh in the same session without deleting it."""
+    _assert_writers_open("clear_session_messages", f"session={session_id}")
     import time as _time
     now = int(_time.time() * 1000)
     visible = list_messages(session_id)  # projection before truncation
@@ -705,6 +740,7 @@ def bulk_import(
 def wipe_all() -> int:
     """Delete ALL sessions + messages. Used by the dangerous reset button.
     Returns number of sessions deleted."""
+    _assert_writers_open("wipe_all", "all sessions")
     conn = _get_conn()
     with _lock:
         cur = conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
@@ -773,6 +809,11 @@ def append_event(
     per-session monotonically increasing.
     """
     import time as _time
+    if writers_frozen():
+        raise PythonWritersFrozen(
+            f"append_event refused: Python transcript writers are frozen "
+            f"(HAKUS_FREEZE_PYTHON_WRITERS); session={session_id} type={type}"
+        )
     now = int(_time.time() * 1000)
     conn = _get_conn()
     with _lock:
@@ -874,6 +915,7 @@ def create_automation(
     created_at: Optional[int] = None,
 ) -> Dict[str, Any]:
     import time as _time
+    _assert_writers_open("create_automation", f"automation={automation_id}")
     conn = _get_conn()
     with _lock:
         conn.execute(
@@ -932,6 +974,7 @@ def update_automation(
         args.append(None if clear_next_run else next_run_at)
     if not sets:
         return get_automation(automation_id)
+    _assert_writers_open("update_automation", f"automation={automation_id}")
     args.append(automation_id)
     conn = _get_conn()
     with _lock:
@@ -942,6 +985,7 @@ def update_automation(
 
 
 def delete_automation(automation_id: str) -> bool:
+    _assert_writers_open("delete_automation", f"automation={automation_id}")
     conn = _get_conn()
     with _lock:
         cur = conn.execute("DELETE FROM automations WHERE id=?", (automation_id,))
@@ -968,6 +1012,7 @@ def create_automation_run(
     started_at: Optional[int] = None,
 ) -> Dict[str, Any]:
     import time as _time
+    _assert_writers_open("create_automation_run", f"run={run_id}")
     now = int(_time.time() * 1000)
     conn = _get_conn()
     with _lock:
@@ -1002,6 +1047,7 @@ def finish_automation_run(
     error: Optional[str] = None,
 ) -> None:
     import time as _time
+    _assert_writers_open("finish_automation_run", f"run={run_id}")
     conn = _get_conn()
     with _lock:
         conn.execute(

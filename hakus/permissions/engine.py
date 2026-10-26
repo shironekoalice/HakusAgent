@@ -228,7 +228,17 @@ def seed_from_config() -> None:
     """Seed the engine from ``~/.hakus/config.yaml`` (once per process).
 
     Legacy config modes map into the five tiers:
-      ``ask`` → auto, ``bypass`` / ``danger_auto`` / ``auto`` → full_access.
+      ``ask`` → auto, ``bypass`` / ``danger_auto`` → full_access.
+
+    ``auto`` maps to ``auto`` (the five-tier tier, which prompts on mutating
+    ops). It previously mapped to ``full_access``, which granted silence where
+    the legacy name only ever meant "unsafe auto-approve" in a stack that was
+    renamed away from that behaviour precisely because it was unsafe
+    (``hakus/permission.py``: ``AUTO`` is a deprecated alias of ``DANGER_AUTO``,
+    and the default was changed to ``ASK``). A user writing ``auto`` to mean the
+    engine's documented default tier got the opposite: every mutating call ran
+    without a prompt. If a config genuinely wants no prompts, ``bypass`` names
+    that honestly.
     """
     global _seeded
     if _seeded:
@@ -245,7 +255,7 @@ def seed_from_config() -> None:
         perm = raw.get("permission") or {}
         mode = perm.get("mode", "auto")
         mode = {"ask": "auto", "bypass": "full_access",
-                "danger_auto": "full_access", "auto": "full_access"}.get(mode, mode)
+                "danger_auto": "full_access"}.get(mode, mode)
         valid = {m.value for m in FiveMode}
         if mode in valid:
             get_engine().set_mode(mode, rules=perm.get("granular_rules"))

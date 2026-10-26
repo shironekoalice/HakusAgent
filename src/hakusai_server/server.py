@@ -38,6 +38,7 @@ from .agent_bridge import (
     clear_session_history as agentcore_clear_session,
     get_or_create_agent as agentcore_get_or_create,
     post_answer as agentcore_post_answer,
+    get_provider_adapter_diagnostics as agentcore_provider_adapter_diagnostics,
 )
 from . import session_store
 from .logging_config import setup_logging, get_logger
@@ -109,6 +110,44 @@ SIDECAR_API_VERSION_INT = 13  # 整数版本，便于客户端比较
 # BaseAgent chat-only path (useful for debugging / bisecting).
 # Default True — the BaseAgent path is now considered legacy.
 USE_AGENTCORE_FOR_CHAT = os.environ.get("HAKUSAI_USE_AGENTCORE", "1") != "0"
+
+# Phase-0 migration metadata. These fields are diagnostic, not switches: the
+# only reader is execution_plane_metadata() below, and nothing in this process
+# routes on them. Measured in the Phase 2 survey (REFACTOR_STATUS.md, ninth and
+# fourteenth passes): the shipped desktop never starts this sidecar and its
+# client cannot reach it, so an env knob here could only imply a choice nothing
+# makes. `rust_default_path` therefore states the D-001 fact — the desktop's
+# default execution plane is the Rust Runtime — which also removes the old
+# asymmetry where this process defaulted the same env var to off while the Rust
+# runtime defaulted it to on. This process is deprecated as a compatibility
+# plane; the `hakus/` package it bridges to remains the HakusCLI product, which
+# is a first-class client and not part of the desktop default path.
+PYTHON_COMPAT_PATH = True
+RUST_DEFAULT_PATH = True
+
+
+def execution_plane_metadata() -> Dict[str, Any]:
+    """Return safe, machine-readable migration state for diagnostics."""
+    return {
+        "execution_plane": "python_compat",
+        "deprecated": True,
+        "feature_gates": {
+            "rust_default_path": RUST_DEFAULT_PATH,
+            "python_compat_path": PYTHON_COMPAT_PATH,
+            "legacy_agentcore": USE_AGENTCORE_FOR_CHAT,
+            # Phase 0 freeze: when True, Python transcript/checkpoint and
+            # compatibility automation writers refuse new data.
+            "python_writers_frozen": session_store.writers_frozen(),
+        },
+        # Provider calls in this deprecated plane remain a compatibility
+        # adapter. The selected provider is never replaced when it is absent
+        # or cannot be initialized; the Rust Runtime owns the canonical route.
+        "legacy_provider_adapter": {
+            "state": "compatibility",
+            "fallback_policy": "disabled",
+            "canonical_plane": "rust_runtime",
+        },
+    }
 
 
 # ========== 服务器状态机 ==========
@@ -324,6 +363,7 @@ class HakusAIServer:
             "llm_calls": 0,
             "llm_retries": 0,
         }
+        self._process_started_at_unix_ms = int(time.time() * 1000)
         # 按 provider 细分 — by_provider[provider] = {"turns": N, "errors": N, "llm_calls": N}
         self._metrics_by_provider: Dict[str, Dict[str, int]] = {}
         # metrics 锁 (虽然是单线程 asyncio, 但 _inc_metric 也可能被 sync 代码调)
@@ -357,6 +397,12 @@ class HakusAIServer:
         uptime = max(0.0, time.time() - self._metrics_start_time)
         return {
             "uptime_seconds": round(uptime, 2),
+            "process_started_at_unix_ms": self._process_started_at_unix_ms,
+            # The canonical event count — including the persisted
+            # `compat_imported_event_count` for events imported from this
+            # compatibility plane — lives on the Rust Runtime's /v1/metrics.
+            # This sidecar no longer reports a count it cannot author.
+            **execution_plane_metadata(),
             "total_turns": self._metrics["total_turns"],
             "total_errors": self._metrics["total_errors"],
             "active_websockets": len(self.websocket_manager.active_connections),
@@ -578,8 +624,12 @@ class HakusAIServer:
                     model_adapter=self.model_adapter,
                     tts_config=tts_config
                 )
-                self._component_status["vtuber_handler"] = "ok"
-                logger.info("VTuber WebSocket handler initialized")
+                if getattr(vtuber_handler, "_extension_available", False):
+                    self._component_status["vtuber_handler"] = "ok"
+                    logger.info("VTuber extension handler initialized")
+                else:
+                    self._component_status["vtuber_handler"] = "unavailable: extension not installed"
+                    logger.info("VTuber extension handler unavailable; core remains usable")
             except Exception as e:
                 self._component_status["vtuber_handler"] = f"failed: {e}"
                 logger.warning(f"VTuber handler init failed (degraded mode): {e}")
@@ -854,7 +904,10 @@ class HakusAIServer:
             # 加载用户配置 ~/.hakus/config.yaml。
             # 之前这里没加载，导致 AI 初始化一直用 schema 默认值（deepseek），
             # 即使用户在 UI 里设置了 OpenCode 也不生效。
-            config_path = os.path.expanduser("~/.hakus/config.yaml")
+            config_path = os.environ.get(
+                "HAKUS_CONFIG_PATH",
+                os.path.expanduser("~/.hakus/config.yaml"),
+            )
             try:
                 await config_manager.load(config_path)
                 self.config = config_manager.config
@@ -1151,6 +1204,7 @@ class HakusAIServer:
                 "sidecar_api_version_int": SIDECAR_API_VERSION_INT,
                 "server_version": "0.1.0",
                 "use_agentcore_for_chat": USE_AGENTCORE_FOR_CHAT,
+                **execution_plane_metadata(),
                 "agentcore_tools_count": 24,  # hakus/tools/builtin — kept in sync manually
                 "endpoints": [
                     "/api/config/providers",
@@ -1257,6 +1311,12 @@ class HakusAIServer:
                 "active_sessions": list(_agent_cache.keys()),
                 "session_count": len(_agent_cache),
                 "tools_available": USE_AGENTCORE_FOR_CHAT,
+                "legacy_provider_adapter": {
+                    "state": "compatibility",
+                    "fallback_policy": "disabled",
+                    "canonical_plane": "rust_runtime",
+                },
+                "active_provider_bindings": agentcore_provider_adapter_diagnostics(),
                 "permission_mode_default": "ask",
                 "auto_approve_in_sidecar": True,  # no UI to prompt
                 "stream_event_types": [
@@ -1284,7 +1344,9 @@ class HakusAIServer:
             - status == starting 或 initializing: 继续轮询
             - status == failed: 立即停止轮询，向用户展示 error
             """
-            return self._build_health_payload()
+            payload = self._build_health_payload()
+            payload.update(execution_plane_metadata())
+            return payload
         
         @app.get("/api/diagnostics")
         async def diagnostics():
@@ -1295,6 +1357,7 @@ class HakusAIServer:
             "你的 DeepSeek API key 没配" 而不是只显示 "sidecar 30s 超时"。
             """
             payload = self._build_health_payload()
+            payload.update(execution_plane_metadata())
             payload["components"] = dict(self._component_status)
             payload["init_started_at"] = self._init_started_at
             payload["init_finished_at"] = self._init_finished_at
@@ -2007,6 +2070,17 @@ class HakusAIServer:
         # Automations (Codex-style scheduled turns)
         # -----------------------------------------------------------------
 
+        def require_python_automation_writers() -> None:
+            """Reject compatibility automation writes during the migration window."""
+            if session_store.writers_frozen():
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Python compatibility writers are frozen; use the Rust "
+                        "Runtime automation API"
+                    ),
+                )
+
         @app.get("/api/automations")
         async def list_automations_api():
             try:
@@ -2018,6 +2092,7 @@ class HakusAIServer:
         @app.post("/api/automations")
         async def create_automation_api(req: AutomationCreateRequest):
             try:
+                require_python_automation_writers()
                 from .automations import compute_next_run, validate_schedule
                 if not validate_schedule(req.schedule):
                     raise HTTPException(
@@ -2050,6 +2125,7 @@ class HakusAIServer:
         @app.patch("/api/automations/{automation_id}")
         async def update_automation_api(automation_id: str, req: AutomationUpdateRequest):
             try:
+                require_python_automation_writers()
                 from .automations import compute_next_run, validate_schedule
                 if session_store.get_automation(automation_id) is None:
                     raise HTTPException(status_code=404, detail="automation not found")
@@ -2080,6 +2156,7 @@ class HakusAIServer:
 
         @app.delete("/api/automations/{automation_id}")
         async def delete_automation_api(automation_id: str):
+            require_python_automation_writers()
             if not session_store.delete_automation(automation_id):
                 raise HTTPException(status_code=404, detail="automation not found")
             return {"deleted": True}
@@ -2087,6 +2164,7 @@ class HakusAIServer:
         @app.post("/api/automations/{automation_id}/run")
         async def run_automation_api(automation_id: str):
             """手动触发一次 — 不等待完成，立即返回 run 记录."""
+            require_python_automation_writers()
             auto = session_store.get_automation(automation_id)
             if auto is None:
                 raise HTTPException(status_code=404, detail="automation not found")
@@ -2100,6 +2178,7 @@ class HakusAIServer:
 
         @app.post("/api/automations/{automation_id}/pause")
         async def pause_automation_api(automation_id: str):
+            require_python_automation_writers()
             updated = session_store.update_automation(
                 automation_id, enabled=False, clear_next_run=True
             )
@@ -2109,6 +2188,7 @@ class HakusAIServer:
 
         @app.post("/api/automations/{automation_id}/resume")
         async def resume_automation_api(automation_id: str):
+            require_python_automation_writers()
             from .automations import compute_next_run
             auto = session_store.get_automation(automation_id)
             if auto is None:
@@ -2425,29 +2505,10 @@ class HakusAIServer:
         @app.get("/api/config/providers")
         async def list_providers():
             """列出所有支持的 AI provider 及当前配置状态（隐藏 api_key 明文）"""
-            # 与 TUI model_config_overlay.py 的 _PROVIDER_META 保持一致
-            PROVIDER_META = {
-                "opencode":   {"key_name": "opencode_api_key",   "has_url": True,  "display": "OpenCode"},
-                "deepseek":   {"key_name": "deepseek_api_key",   "has_url": True,  "display": "DeepSeek"},
-                "openai":     {"key_name": "openai_api_key",     "has_url": True,  "display": "OpenAI"},
-                "anthropic":  {"key_name": "anthropic_api_key",  "has_url": True,  "display": "Anthropic Claude"},
-                "qwen":       {"key_name": "dashscope_api_key",  "has_url": False, "display": "Qwen (通义千问)"},
-                "gemini":     {"key_name": "gemini_api_key",     "has_url": False, "display": "Gemini"},
-                "glm":        {"key_name": "glm_api_key",        "has_url": False, "display": "GLM (智谱)"},
-                "mimo":       {"key_name": "mimo_api_key",       "has_url": True,  "display": "MiMo (小米)"},
-                "ollama":     {"key_name": "",                  "has_url": True,  "display": "Ollama (本地)"},
-            }
-            # 读取 ~/.hakus/config.yaml
-            import os, yaml as _yaml
-            from pathlib import Path as _Path
-            config_path = _Path(os.path.expanduser("~/.hakus/config.yaml"))
-            raw: dict = {}
-            if config_path.exists():
-                try:
-                    raw = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    raw = {}
-            api_keys = raw.get("api_keys", {}) or {}
+            from . import provider_ops as _provider_ops
+            # Read the explicitly selected config, or the normal user config.
+            from .provider_ops import _load_raw_config
+            raw: dict = _load_raw_config()
             models_cfg = raw.get("models", {}) or {}
             default_model = models_cfg.get("default_model", "deepseek")
 
@@ -2459,14 +2520,20 @@ class HakusAIServer:
             # Applied to base_url / model_name / api_key uniformly so the
             # masked_api_key is the real resolved key, not the literal
             # "${OPENAI_API_KEY:sk-xxx}" template.
-            from .provider_ops import resolve_placeholder, looks_like_placeholder, _mask_key
+            from .provider_ops import (
+                resolve_placeholder,
+                looks_like_placeholder,
+                _mask_key,
+                _resolve_provider_config,
+            )
+            default_model = resolve_placeholder(default_model)
 
             providers = []
-            for pid, meta in PROVIDER_META.items():
-                prov_cfg = models_cfg.get(pid, {}) or {}
-                key_name = meta["key_name"]
-                raw_key = api_keys.get(key_name, "") if key_name else ""
-                resolved_key = resolve_placeholder(raw_key) if raw_key else ""
+            for pid, meta in _provider_ops.PROVIDER_META.items():
+                resolved_cfg = _resolve_provider_config(pid, raw)
+                # _resolve_provider_config also understands provider-local
+                # credentials used by the current config schema.
+                resolved_key = resolved_cfg["api_key"]
                 # If the placeholder couldn't be resolved (no env, no default),
                 # has_api_key should be False so the UI shows the "未配置" state
                 # rather than a misleading masked string.
@@ -2478,8 +2545,8 @@ class HakusAIServer:
                 # user understands "yes I do have a template here, but the env
                 # var isn't set".
                 masked = _mask_key(resolved_key) if resolved_key else ""
-                raw_model = prov_cfg.get("model_name", "")
-                raw_url = prov_cfg.get("base_url", "")
+                raw_model = resolved_cfg["model_name"]
+                raw_url = resolved_cfg["base_url"]
                 providers.append({
                     "id": pid,
                     "display_name": meta["display"],
@@ -2506,38 +2573,34 @@ class HakusAIServer:
                 "set_as_default": true           // 可选, 把这个 provider 设为默认
             }
             """
-            import os, yaml as _yaml
-            from pathlib import Path as _Path
+            import yaml as _yaml
+            from .provider_ops import _load_raw_config, _config_path
 
             provider_id = request.get("provider", "").lower()
             if not provider_id:
                 raise HTTPException(status_code=400, detail="provider is required")
 
-            PROVIDER_META = {
-                "opencode": "opencode_api_key", "deepseek": "deepseek_api_key",
-                "openai": "openai_api_key", "anthropic": "anthropic_api_key",
-                "qwen": "dashscope_api_key", "gemini": "gemini_api_key",
-                "glm": "glm_api_key", "mimo": "mimo_api_key", "ollama": "",
-            }
+            from .provider_ops import PROVIDER_META
             if provider_id not in PROVIDER_META:
                 raise HTTPException(status_code=400, detail=f"unknown provider: {provider_id}")
 
-            config_dir = _Path(os.path.expanduser("~/.hakus"))
+            config_path = _config_path()
+            config_dir = config_path.parent
             config_dir.mkdir(parents=True, exist_ok=True)
-            config_path = config_dir / "config.yaml"
 
             # 读取现有配置
-            raw: dict = {}
-            if config_path.exists():
-                try:
-                    raw = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    raw = {}
+            raw: dict = _load_raw_config(config_path)
             raw.setdefault("api_keys", {})
             raw.setdefault("models", {})
 
-            # 应用 model_name / base_url
-            prov_raw: dict = raw["models"].setdefault(provider_id, {})
+            # 应用 model_name / base_url.  Preserve the config layout already
+            # used by the user: current files use models.providers, while old
+            # files put provider blocks directly under models.
+            provider_cfgs = raw["models"].get("providers")
+            if isinstance(provider_cfgs, dict):
+                prov_raw: dict = provider_cfgs.setdefault(provider_id, {})
+            else:
+                prov_raw = raw["models"].setdefault(provider_id, {})
             if "model_name" in request and request["model_name"]:
                 prov_raw["model_name"] = request["model_name"]
             if "base_url" in request:
@@ -2547,12 +2610,18 @@ class HakusAIServer:
                     prov_raw.pop("base_url", None)
 
             # 应用 api_key
-            key_name = PROVIDER_META[provider_id]
+            key_name = PROVIDER_META[provider_id]["key_name"]
             if key_name and "api_key" in request:
-                if request["api_key"]:
-                    raw["api_keys"][key_name] = request["api_key"]
+                if isinstance(provider_cfgs, dict):
+                    if request["api_key"]:
+                        prov_raw["api_key"] = request["api_key"]
+                    else:
+                        prov_raw.pop("api_key", None)
                 else:
-                    raw["api_keys"].pop(key_name, None)
+                    if request["api_key"]:
+                        raw["api_keys"][key_name] = request["api_key"]
+                    else:
+                        raw["api_keys"].pop(key_name, None)
 
             # 设为默认
             if request.get("set_as_default"):
@@ -2596,20 +2665,18 @@ class HakusAIServer:
         @app.post("/api/config/default-model")
         async def set_default_model(request: dict):
             """切换默认模型 provider"""
-            import os, yaml as _yaml
-            from pathlib import Path as _Path
+            import yaml as _yaml
+            from .provider_ops import PROVIDER_META, _config_path, _load_raw_config
 
             provider_id = request.get("provider", "").lower()
             if not provider_id:
                 raise HTTPException(status_code=400, detail="provider is required")
+            if provider_id not in PROVIDER_META:
+                raise HTTPException(status_code=400, detail=f"unknown provider: {provider_id}")
 
-            config_path = _Path(os.path.expanduser("~/.hakus/config.yaml"))
-            raw: dict = {}
-            if config_path.exists():
-                try:
-                    raw = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    raw = {}
+            config_path = _config_path()
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            raw: dict = _load_raw_config(config_path)
             raw.setdefault("models", {})
             raw["models"]["default_model"] = provider_id
             try:
@@ -2688,6 +2755,7 @@ class HakusAIServer:
             )
             return {
                 "ok": result.ok,
+                "status": result.status,
                 "message": result.message,
                 "detail": result.detail,
                 "latency_ms": result.latency_ms,
@@ -4292,96 +4360,38 @@ class HakusAIServer:
                 raise HTTPException(status_code=400, detail=err.strip() or "git stage failed")
             return {"ok": True, "path": target, "unstage": req.unstage}
 
+        # The Python PTY terminal used to live here. It was retired because the
+        # Rust Runtime is the only execution authority (docs/REFACTOR_SPEC.md,
+        # Phase 2: "block direct desktop and Python tool execution on the default
+        # path"), and because this handler was strictly weaker than its Rust
+        # replacement: it accepted any WebSocket with no Origin check and went
+        # straight to spawning an interactive shell, bypassing the agent
+        # permission engine entirely.
+        #
+        # The Rust route is `runtime_api::terminal_ws`
+        # (crates/tui/src/runtime_api/terminal.rs), served at the same
+        # `/ws/terminal` path on the Runtime port. It requires a loopback peer
+        # AND an allowlisted Origin (tauri://localhost, http://localhost:1420,
+        # ...), and clamps the requested terminal dimensions. It also speaks the
+        # `{"type":"init", cwd, cols, rows}` handshake the desktop client sends
+        # (TerminalPanel.tsx), which this handler never implemented.
+        #
+        # Kept as an explicit refusal rather than deleted outright: a silent 404
+        # on a websocket route reads as a transport bug, and this way any client
+        # still speaking the old `{"type":"stdin"}` protocol gets told why.
         @app.websocket("/ws/terminal")
-        async def terminal_ws(websocket: WebSocket):
-            """Full PTY terminal — hosts a persistent shell in the agent workdir.
-
-            Protocol:
-              Client → Server: {"type":"stdin","data":"<text>"}
-                               {"type":"resize","cols":80,"rows":24}
-              Server → Client: raw terminal bytes (text WebSocket frames)
-                               {"type":"error","message":"<str>"}
-
-            Uses pywinpty on Windows (ConPTY) and POSIX PTY on Unix,
-            so interactive TUI apps (vim/less/top) render correctly.
-            """
+        async def terminal_ws_retired(websocket: WebSocket):
             await websocket.accept()
-            try:
-                from winpty import PtyProcess
-                is_windows = os.name == "nt"
-                shell = "cmd.exe" if is_windows else "bash"
-                shell_args = [] if is_windows else ["-i", "-l"]
-                proc = PtyProcess.spawn(
-                    shell,
-                    shell_args,
-                    cwd=_WORKDIR,
-                    dimensions=(24, 80),
-                    env={**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"},
-                )
-                # Windows 终端设为 UTF-8 (chcp 65001)，修复中文乱码
-                if is_windows:
-                    try:
-                        proc.write("chcp 65001 >nul 2>&1\r")
-                        import time as _time
-                        _time.sleep(0.15)
-                    except Exception:
-                        pass
-            except Exception as e:
-                await websocket.send_json({"type": "error", "message": f"failed to spawn shell: {e}"})
-                await websocket.close()
-                return
-
-            loop = asyncio.get_event_loop()
-            alive = True
-
-            async def _pump_output():
-                while alive and proc.isalive():
-                    try:
-                        # read() blocks until data available; run in executor to stay async-friendly
-                        data = await loop.run_in_executor(None, proc.read)
-                        if data:
-                            await websocket.send_text(data)
-                    except Exception:
-                        break
-                try:
-                    await websocket.close()
-                except Exception:
-                    pass
-
-            pump_task = asyncio.create_task(_pump_output())
-
-            try:
-                while True:
-                    msg = await websocket.receive_text()
-                    try:
-                        data = json.loads(msg)
-                    except json.JSONDecodeError:
-                        continue
-                    msg_type = data.get("type")
-                    if msg_type == "stdin":
-                        await loop.run_in_executor(None, proc.write, data.get("data", ""))
-                    elif msg_type == "resize":
-                        cols = data.get("cols", 80)
-                        rows = data.get("rows", 24)
-                        try:
-                            await loop.run_in_executor(None, proc.setwinsize, rows, cols)
-                        except Exception:
-                            pass
-            except WebSocketDisconnect:
-                pass
-            except Exception:
-                pass
-            finally:
-                alive = False
-                pump_task.cancel()
-                try:
-                    await pump_task
-                except asyncio.CancelledError:
-                    pass
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+            await websocket.send_json({
+                "type": "error",
+                "message": (
+                    "This Python terminal route has been retired. Use the Rust "
+                    "Runtime's /ws/terminal on the Runtime port (default 48081), "
+                    "which enforces a loopback + Origin check. See Phase 2 of "
+                    "docs/REFACTOR_SPEC.md."
+                ),
+            })
+            await websocket.close()
 
     async def start(self):
         """启动服务器"""

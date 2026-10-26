@@ -148,6 +148,10 @@ def create_guardian_client(
     # Create the client
     try:
         from .models.base_client import LLMProvider, ModelConfig
+        from .models.legacy_provider_adapter import (
+            LegacyProviderAdapter,
+            redact_provider_diagnostic,
+        )
         from .models.openai_compatible_client import OpenAICompatibleClient
 
         provider_enum = LLMProvider(provider.lower())
@@ -158,14 +162,18 @@ def create_guardian_client(
             model_name=model_name,
             timeout=timeout,
         )
-        client = OpenAICompatibleClient(config)
+        adapter = LegacyProviderAdapter(provider_enum)
+        client = adapter.bind_preconfigured(lambda: OpenAICompatibleClient(config))
         logger.info(
             f"Guardian LLM client created: {provider}/{model_name} "
             f"(independent from main agent model)"
         )
         return client
     except Exception as e:
-        logger.warning(f"Failed to create Guardian LLM client: {e}")
+        logger.warning(
+            f"Failed to create Guardian LLM client: "
+            f"{redact_provider_diagnostic(e)}"
+        )
         return None
 
 

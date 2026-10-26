@@ -89,6 +89,12 @@ class AutomationScheduler:
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
+        if session_store.writers_frozen():
+            logger.info(
+                "automation scheduler disabled: Python compatibility writers are frozen"
+            )
+            self._task = None
+            return
         self._stopping.clear()
         self._task = asyncio.create_task(self._loop(), name="automation-scheduler")
         logger.info("automation scheduler started (scan every %ss)", SCAN_INTERVAL_S)
@@ -119,6 +125,8 @@ class AutomationScheduler:
                 pass
 
     async def _scan_once(self) -> None:
+        if session_store.writers_frozen():
+            return
         now_ms = int(time.time() * 1000)
         for auto in session_store.due_automations(now_ms):
             aid = auto["id"]
@@ -132,6 +140,12 @@ class AutomationScheduler:
             asyncio.create_task(self._run_automation(auto), name=f"auto-{aid}")
 
     async def _run_automation(self, auto: Dict[str, Any]) -> None:
+        if session_store.writers_frozen():
+            logger.info(
+                "automation %s skipped: Python compatibility writers are frozen",
+                auto.get("id", "unknown"),
+            )
+            return
         aid = auto["id"]
         run_id = f"run_{uuid.uuid4().hex[:12]}"
         started_ms = int(time.time() * 1000)

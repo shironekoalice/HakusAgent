@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from utils.logger import get_logger
+from .compat_writers import writers_frozen
 
 logger = get_logger(__name__)
 
@@ -123,12 +124,13 @@ class LongTaskContext:
         """
         # Persist summaries to file
         summary_path = self._workspace_dir / "doc" / "task-summaries.md"
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = ["# 任务进度摘要\n"]
-        for s in self._summaries:
-            status_icon = "✅" if s.status == "completed" else "⚠️" if s.status == "low_quality_pass" else "❌"
-            lines.append(f"- {status_icon} {s.task_id}: {s.title} (测试: {s.test_result}, 修复轮次: {s.fix_rounds})")
-        summary_path.write_text("\n".join(lines), encoding="utf-8")
+        if not writers_frozen():
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            lines = ["# 任务进度摘要\n"]
+            for s in self._summaries:
+                status_icon = "✅" if s.status == "completed" else "⚠️" if s.status == "low_quality_pass" else "❌"
+                lines.append(f"- {status_icon} {s.task_id}: {s.title} (测试: {s.test_result}, 修复轮次: {s.fix_rounds})")
+            summary_path.write_text("\n".join(lines), encoding="utf-8")
 
         # Return compressed context for injection
         return (
@@ -169,6 +171,8 @@ class LongTaskContext:
 
     def _persist(self) -> None:
         """持久化当前状态到文件."""
+        if writers_frozen():
+            return
         data = {
             "current_phase": self._current_phase,
             "current_task": self._current_task,

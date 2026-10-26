@@ -25,6 +25,7 @@ from .harness import TrajectoryRecorder, HarnessGuard, HarnessEvaluator, create_
 
 from .models.client_factory import create_client_from_config
 from .models.base_client import BaseLLMClient, LLMProvider, LLMMessage, LLMResponse
+from .models.legacy_provider_adapter import LegacyProviderAdapter, redact_provider_diagnostic
 try:
     from .memory_vector import MemoryManager
 except ImportError:
@@ -526,8 +527,14 @@ class AgentCore:
                  working_dir: Optional[str] = None, session_id: Optional[str] = None,
                  llm_timeout: float = 180.0,
                  tool_timeout: float = 120.0,
-                 follow_up_timeout: float = 180.0):
+                 follow_up_timeout: float = 180.0,
+                 allow_provider_fallback: bool = True):
         self._model_type = model_type or BASE_CONFIG.get("DEFAULT_MODEL", "deepseek")
+        # CLI callers historically allowed a best-effort provider fallback.
+        # Compatibility bridges pass False so an explicit provider failure is
+        # visible to the caller instead of changing the selected route.
+        self._allow_provider_fallback = allow_provider_fallback
+        self._provider_adapter: Optional[LegacyProviderAdapter] = None
         self._model: Any = None
         self._llm_client: Optional[BaseLLMClient] = None
         self._max_iterations = max_iterations
@@ -640,7 +647,15 @@ class AgentCore:
     def _init_model(self) -> None:
         """使用 ClientFactory 创建 LLM Client (trae-agent 风格)."""
         try:
-            self._llm_client = create_client_from_config(self._model_type)
+            self._provider_adapter = LegacyProviderAdapter(
+                self._model_type,
+                allow_fallback=self._allow_provider_fallback,
+                # Keep the historical module-level seam injectable for CLI
+                # integrations and tests while routing creation through the
+                # explicit compatibility adapter.
+                factory=create_client_from_config,
+            )
+            self._llm_client = self._provider_adapter.bind()
             # 保持 self._model 向后兼容 (部分代码仍访问 self._model.client / .model_name)
             self._model = self._llm_client
             # 同步 model_type 以防 fallback 改变了 provider
@@ -649,8 +664,22 @@ class AgentCore:
         except RuntimeError:
             raise
         except Exception as e:
-            logger.error(f"Failed to init LLM client: {e}")
+            logger.error(f"Failed to init LLM client: {redact_provider_diagnostic(e)}")
             raise RuntimeError("All LLM client initializations failed") from e
+
+    @property
+    def provider_adapter_status(self) -> Dict[str, Any]:
+        """Return a credential-free diagnostic for the legacy provider route."""
+        adapter = getattr(self, "_provider_adapter", None)
+        if adapter is None:
+            return {
+                "requested_provider": getattr(self, "_model_type", "unknown"),
+                "bound_provider": None,
+                "state": "uninitialized",
+                "fallback_policy": "enabled" if getattr(self, "_allow_provider_fallback", True) else "disabled",
+                "canonical_plane": "rust_runtime",
+            }
+        return adapter.status.to_dict()
 
     # ── DeepSeek thinking-mode / reasoning_effort ──────────────────
     def set_reasoning_effort(self, effort: Optional[str]) -> None:

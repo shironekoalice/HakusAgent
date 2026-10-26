@@ -399,6 +399,10 @@ def get_or_create_agent(
                 confirm_callback=_make_confirm_callback(session_id),
                 session_id=session_id,
                 working_dir=resolved_working_dir,
+                # The sidecar request carries an explicit provider binding.
+                # Keep that binding stable and surface an unavailable provider
+                # instead of silently routing the turn to another vendor.
+                allow_provider_fallback=False,
                 # Sidecar runs headless — no Textual event loop. The
                 # async confirm callback path is used because run_turn
                 # is async. The sync callback would also work (it's
@@ -470,6 +474,23 @@ def get_or_create_agent(
 
             _agent_cache[cache_key] = agent
     return _agent_cache[cache_key]
+
+
+def get_provider_adapter_diagnostics() -> list[Dict[str, Any]]:
+    """Return safe provider binding states for active compatibility agents."""
+    with _agent_cache_lock:
+        agents = list(_agent_cache.values())
+    diagnostics: list[Dict[str, Any]] = []
+    for agent in agents:
+        try:
+            status = agent.provider_adapter_status
+            if isinstance(status, dict):
+                diagnostics.append(dict(status))
+        except Exception as exc:
+            # A diagnostic path must not turn a stale/partially initialized
+            # compatibility agent into a request failure.
+            logger.warning("Could not read provider adapter status: %s", exc)
+    return diagnostics
 
 
 def drop_agent(session_id: str, provider: Optional[str] = None) -> None:

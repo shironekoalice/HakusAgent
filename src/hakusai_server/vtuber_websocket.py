@@ -258,6 +258,13 @@ class VTuberWebSocketHandler:
         self.tts_engine = TTSEngine()
         self._interrupt_events: Dict[str, asyncio.Event] = {}
 
+        # VTuber/Live2D is an optional feature-plane extension. Until a
+        # reviewed extension bundle is installed, the compatibility server
+        # must expose an explicit unavailable surface and avoid importing
+        # model/audio runtimes into the core process.
+        self.extension_id = "avatar.vtuber"
+        self._extension_available = False
+
         # Live2D 虚拟形象（新增）
         self._avatar = None
         self._avatar_enabled = False
@@ -265,6 +272,13 @@ class VTuberWebSocketHandler:
     async def initialize(self, agent=None, model_adapter=None, tts_config: dict = None):
         self._agent = agent
         self._model_adapter = model_adapter
+
+        if not self._extension_available:
+            logger.info(
+                "VTuber extension unavailable; install and trust the reviewed "
+                "avatar.vtuber bundle to enable Live2D/VRM streaming"
+            )
+            return
 
         tts_config = tts_config or {}
         engine_type = tts_config.get("type", "cosyvoice")
@@ -309,6 +323,16 @@ class VTuberWebSocketHandler:
 
     async def handle_connection(self, websocket: WebSocket, session_id: str = "default"):
         await websocket.accept()
+
+        if not self._extension_available:
+            await websocket.send_json({
+                "action": WSAction.ERROR.value,
+                "code": "extension_unavailable",
+                "extension_id": self.extension_id,
+                "message": "VTuber/Live2D is unavailable until its reviewed extension is installed",
+            })
+            await websocket.close(code=1013, reason="extension unavailable")
+            return
 
         session = VTuberSession(
             session_id=session_id,

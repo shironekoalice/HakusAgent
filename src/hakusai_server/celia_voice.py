@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from pathlib import Path
 from typing import Dict, Optional
 
 from .logging_config import get_logger
@@ -143,38 +142,21 @@ def transcribe_audio_async(
     return (result.text or "").strip()
 
 
-# ── Backward compatibility: still support Celia path for testing ──────
-# If user explicitly passes celia_path, fall back to Celia external import
-
 def transcribe_audio_celia(
     audio_path: str,
     *,
     celia_path: str | None = None,
     config_path: str | None = None,
 ) -> str:
-    """Legacy Celia ASR — only used when user explicitly provides a Celia path."""
-    celia_root = Path(celia_path or os.environ.get("HAKUSAI_CELIA_PATH", r"D:\项目\Celia"))
-    if not (celia_root / "celia_live" / "core.py").exists():
-        raise FileNotFoundError(f"Celia core.py not found under: {celia_root}")
+    """Report that Celia is unavailable until the reviewed extension is installed.
 
-    import sys
-    if str(celia_root) not in sys.path:
-        sys.path.insert(0, str(celia_root))
-
-    from celia_live import Config  # type: ignore
-    from celia_live.core import ASREngine  # type: ignore
-
-    cfg_file = config_path or "config.yaml"
-    cfg_path = Path(cfg_file) if Path(cfg_file).is_absolute() else celia_root / cfg_file
-    cfg = Config.from_file(str(cfg_path))
-
-    model_path = getattr(cfg.asr, "model_path", None) or getattr(cfg.asr, "model", None)
-    if model_path and not os.path.isabs(str(model_path)):
-        candidate = celia_root / str(model_path)
-        if candidate.exists():
-            cfg.asr.model_path = str(candidate)
-
-    engine = ASREngine(cfg)
-    engine.init()
-    text = engine.transcribe(audio_path)
-    return (text or "").strip()
+    This compatibility symbol intentionally keeps its old call shape so a
+    legacy sidecar can fail closed. It must not import Celia modules, mutate
+    ``sys.path``, or interpret a caller supplied filesystem path as an
+    executable extension. The desktop host owns the eventual
+    ``voice.celia`` activation through ``hakus.extension.v1``.
+    """
+    del audio_path, celia_path, config_path
+    raise RuntimeError(
+        "Celia voice is unavailable; install and trust the reviewed voice.celia extension"
+    )

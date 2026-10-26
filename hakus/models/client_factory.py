@@ -18,6 +18,7 @@ from .glm_client import GLMClient
 from .mimo_client import MiMoClient
 from .ollama_client import OllamaClient
 from .opencode_client import OpenCodeClient
+from .legacy_provider_adapter import redact_provider_diagnostic
 
 # 可选: litellm (pip install litellm 启用)
 try:
@@ -78,17 +79,28 @@ def create_client(provider: LLMProvider | str) -> BaseLLMClient:
     return cls()
 
 
-def create_client_from_config(model_type: str) -> BaseLLMClient:
+def create_client_from_config(
+    model_type: str,
+    *,
+    allow_fallback: bool = True,
+) -> BaseLLMClient:
     """从 BASE_CONFIG 中的 model_type 字符串创建 Client.
 
     这是 agent.py _init_model() 的替代品。
-    包含 fallback 逻辑: 如果首选 Provider 初始化失败，
-    按顺序尝试其他 Provider。
+    ``allow_fallback`` defaults to the historical CLI behavior. Compatibility
+    callers that bind a session to an explicitly selected provider must pass
+    ``False`` so an unavailable provider is reported instead of silently
+    changing the route the user selected.
     """
     try:
         return create_client(model_type)
     except Exception as e:
-        logger.warning(f"Failed to init LLM client for '{model_type}': {e}")
+        logger.warning(
+            f"Failed to init LLM client for '{redact_provider_diagnostic(model_type)}': "
+            f"{redact_provider_diagnostic(e)}"
+        )
+        if not allow_fallback:
+            raise
 
     # Fallback: 按顺序尝试其他 Provider
     try:
@@ -104,6 +116,9 @@ def create_client_from_config(model_type: str) -> BaseLLMClient:
             logger.info(f"Fallback to {fallback_provider.value}")
             return client
         except Exception as e:
-            logger.warning(f"Fallback {fallback_provider.value} failed: {e}")
+            logger.warning(
+                f"Fallback {fallback_provider.value} failed: "
+                f"{redact_provider_diagnostic(e)}"
+            )
 
     raise RuntimeError("All LLM client initializations failed")

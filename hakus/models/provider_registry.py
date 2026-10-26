@@ -6,7 +6,8 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from collections.abc import Iterator, Sequence
+from typing import Dict, List, Union
 
 # ── 内置列表 ──────────────────────────────────────────────
 # 每个条目: id(机器标识), name(显示名), desc(简短描述)
@@ -46,8 +47,24 @@ def get_providers() -> List[Dict[str, str]]:
     return _BUILTIN_PROVIDERS + _load_custom_providers()
 
 
-# 兼容旧接口
-PROVIDERS = property(lambda self: get_providers())
+class _ProvidersView(Sequence[Dict[str, str]]):
+    """动态只读视图，保留旧的 ``PROVIDERS`` 导出接口。"""
+
+    def __iter__(self) -> Iterator[Dict[str, str]]:
+        return iter(get_providers())
+
+    def __len__(self) -> int:
+        return len(get_providers())
+
+    def __getitem__(
+        self,
+        index: Union[int, slice],
+    ) -> Dict[str, str] | List[Dict[str, str]]:
+        return get_providers()[index]
+
+
+# 兼容旧接口，同时避免把配置加载时的自定义 provider 冻结在模块导入时。
+PROVIDERS = _ProvidersView()
 
 
 def get_provider_ids() -> List[str]:

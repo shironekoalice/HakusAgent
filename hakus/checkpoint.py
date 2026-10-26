@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from utils.config import BASE_CONFIG
 from utils.logger import get_logger
+from .compat_writers import writers_frozen
 
 logger = get_logger(__name__)
 
@@ -167,6 +168,17 @@ class CheckpointManager:
             self._auto_counter = 0
 
     def persist(self, session_id: str) -> bool:
+        # Phase 0 migration gate (REFACTOR_STATUS "freeze new Python
+        # transcript/checkpoint writers"): once frozen, no new checkpoint
+        # bundles may appear on disk — they are a second authoritative
+        # history the Phase 1 importer would have to reconcile. Reads
+        # (load) and in-memory state keep working.
+        if writers_frozen():
+            logger.warning(
+                "Checkpoint persist refused for session %s: Python writers are frozen "
+                "(HAKUS_FREEZE_PYTHON_WRITERS)", session_id,
+            )
+            return False
         with self._lock:
             try:
                 os.makedirs(self._persist_dir, exist_ok=True)

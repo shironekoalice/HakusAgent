@@ -478,7 +478,10 @@ class P1Enhancements:
         try:
             from utils.hakus_config import get_config
             from .models.base_client import LLMProvider, ModelConfig
-            from .models.opencode_client import OpenCodeClient
+            from .models.legacy_provider_adapter import (
+                LegacyProviderAdapter,
+                redact_provider_diagnostic,
+            )
 
             config = get_config()
             # Try guardian-specific config first, then fall back to opencode
@@ -500,18 +503,23 @@ class P1Enhancements:
 
             # Create an OpenCode client configured for Guardian
             from .models.openai_compatible_client import OpenAICompatibleClient
-            client = OpenAICompatibleClient(ModelConfig(
+            config = ModelConfig(
                 provider=LLMProvider.OPENCODE,
                 api_key=api_key,
                 base_url=base_url,
                 model_name=model_name,
-            ))
+            )
+            adapter = LegacyProviderAdapter(LLMProvider.OPENCODE)
+            client = adapter.bind_preconfigured(lambda: OpenAICompatibleClient(config))
 
             logger.info(f"Guardian auto-client: {model_name} @ {base_url}")
             return client
 
         except Exception as e:
-            logger.warning(f"Failed to auto-create Guardian client: {e}")
+            logger.warning(
+                f"Failed to auto-create Guardian client: "
+                f"{redact_provider_diagnostic(e)}"
+            )
             return None
 
     def _get_estimate_tokens_fn(self) -> Any:
