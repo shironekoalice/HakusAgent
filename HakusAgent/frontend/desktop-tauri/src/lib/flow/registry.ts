@@ -30,6 +30,53 @@ import {
 
 const text = (v: FlowValue) => toDisplay(v)
 
+/**
+ * Confirm a file root with the operator, once, then remember it.
+ *
+ * The Rust side refuses file access on an unconfirmed root because a flow graph
+ * is an importable JSON document — its `root` field is a proposal, and a graph
+ * that arrives from a file or a model must not be able to name
+ * `C:\Users\<name>` and write to it. This is the other half of that gate: the
+ * operator is asked exactly once per folder, and the answer is persisted by
+ * `flow_root_confirm`, so ordinary use (point a node at your project) asks once
+ * and never again.
+ *
+ * `writable` is deliberately a separate question from "may I read this". A node
+ * that only reads does not need write access, and asking for write access on a
+ * read is how a confirmation prompt trains people to click yes.
+ */
+async function ensureRoot(
+  ctx: NodeExecCtx,
+  root: string,
+  writable: boolean,
+  nodeLabel: string,
+): Promise<void> {
+  const { flowRoots } = await import('@/api/tauriBridge')
+
+  // Ask the Rust side rather than re-deriving containment here: it uses the
+  // same function that will enforce the rule, so the prompt cannot disagree
+  // with the decision.
+  let allowed = false
+  try {
+    allowed = await flowRoots.check(root, writable)
+  } catch {
+    // A bridge that cannot answer falls through to asking. Asking twice is a
+    // better failure than skipping the gate.
+  }
+  if (allowed) return
+
+  const access = writable ? '读取和写入' : '读取'
+  const answer = await ctx.waitHuman(
+    `${nodeLabel} 需要访问这个目录的${access}权限：\n${root}\n\n只在这是你自己选择的项目目录时确认。`,
+    '输入 yes 确认',
+  )
+  if (answer.trim().toLowerCase() !== 'yes') {
+    throw new Error(`${nodeLabel}: 未确认目录 ${root}，节点已停止`)
+  }
+  await flowRoots.confirm(root, writable)
+  ctx.log(`已确认目录（${access}）：${root}`)
+}
+
 function scopeOf(ctx: NodeExecCtx) {
   const run: Record<string, FlowValue> = { ...(ctx.runInputs || {}) }
   const out = ctx.inputs.out
@@ -1039,6 +1086,7 @@ export const FLOW_NODE_DEFS: FlowNodeDef[] = [
       const rel = interpolate(String(ctx.data.path || ''), wideScope).trim()
       if (!root) throw new Error('Read File: set the allowed root directory first')
       if (!rel) throw new Error('Read File: file path is empty')
+      await ensureRoot(ctx, root, false, 'Read File')
       ctx.log(`Read ${rel} (root=${root})`)
       const { fsOs } = await import('@/api/tauriBridge')
       const res = await fsOs.readText(root, rel)
@@ -1077,6 +1125,7 @@ export const FLOW_NODE_DEFS: FlowNodeDef[] = [
       const template = String(ctx.data.content ?? '')
       const body = template.trim() ? interpolate(template, wideScope) : text(ctx.inputs.in)
       const append = String(ctx.data.append || 'no') === 'yes'
+      await ensureRoot(ctx, root, true, 'Write File')
       ctx.log(`Write ${rel} (${body.length} chars${append ? ', append' : ''})`)
       const { fsOs } = await import('@/api/tauriBridge')
       let payload = body
@@ -1119,6 +1168,7 @@ export const FLOW_NODE_DEFS: FlowNodeDef[] = [
       const rel = interpolate(String(ctx.data.path || '.'), wideScope).trim() || '.'
       if (!root) throw new Error('List Directory: set the allowed root directory first')
       const needle = String(ctx.data.filter || '').trim().toLowerCase()
+      await ensureRoot(ctx, root, false, 'List Directory')
       ctx.log(`List ${rel} (root=${root})`)
       const { fsOs } = await import('@/api/tauriBridge')
       const entries = await fsOs.listDir(root, rel)

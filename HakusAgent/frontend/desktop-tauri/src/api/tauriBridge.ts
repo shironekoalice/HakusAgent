@@ -25,10 +25,6 @@ export const window = {
   toggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
   close: () => invoke<boolean>("window_close"),
   isMaximized: () => invoke<boolean>("window_is_maximized"),
-  setMaterial: (theme: 'light' | 'dark') => {
-    if (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)) return Promise.resolve(false)
-    return invoke<boolean>("window_set_material", { theme })
-  },
 };
 
 // ── Backend ────────────────────────────────────────────────────────
@@ -173,6 +169,47 @@ export const fsOs = {
   writeText: (root: string, path: string, content: string) =>
     invoke<string>('fs_write_text', { root, path, content }),
   listDir: (root: string, path: string) => invoke<TauriDirEntry[]>('fs_list_dir', { root, path }),
+}
+
+// ── Flow file roots (operator-confirmed) ───────────────────────────
+//
+// A flow graph is an importable JSON document, so its `root` field is a
+// proposal, not an instruction. The Rust side refuses file access until the
+// operator has confirmed a folder; these calls are how the UI records that
+// confirmation. See `src-tauri/src/flow_roots.rs` for the enforcement.
+
+export interface ConfirmedFlowRoot {
+  path: string
+  /** Reads only until the operator explicitly enables writing. */
+  writable: boolean
+}
+
+export const flowRoots = {
+  list: () => invoke<ConfirmedFlowRoot[]>('flow_roots_list'),
+  /** Whether this root would be authorized — same rule enforcement uses. */
+  check: (root: string, writable: boolean) =>
+    invoke<boolean>('flow_root_check', { root, writable }),
+  confirm: (root: string, writable: boolean) =>
+    invoke<ConfirmedFlowRoot[]>('flow_root_confirm', { root, writable }),
+  revoke: (root: string) => invoke<ConfirmedFlowRoot[]>('flow_root_revoke', { root }),
+}
+
+/**
+ * True when an error is the Rust side refusing an unconfirmed Flow root.
+ *
+ * The Flow nodes call this to turn a hard failure into a confirmation prompt:
+ * without it, pointing a node at a new folder reports an error the operator
+ * cannot act on, which is a worse experience than the gate is worth.
+ */
+export function isUnconfirmedRootError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return message.includes('Flow file access is not confirmed')
+}
+
+/** True when the root is confirmed but read-only. */
+export function isReadOnlyRootError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return message.includes('Read-only Flow root')
 }
 
 // ── Remote project access ─────────────────────────────────────────
@@ -337,12 +374,75 @@ export interface TauriDoctorReport {
 }
 
 export const gitOs = {
-  applyPatch: (workdir: string, patch: string, reverse = false, cached = false) =>
-    invoke<void>("git_apply_patch", { workdir, patch, reverse, cached }),
+  /**
+   * Stage or revert a single hunk.
+   *
+   * Goes through the Rust Runtime (`POST /v1/workspace/apply-hunk`) rather than
+   * spawning `git apply` in the Tauri process. The desktop command it replaces
+   * (`git_apply_patch`, `src-tauri/src/git_cmds.rs`) took a caller-supplied
+   * `workdir` and arbitrary patch text, so a caller chose both the repository
+   * and the mutation. The Runtime route is bound to the workspace it serves and
+   * validates `path` as workspace-relative, so only the choice of *hunk* remains
+   * caller-controlled — which is the whole point of the button.
+   *
+   * `path` is the workspace-relative file the hunk belongs to; the caller reads
+   * it from the parsed diff rather than this function re-deriving it from the
+   * patch text, which would be a second, weaker parser.
+   */
+  applyPatch: async (options: {
+    path: string
+    patch: string
+    reverse?: boolean
+    cached?: boolean
+  }): Promise<void> => {
+    const { apiClient } = await import('./client')
+    const response = await fetch(`${apiClient.runtimeBaseUrl()}/v1/workspace/apply-hunk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: options.path,
+        patch: options.patch,
+        reverse: options.reverse ?? false,
+        cached: options.cached ?? false,
+      }),
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(detail.trim() || `Applying the hunk failed (${response.status})`)
+    }
+  },
   branchList: (workdir: string) => invoke<string[]>("git_branch_list", { workdir }),
   worktreeList: (workdir: string) => invoke<TauriWorktree[]>("git_worktree_list", { workdir }),
-  worktreeAdd: (workdir: string, path: string, branch?: string, newBranch?: string) =>
-    invoke<void>("git_worktree_add", { workdir, path, branch, newBranch }),
+  /**
+   * Create a worktree through the Rust Runtime (`POST /v1/workspace/worktree`)
+   * rather than spawning `git worktree add` in the Tauri process. The desktop
+   * command it replaced (`git_worktree_add`, `src-tauri/src/git_cmds.rs`) took
+   * a caller-supplied `workdir`; the Runtime route is bound to the workspace it
+   * serves and validates `path` as workspace-relative and both branch names as
+   * git references, so the caller controls only where inside the workspace the
+   * worktree lands.
+   *
+   * `workdir` is accepted for call-site compatibility but unused: the caller
+   * derives it from `getGitStatus()`, which already reports the Runtime
+   * workspace, so the route's fixed scope is the same repository.
+   */
+  worktreeAdd: async (workdir: string, path: string, branch?: string, newBranch?: string) => {
+    void workdir
+    const { apiClient } = await import('./client')
+    const response = await fetch(`${apiClient.runtimeBaseUrl()}/v1/workspace/worktree`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path,
+        branch: branch ?? null,
+        new_branch: newBranch ?? null,
+      }),
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(detail.trim() || `Creating the worktree failed (${response.status})`)
+    }
+  },
   prList: (workdir: string) =>
     invoke<Array<Record<string, unknown>>>("git_pr_list", { workdir }),
   /** CI checks for a PR via `gh pr checks <n>` (empty if gh unavailable). */
