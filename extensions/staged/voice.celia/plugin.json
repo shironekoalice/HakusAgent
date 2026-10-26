@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/plugin.json",
+  "name": "voice.celia",
+  "version": "0.1.0",
+  "description": "Staged Celia ASR/VAD extension candidate",
+  "author": {"name": "HakusAgent migration review"},
+  "keywords": ["voice", "asr", "vad", "celia"],
+  "extensions": {
+    "net.hakus": {
+      "display_name": "Celia Voice",
+      "extension": {
+        "id": "voice.celia",
+        "version": "0.1.0",
+        "protocol": "hakus.extension.v1",
+        "entrypoint": "python adapter.py",
+        "capabilities": ["audio.capture", "audio.playback", "extension.lifecycle"],
+        "permissions": ["microphone", "audio.output"],
+        "supported_platforms": ["windows", "android"],
+        "checksum": "sha256:42ad0eff78e3f6bf5d71d9d9d53ccb0e34f3a98c60e283fdd3f8d723a354eda0"
+      }
+    }
+  }
+}

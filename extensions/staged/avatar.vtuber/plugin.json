@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/plugin.json",
+  "name": "avatar.vtuber",
+  "version": "0.1.0",
+  "description": "Staged Auto-live2D and live-server VTuber extension candidate",
+  "author": {"name": "HakusAgent migration review"},
+  "keywords": ["avatar", "vtuber", "live2d", "webview"],
+  "extensions": {
+    "net.hakus": {
+      "display_name": "VTuber Avatar",
+      "extension": {
+        "id": "avatar.vtuber",
+        "version": "0.1.0",
+        "protocol": "hakus.extension.v1",
+        "entrypoint": "python adapter.py",
+        "capabilities": ["avatar.render", "avatar.stream", "extension.lifecycle"],
+        "permissions": ["camera", "microphone", "network:local"],
+        "supported_platforms": ["windows"],
+        "checksum": "sha256:294ba271e29d4f3a87faea3d76f4866f8b91f9e47950839cfae46ea1f05877ef"
+      }
+    }
+  }
+}

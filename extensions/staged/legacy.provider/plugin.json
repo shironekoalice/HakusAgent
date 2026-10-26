@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/plugin.json",
+  "name": "legacy.provider",
+  "version": "0.1.0",
+  "description": "Staged legacy provider compatibility boundary candidate",
+  "author": {"name": "HakusAgent migration review"},
+  "keywords": ["provider", "compatibility", "openai-compatible"],
+  "extensions": {
+    "net.hakus": {
+      "display_name": "Legacy Provider Compatibility",
+      "extension": {
+        "id": "legacy.provider",
+        "version": "0.1.0",
+        "protocol": "hakus.extension.v1",
+        "entrypoint": "python adapter.py",
+        "capabilities": ["provider.health", "provider.bind", "extension.lifecycle"],
+        "permissions": ["network:provider", "secret_store:read"],
+        "supported_platforms": ["windows"],
+        "checksum": "sha256:57e3507ea824af5ab10aeaf70e203b973d786b561e9f44d64a606b0c145bc96b"
+      }
+    }
+  }
+}
