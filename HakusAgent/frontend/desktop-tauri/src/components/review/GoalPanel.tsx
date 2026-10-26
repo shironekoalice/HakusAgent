@@ -7,6 +7,7 @@ import { Ban, CheckCircle2, Loader2, Pause, Play, Target, Trash2, Undo2 } from '
 import { Button } from '@/components/ui/button'
 import { useSessionStore } from '@/store/session'
 import { useReviewStore } from '@/store/review'
+import { subscribeToSessionEvents } from '@/store/eventBus'
 import { useToast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
 import type { ThreadGoalStatus } from '@/api/types'
@@ -20,6 +21,7 @@ import {
   RpShell,
   useRpCopy,
 } from './PanelChrome'
+import { StreamStateBadge } from './StreamStateBadge'
 import { useI18n } from '@/lib/i18n'
 
 const STATUS_TONE: Record<ThreadGoalStatus, 'ok' | 'warn' | 'danger' | 'info' | 'muted'> = {
@@ -64,6 +66,17 @@ export function GoalPanel() {
     if (goalThreadId === threadId) return
     void loadGoal(threadId)
   }, [threadId, goalThreadId, loadGoal])
+
+  // Shared-bus projection (Phase 6 Slice B): while a turn runs, the panel
+  // was previously stale until remount — goal changes only landed through
+  // REST on load. Subscribe to the session's live `goal_updated` events and
+  // reconcile from the server on each one.
+  useEffect(() => {
+    if (!activeSessionId) return
+    return subscribeToSessionEvents(activeSessionId, ({ event }) => {
+      if (event.event_type === 'goal_updated') void loadGoal(threadId)
+    })
+  }, [activeSessionId, threadId, loadGoal])
 
   useEffect(() => {
     setDraft(goal?.objective || '')
@@ -135,7 +148,12 @@ export function GoalPanel() {
       <RpHeader
         icon={Target}
         title={copy('会话目标', 'Goal')}
-        meta={goal ? <RpChip tone={STATUS_TONE[goal.status] || 'muted'}>{goal.status.replace('_', ' ')}</RpChip> : null}
+        meta={
+          <>
+            {goal ? <RpChip tone={STATUS_TONE[goal.status] || 'muted'}>{goal.status.replace('_', ' ')}</RpChip> : null}
+            {activeSessionId && <StreamStateBadge sessionId={activeSessionId} />}
+          </>
+        }
       />
 
       <RpBody>

@@ -1,8 +1,11 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { ScrollText, RefreshCw, Trash2, Loader2, ChevronDown, ChevronRight, Wrench, MessageSquare, Zap, AlertCircle, CheckCircle2, XCircle } from 'lucide-react'
 import { apiClient } from '@/api/client'
 import type { SessionLogEvent, SessionLogStats } from '@/api/types'
 import { useSessionStore } from '@/store/session'
+import { subscribeToSessionEvents } from '@/store/eventBus'
+import { agentEventToLogEvent, isTurnTerminalEvent } from '@/lib/sessionLogProjection'
+import { StreamStateBadge } from './StreamStateBadge'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 
@@ -25,13 +28,17 @@ export function SessionLogTab() {
   const { locale } = useI18n()
   const copy = (zh: string, en: string) => locale === 'zh-CN' ? zh : en
   const activeId = useSessionStore((s) => s.activeSessionId)
-  const isStreaming = useSessionStore((s) => s.isStreaming)
   const [events, setEvents] = useState<SessionLogEvent[]>([])
   const [stats, setStats] = useState<SessionLogStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [collapsedTurns, setCollapsedTurns] = useState<Set<number>>(new Set())
   const [showArchived, setShowArchived] = useState(false)
+  // Live projection state (Phase 6 Slice B): turn number for events that
+  // arrive before the next server reconciliation, and a pending-reconcile
+  // flag so a burst of terminal events triggers one refetch.
+  const turnRef = useRef(0)
+  const reconcileRef = useRef(false)
 
   const fetchLog = useCallback(async () => {
     if (!activeId) return
@@ -41,6 +48,8 @@ export function SessionLogTab() {
       const res = await apiClient.getSessionLog(activeId, { limit: 500 })
       setEvents(res.events)
       setStats(res.stats)
+      // Server truth re-bases the live turn counter after reconciliation.
+      turnRef.current = res.stats?.current_turn ?? turnRef.current
     } catch (e: any) {
       setError(e?.message || 'Failed to load session log')
     } finally {
@@ -53,12 +62,31 @@ export function SessionLogTab() {
     fetchLog()
   }, [fetchLog])
 
-  // Auto-refresh every 2s while streaming
+  // Live projection: instead of polling the full log every 2s while
+  // streaming, append events arriving on the shared workbench event bus,
+  // and re-fetch once per turn end (server log is authoritative for turn
+  // numbering, stats and compaction).
   useEffect(() => {
-    if (!isStreaming) return
-    const interval = setInterval(fetchLog, 2000)
-    return () => clearInterval(interval)
-  }, [isStreaming, fetchLog])
+    if (!activeId) return
+    return subscribeToSessionEvents(activeId, ({ event }) => {
+      if (event.event_type === 'turn_started') {
+        turnRef.current += 1
+      }
+      const mapped = agentEventToLogEvent(event, turnRef.current)
+      if (mapped) {
+        setEvents((prev) => [...prev, mapped])
+      }
+      if (isTurnTerminalEvent(event) && !reconcileRef.current) {
+        reconcileRef.current = true
+        // Let the terminal event land in the append above before the
+        // authoritative refetch replaces the projection.
+        setTimeout(() => {
+          reconcileRef.current = false
+          void fetchLog()
+        }, 300)
+      }
+    })
+  }, [activeId, fetchLog])
 
   const handleCompact = async () => {
     if (!activeId) return
@@ -116,6 +144,7 @@ export function SessionLogTab() {
         <div className="flex items-center gap-2 text-xs">
           <ScrollText className="h-3.5 w-3.5 text-primary" />
           <span className="font-medium">Session Log</span>
+          {activeId && <StreamStateBadge sessionId={activeId} />}
           {stats && (
             <span className="text-muted-foreground">
               · {stats.event_count} events · {(stats.live_size_bytes / 1024).toFixed(1)} KB
@@ -195,7 +224,6 @@ export function SessionLogTab() {
                   <button
                     onClick={() => toggleTurn(turn)}
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-foreground/[0.03]"
-                    aria-expanded={!collapsed}
                   >
                     {collapsed ? (
                       <ChevronRight className="h-3 w-3 text-muted-foreground" />
@@ -218,7 +246,7 @@ export function SessionLogTab() {
                     </span>
                   </button>
                   {!collapsed && (
-                    <div className="liquid-glass-disclosure mx-2 mb-2 px-3 pb-2 pl-8">
+                    <div className="px-3 pb-2 pl-8">
                       {turnEvents.map((ev, i) => (
                         <EventRow key={i} event={ev} />
                       ))}

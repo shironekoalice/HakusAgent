@@ -1,57 +1,13 @@
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import {
-  Check,
-  Copy,
-  FileClock,
-  FileText,
-  FolderTree,
-  Globe,
-  GitCompareArrows,
-  ScrollText,
-  Target,
-  TerminalSquare,
-  Waypoints,
-  X,
-  Coins,
-  Workflow,
-} from 'lucide-react'
+import { Check, Copy, FileText, X } from 'lucide-react'
 import { useAppStore, type RightPanelTab } from '@/store/app'
 import { cn, copyToClipboard } from '@/lib/utils'
-import { DiffReview } from './DiffReview'
-import { TerminalPanel } from './TerminalPanel'
-import { BrowserPanel } from './BrowserPanel'
-import { LogsPanel } from './LogsPanel'
-import { SessionLogTab } from './SessionLogTab'
-import { UsageCostPanel } from './UsageCostPanel'
-import { GoalPanel } from './GoalPanel'
-import { WorktreePanel } from './WorktreePanel'
-import { FilesPanel } from './FilesPanel'
-import { FlowRunPanel } from '@/components/flow/FlowRunPanel'
+import { visiblePanelTabs } from '@/lib/panels/registry'
 import { RpEmpty, RpHeader, RpIconButton } from './PanelChrome'
 import { useDragScroll } from './useDragScroll'
 import { useI18n } from '@/lib/i18n'
-import { embeddedBrowserAvailable } from '@/lib/agentBrowser'
-
-type TabDef = {
-  id: Exclude<RightPanelTab, 'artifact'>
-  labelKey: 'reviewTab' | 'usageTab' | 'goalTab' | 'worktreeTab' | 'filesTab' | 'flowRunTab' | 'trajectoryTab' | 'terminalTab' | 'browserTab' | 'logsTab'
-  icon: typeof GitCompareArrows
-}
-
-const TABS: TabDef[] = [
-  { id: 'review', labelKey: 'reviewTab', icon: GitCompareArrows },
-  { id: 'usage', labelKey: 'usageTab', icon: Coins },
-  { id: 'goal', labelKey: 'goalTab', icon: Target },
-  { id: 'worktree', labelKey: 'worktreeTab', icon: Waypoints },
-  { id: 'files', labelKey: 'filesTab', icon: FolderTree },
-  { id: 'flow', labelKey: 'flowRunTab', icon: Workflow },
-  { id: 'session_log', labelKey: 'trajectoryTab', icon: FileClock },
-  { id: 'terminal', labelKey: 'terminalTab', icon: TerminalSquare },
-  { id: 'browser', labelKey: 'browserTab', icon: Globe },
-  { id: 'logs', labelKey: 'logsTab', icon: ScrollText },
-]
 
 const DOC_LANGS = new Set(['markdown', 'md', 'mdx', 'text', 'txt', 'plaintext'])
 
@@ -124,6 +80,9 @@ export function RightPanel() {
   const settingsOpen = useAppStore((s) => s.settingsOpen)
   // 标签多于面板宽度时，允许按住鼠标左右拖动平移这一排标签。
   const tabStrip = useDragScroll<HTMLDivElement>()
+  const tabs = visiblePanelTabs()
+  // The artifact pseudo-tab exists only while an artifact is open.
+  const showArtifactTab = tab === 'artifact' && artifact
 
   return (
     <aside className="right-panel flex h-full w-full min-w-0 shrink-0 flex-col">
@@ -140,7 +99,7 @@ export function RightPanel() {
         </button>
       </div>
 
-      {/* Workbench tab strip */}
+      {/* Workbench tab strip — derived from the panel registry */}
       <div
         ref={tabStrip.ref}
         onPointerDown={tabStrip.onPointerDown}
@@ -148,7 +107,7 @@ export function RightPanel() {
         role="tablist"
         aria-label={t('workbench')}
       >
-        {TABS.filter((tabDef) => tabDef.id !== 'browser' || embeddedBrowserAvailable()).map((tabDef) => {
+        {tabs.map((tabDef) => {
           const Icon = tabDef.icon
           const active = tab === tabDef.id
           return (
@@ -157,7 +116,7 @@ export function RightPanel() {
               role="tab"
               aria-selected={active}
               data-active={active}
-              onClick={() => setTab(tabDef.id)}
+              onClick={() => setTab(tabDef.id as RightPanelTab)}
               className={cn('inline-flex shrink-0 items-center gap-1.5', active && 'border-primary')}
               title={t(tabDef.labelKey)}
             >
@@ -182,19 +141,20 @@ export function RightPanel() {
       </div>
 
       <div className="min-h-0 flex-1">
-        {tab === 'review' && <DiffReview />}
-        {tab === 'usage' && <UsageCostPanel />}
-        {tab === 'goal' && <GoalPanel />}
-        {tab === 'worktree' && <WorktreePanel />}
-        {tab === 'files' && <FilesPanel />}
-        {tab === 'flow' && <FlowRunPanel />}
-        {tab === 'session_log' && <SessionLogTab />}
-        {tab === 'terminal' && <TerminalPanel />}
-        {tab === 'logs' && <LogsPanel />}
-        {tab === 'artifact' && <ArtifactView />}
-        <div className={cn('h-full min-h-0', tab !== 'browser' && 'hidden')}>
-          {embeddedBrowserAvailable() && <BrowserPanel active={tab === 'browser' && !settingsOpen} />}
-        </div>
+        {tabs.map((tabDef) => {
+          if (tabDef.keepMounted) {
+            // Kept mounted so its internal state (browser page, terminal
+            // scrollback) survives switching away; hidden via CSS.
+            return (
+              <div key={tabDef.id} className={cn('h-full min-h-0', tab !== tabDef.id && 'hidden')}>
+                <tabDef.component active={tab === tabDef.id && !settingsOpen} />
+              </div>
+            )
+          }
+          if (tab !== tabDef.id) return null
+          return <tabDef.component key={tabDef.id} />
+        })}
+        {showArtifactTab && <ArtifactView />}
       </div>
     </aside>
   )

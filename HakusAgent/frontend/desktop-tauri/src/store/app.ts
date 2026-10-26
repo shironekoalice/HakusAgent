@@ -35,6 +35,7 @@ export type SettingsCategory =
   | 'tools'
   | 'automations'
   | 'skills'
+  | 'extensions'
   | 'mcp'
   | 'wechat'
   | 'appearance'
@@ -103,8 +104,30 @@ interface AppStore {
 const SIDEBAR_KEY = 'hakusai:sidebar-open'
 const SIDEBAR_COMPACT_KEY = 'hakusai:sidebar-compact'
 const RIGHT_PANEL_KEY = 'hakusai:right-panel-open'
+const RIGHT_PANEL_TAB_KEY = 'hakusai:right-panel-tab'
 const AGENT_MODE_KEY = 'hakusai:agent-mode'
 const REASONING_EFFORTS_KEY = 'hakusai:reasoning-efforts'
+
+/**
+ * Tabs that may be restored at launch (Phase 6 Slice D: layout state
+ * survives restart). `lib/panels/registry.ts` owns the panel list; this
+ * list is its restorable mirror and is pinned to it by registry.test.ts.
+ * 'artifact' is deliberately absent — it is a runtime-only pseudo-tab that
+ * exists only while an artifact is open, and its content is never
+ * persisted (no transcript data in localStorage).
+ */
+export const RESTORABLE_PANEL_TABS: readonly RightPanelTab[] = [
+  'review',
+  'usage',
+  'goal',
+  'worktree',
+  'files',
+  'flow',
+  'session_log',
+  'terminal',
+  'browser',
+  'logs',
+]
 
 function readSidebarOpen(): boolean {
   if (typeof window === 'undefined') return true
@@ -158,6 +181,31 @@ function writeRightPanelOpen(open: boolean) {
   if (typeof window === 'undefined') return
   try {
     localStorage.setItem(RIGHT_PANEL_KEY, String(open))
+  } catch {
+    /* ignore */
+  }
+}
+
+function readRightPanelTab(): RightPanelTab {
+  if (typeof window === 'undefined') return 'review'
+  try {
+    const raw = localStorage.getItem(RIGHT_PANEL_TAB_KEY)
+    if (raw && (RESTORABLE_PANEL_TABS as readonly string[]).includes(raw)) {
+      return raw as RightPanelTab
+    }
+    return 'review'
+  } catch {
+    return 'review'
+  }
+}
+
+function writeRightPanelTab(tab: RightPanelTab) {
+  if (typeof window === 'undefined') return
+  // The artifact pseudo-tab is transient: never persist it (or its
+  // content) as layout state — the last real panel stays restorable.
+  if (tab === 'artifact') return
+  try {
+    localStorage.setItem(RIGHT_PANEL_TAB_KEY, tab)
   } catch {
     /* ignore */
   }
@@ -234,7 +282,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   rightPanelOpen: readRightPanelOpen(),
-  rightPanelTab: 'review',
+  rightPanelTab: readRightPanelTab(),
   rightPanelArtifact: null,
   toggleRightPanel: () => {
     const next = !get().rightPanelOpen
@@ -245,7 +293,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     writeRightPanelOpen(open)
     set({ rightPanelOpen: open })
   },
-  setRightPanelTab: (tab) => set({ rightPanelTab: tab, rightPanelOpen: true }),
+  setRightPanelTab: (tab) => {
+    // Persist the active panel (Slice D). 'artifact' is skipped inside the
+    // writer, so the restorable tab stays the last real panel.
+    writeRightPanelTab(tab)
+    set({ rightPanelTab: tab, rightPanelOpen: true })
+  },
   openRightPanelArtifact: (artifact) =>
     set({ rightPanelArtifact: artifact, rightPanelTab: 'artifact', rightPanelOpen: true }),
 

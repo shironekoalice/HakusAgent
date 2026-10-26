@@ -27,6 +27,8 @@ import type { ChatMessage, ChatSession, ToolCall, TextSegment, ReasoningSegment 
 import { generateId } from '@/lib/utils'
 import { apiClient, isRuntimeMissingThreadError } from '@/api/client'
 import { removeSessionWorkspace } from '@/lib/sessionWorkspaces'
+import { clearSessionEvents } from '@/store/eventBus'
+import { clearSessionStream } from '@/store/sessionStream'
 
 const EPHEMERAL_KEY = 'hakusai:ephemeral-sessions'
 
@@ -343,6 +345,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       throw e
     }
     removeSessionWorkspace(id)
+    // Drop the workbench event cursor/fan-out for the deleted session.
+    clearSessionEvents(id)
+    // Drop the per-session turn-stream phase/error state as well.
+    clearSessionStream(id)
   },
 
   renameSession: async (id, title) => {
