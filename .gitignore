@@ -123,3 +123,41 @@ scripts/test_p5_guardian_e2e.py
 .workbuddy/
 .cdp.mjs
 .zcodeignore
+
+# Agent / smoke scratch workspaces. Each is a throwaway HOME or WebView2 user
+# data tree produced by a verification run; none of it is source.
+.dsh-*/
+.android-sim/
+.profile-recovery-backup/
+android-log.txt
+
+# UI Automator hierarchy dumps. These capture whatever was on screen verbatim,
+# including text typed into password fields, so they must never be committed.
+scripts/*.xml
+scripts/audit/
+
+# Verification screenshots. Renders kept as evidence live in doc/; these are
+# the raw frames a script happened to dump while iterating.
+scripts/*.png
+
+# Compiled helper binaries. Their sources (main.rs / .ps1 / .cmd) are tracked;
+# these are per-machine builds of them.
+scripts/*.exe
+scripts/*.pdb
+
+# Build outputs of the Android ASR plugin's Gradle module.
+**/src-tauri/plugins/*/android/build/
+**/src-tauri/plugins/*/android/.gradle/
+**/src-tauri/plugins/*/android/.tauri/
+**/src-tauri/plugins/*/.aar-inspect/
+
+# The sherpa-onnx Kotlin runtime is a 50 MB third-party binary. It is a build
+# input downloaded out of band, not a portable extension; see
+# docs/ANDROID_ASR_REVIEW.md, which records that no redistribution decision has
+# been made. Keep it out of the repository until one is.
+**/src-tauri/plugins/*/android/libs/*.aar
+
+# Transient API payloads captured from the GitHub REST API during release work.
+/jobs.json
+/run.json
+frontend/terminal-fix.patch

@@ -14,8 +14,12 @@ Status values:
 
 ## Current snapshot (authoritative, 2026-10-19)
 
-The latest state is **Phase 0-6: green, Phase 7: yellow, Phase 8: red (deletion
-list approved; Phase 7 feature migration is the active prerequisite)**.
+The latest state is **Phase 0, 2-6: green, Phase 1 and Phase 7: yellow, Phase 8:
+red (deletion list approved; Phase 7 feature migration is the active
+prerequisite)**. Phase 1 is not green: the runtime contract and ledger are
+complete and tested, but the cross-phase retirement gates it owns stay open
+until Phase 8 executes, so its heading in this file reads `yellow` and this
+snapshot follows the headings rather than overriding them.
 The current evidence is the most recent verification record at the end of
 this file; older records are retained as history and must not override this
 snapshot.
@@ -26,7 +30,7 @@ snapshot.
 | `voice.celia` | trusted and enabled in the Windows Runtime; real Celia/FunASR bridge smoke passes with the external model |
 | `avatar.vtuber` | trusted and enabled in the Windows Runtime; Auto-live2D/live-server bridge smoke passes with external assets/config |
 | `legacy.provider` | staged protocol candidate; unavailable, untrusted, not activated |
-| Android `sherpa-onnx + SenseVoice` | Android entrypoint staged; external runtime/model and device smoke remain unavailable |
+| Android `sherpa-onnx + SenseVoice` | entrypoint staged; a signed arm64 release APK now links the ASR plugin and sherpa-onnx JNI; model weights and device smoke remain unavailable |
 | Candidate bundle fixtures | 3/3 pass lifecycle, rollback, manifest, and redaction checks |
 | Phase 8 deletion | no legacy component or user data deleted; deletion list remains draft |
 
@@ -6189,3 +6193,138 @@ The frontend build and Windows Rust check pass. An Android Rust build reached
 the new plugin but remains blocked by the existing `rquickjs-sys` bindgen/NDK
 sysroot setup; no APK or device smoke was claimed. The model weights and native
 sherpa-onnx runtime remain external, and no device is connected through ADB.
+
+## Verification record - worktree regression gate and Android artifact reconciliation (2026-10-22, one-hundred-forty-ninth pass)
+
+This pass re-ran the named gates against the current worktree, which carries a
+large uncommitted change set, and reconciled one stale Android statement in the
+ledger with an artifact that now exists on disk.
+
+Regression repair: the full desktop Vitest suite initially failed 2 of 113
+tests in `src/lib/androidFeatureAdapter.test.ts`. `projectAndroidVoiceResult`
+returned `text: null` unconditionally, while the two exact-shape assertions
+expect a start/stop result that carries no transcript key at all.
+`VoiceProcessResult.text` is optional, so the projection now omits the key
+unless the Runtime response actually carries a string `transcript`. The
+transcript path is preserved; only the always-present null key is gone. After
+the change the suite passes 113/113 and `tsc --noEmit` is clean.
+
+A second, unrelated defect was found by the whitespace check: `git diff
+--check` reported `frontend/terminal/crates/tui/src/plugins/tests.rs:1489: new
+blank line at EOF`. The trailing blank line was removed; the check is clean
+apart from the pre-existing LF/CRLF conversion warnings.
+
+Android reconciliation: the one-hundred-forty-eighth pass stated that no APK
+was produced and that the Android build was blocked by `rquickjs-sys` bindgen.
+That statement described the 2026-10-11 attempt and is superseded by the
+2026-10-19 commit `f39ec77` (Chinese-path linker fix plus loopback cleartext
+exemption). The generated tree now holds
+`app-universal-release-signed.apk` (versionName `0.3.0`, versionCode `3000`,
+`targetSdk 36`, `minSdk 24`, `native-code: arm64-v8a`). Inspecting the archive
+confirms the ASR boundary is actually compiled in: the dex contains
+`HakusAndroidAsrPlugin`, `com/k2fsa/sherpa/onnx`, `OfflineRecognizer`,
+`hakus-android-asr`, and the manifest declares `RECORD_AUDIO`; `lib/arm64-v8a/`
+contains `libonnxruntime.so`, `libsherpa-onnx-c-api.so`,
+`libsherpa-onnx-cxx-api.so`, and `libsherpa-onnx-jni.so`. The APK contains no
+`.onnx` weights and no `tokens.txt`, which matches the standing decision to
+keep SenseVoice weights external.
+
+This changes the Android row from "entrypoint staged" to "entrypoint staged and
+linked into a signed arm64 APK". It does **not** close the Phase 7 Android item:
+no `model.int8.onnx`/`tokens.txt` pair is present on any search path, no
+emulator AVD exists on this host (the SDK ships only an `arm64-v8a` system
+image for android-35, which is not usable on this x86_64 host), and `adb
+devices` reports no attached device. Capture, transcription, stop, and the
+unavailable fallback therefore remain unverified on a real target.
+
+The model search was repeated against the real filesystems after an initial
+MSYS-rooted scan returned nothing meaningful. `C:\Users\Think` and `D:\项目`
+were searched to depth 10 for `model.int8.onnx` with zero hits, and the
+app-private `models/sensevoice` directory does not exist. The only local ASR
+weights are `D:\项目\Celia\models\asr\fun_asr` — the FunASR PyTorch export
+(`model.pt`, `tokens.json`) used by the desktop `voice.celia` bridge. That is a
+different runtime and format from the sherpa-onnx int8 ONNX pair the Android
+adapter requires, so it cannot stand in for the missing model.
+
+| Check | Result |
+|---|---|
+| `node scripts/phase7-extension-fallback-audit.mjs` | **pass; 8 checks, 0 violations** |
+| `node scripts/phase8-call-site-audit.mjs` | **pass; 0 violations; writers-freeze gate present** |
+| `python scripts/extension_bundle_fixtures.py --bundle all` | **pass; 3 bundles, 0 failures; per-bundle source digests unchanged** |
+| `powershell -File scripts/phase2-exit-gate.ps1` | **pass; all 5 constituents exited 0** |
+| `cargo test -p hakus-tui --lib -- plugin` | **196 passed; 0 failed** |
+| `cargo test -p hakus-tui --lib plugins::` | **144 passed; 0 failed** |
+| `cargo test -p hakus-state --lib ledger_` | **6 passed; 0 failed** |
+| `cargo test -p hakus-protocol` | **17 passed; 0 failed** |
+| `cargo check -p hakus-tui` | **pass; 71 pre-existing warnings only** |
+| `python -m pytest tests/test_provider_ops.py -q` | **39 passed** |
+| `python -m pytest tests/test_permission_seed_modes.py -q` | **6 passed** |
+| `python scripts/verify_terminal_retired.py` | **pass; retired route refuses, no shell executed** |
+| `npx tsc --noEmit` (desktop) | **pass; clean** |
+| `npx vitest run` (desktop) | **113 passed; 16 files; 0 failed** |
+| `npm run build` (desktop) | **pass; Vite production build, 28.32 s, chunk-size warning only** |
+| `git diff --check` | **pass; line-ending warnings only** |
+| Signed Android release APK | **present; ASR plugin + sherpa-onnx JNI linked; no model weights inside** |
+| Android model directory, AVD, or attached device | **none; `model.int8.onnx` absent under `C:\Users\Think` and `D:\项目`; device smoke still blocked** |
+
+Phase 7 remains `yellow`, gated on the reviewed bundle inputs and on a real
+Android device smoke. Phase 8 remains `red` and no deletion is authorized: the
+six compatibility writers, the release note, and the approved deletion list
+stay exactly as drafted.
+
+## Verification record - Flow canvas token migration (2026-10-25, one-hundred-fiftieth pass)
+
+Scope: `.zcode/plans/plan-sess_02cb2f31-8c8b-4c7b-a0d7-52a9ffe630d5.md` phase 4,
+first bullet (配色 token 化). Two corrections to the plan's own framing came
+out of measuring the canvas before changing it:
+
+1. The plan said `--success`/`--warning`/`--info` were "defined but unused, so
+   run-state colors don't adapt to the light theme". Measured: those three
+   tokens had **0** uses anywhere in `src/` (not just in Flow), and the Flow
+   canvas never had a light variant at all — `--fz-*` is declared once with no
+   `.dark` override, so the workbench is a dark plane in both app themes. The
+   real defect was the inverse and worse: panels inside the workbench paint
+   themselves with `--fz-panel` / `--fz-node` but still resolved `--cx-*` and
+   `--card` / `--border` / `--muted` / `--background` / `--popover`, which do
+   follow the app theme. On the light theme the workflow-list filename was
+   `#0d0d0d` on `rgb(20,21,26)` — **1.06:1, invisible** — and the inspector
+   column became 42%-alpha white over a near-black canvas.
+2. The palette was three unsynchronized sources for one concept:
+   `--fz-success` (node dot), `hsl(0 84% 69%)` literals (node ring/pulse) and
+   Tailwind `text-emerald-400` (status icon). A state could change appearance
+   between the dot, the glow and the icon in the same card.
+
+| Check | Result |
+|---|---|
+| `grep -c "var(--success)\|var(--warning)\|var(--info)"` in `src/` | **0 before; still 0 — deliberately not used, see finding 1** |
+| `grep -c "color: '#"` in `src/lib/flow/registry.ts` | **24 before, 0 after; all 24 types map to `var(--flow-node-<type>)`** |
+| registry token round-trip | **`--flow-node-start` resolves to `#34d399`; all values copied verbatim, so 0 pixel change** |
+| hardcoded `hsl(...)` in the Flow CSS block (lines 7704-9166) | **46 before; 20 after = 13 token declarations + 7 usages (4 plain black shadows, 1 selection ring now derived from `--fz-primary-ch`, 2 decorative canvas washes); every state/edge/port/warning literal is gone** |
+| `.flow-workbench` scope rebinding | **`--cx-*` (11), `--card`/`--border`/`--muted`/`--background`/`--popover`/`--foreground`/`--input`/`--primary` rebind to canvas values; `color-scheme: dark`** |
+| light theme, `.flow-list-name` contrast | **`#0d0d0d` on `rgb(20,21,26)` = 1.06:1 before → `rgb(231,233,239)` on the same base = 15.89:1 after** |
+| light theme, `.flow-search-input` | **13,13,13 → 231,233,239; 15.89:1** |
+| light theme, `.flow-inspector-col` background | **`rgba(255,255,255,0.42)` → `rgba(20,21,26,0.42)`** |
+| light theme, sidebar title / list item / run bar / node title | **3.73:1 / 13.79:1 / 15.02:1 / 15.89:1 — all pass** |
+| status icon classes resolve | **running `rgb(77,145,255)`, done `rgb(66,205,140)`, error `rgb(242,110,110)`, waiting `rgb(240,174,61)`, skipped `rgb(103,109,126)`** |
+| dark theme baseline after migration | **`.flow-node` `rgb(28,30,38)` (unchanged); text 15.89:1; `--flow-node-start` `#34d399` (unchanged)** |
+| `.rp-chip-warn` inside the workbench | **rebound to `rgba(240,174,61,0.16)` / `rgb(247,193,100)`; the app-themed chip palette would have put light-theme browns on the dark run bar** |
+| node picker overlay (in scope) | **bg `rgba(26,28,35,0.98)`, text `rgb(231,233,239)`, category dots render their token colors** |
+| `npx tsc --noEmit` | **pass; clean** |
+| `npx vitest run` | **138 passed; 18 files; 0 failed** |
+| `npm run build` | **pass; Vite production build, 31.77 s, chunk-size warning only** |
+| `git diff --check` | **pass; line-ending warnings only** |
+
+Evidence: `doc/flow-theme-light.png` and `doc/flow-theme-dark.png`, captured in
+the real in-app browser at 1440x900 with both rails open. The two frames are
+identical inside the workbench — that is the intended design, and the reason
+the light-theme bug was invisible to a screenshot review of the canvas alone.
+
+Still open in phase 4, measured rather than assumed:
+
+| Item | State |
+|---|---|
+| Background selectable (dots/lines/grid/none, persisted) | **not done; `<Background gap={18} size={1}>` still hardcoded at `FlowWorkbench.tsx:647`** |
+| CSS cleanup (dead `.flow-side` / `.flow-palette*`, duplicated `.flow-inspector`, `!important`) | **not done; 720 `!important` in `index.css`** |
+| Unreachable status classes | **confirmed: `queued` has 0 CSS rules and is never assigned by `executor.ts`; `waiting` has 1 rule and is likewise never assigned** |
+| `1199px` breakpoint consolidation | **not done; 7 occurrences (5 in `index.css`, 1 doc comment, 1 in `useNarrowCanvas.ts`)** |
+| Notes / groups / `Ctrl+K` | **not done** |
