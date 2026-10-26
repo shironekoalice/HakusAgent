@@ -222,6 +222,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   loadProviders: async () => {
+    // A Rust browser preview owns its loopback endpoint. Keep provider reads
+    // on that Runtime even if an older browser session persisted another URL.
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('backend')?.toLowerCase() === 'rust') {
+      apiClient.setBaseUrl('http://127.0.0.1:48081')
+    }
     // 防止重复调用：如果已经在 loading 且不超过 15s，跳过
     const state = get()
     if (state.providersLoading && state.providersLoadingSince) {

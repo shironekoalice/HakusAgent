@@ -1,8 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { LiquidGlassSurface } from '@/components/ui/liquid-glass-surface'
 
 export interface GlassSelectOption {
   value: string
@@ -16,25 +15,20 @@ interface GlassSelectProps {
   id?: string
   ariaLabel?: string
   className?: string
-  triggerClassName?: string
   disabled?: boolean
-  onFocus?: () => void
-  onBlur?: () => void
 }
 
 /**
  * Liquid-glass replacement for native <select>. Native popups render as an
  * OS-gray list that clashes with the app theme — this renders the options in
- * a rounded, translucent, blur-backed panel with restrained selection states.
+ * a rounded, translucent, blur-backed panel with primary-tinted highlights.
  */
-export function GlassSelect({ value, onChange, options, id, ariaLabel, className, triggerClassName, disabled, onFocus, onBlur }: GlassSelectProps) {
+export function GlassSelect({ value, onChange, options, id, ariaLabel, className, disabled }: GlassSelectProps) {
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex((o) => o.value === value)))
   const [listPosition, setListPosition] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
-  const listRef = useRef<HTMLDivElement>(null)
-  const listId = useId()
-  const triggerId = id ?? `${listId}-trigger`
+  const listRef = useRef<HTMLUListElement>(null)
 
   const selected = options.find((option) => option.value === value)
 
@@ -109,9 +103,6 @@ export function GlassSelect({ value, onChange, options, id, ariaLabel, className
   const commit = (value: string) => {
     onChange(value)
     setOpen(false)
-    requestAnimationFrame(() => {
-      rootRef.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus({ preventScroll: true })
-    })
   }
 
   const handleTriggerKeyDown = (event: React.KeyboardEvent) => {
@@ -139,37 +130,28 @@ export function GlassSelect({ value, onChange, options, id, ariaLabel, className
     <div ref={rootRef} className={cn('relative', className)}>
       <button
         type="button"
-        id={triggerId}
+        id={id}
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
-        aria-controls={open ? listId : undefined}
-        aria-activedescendant={open && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined}
         aria-label={ariaLabel}
         disabled={disabled || options.length === 0}
         onClick={() => !disabled && options.length > 0 && setOpen((v) => !v)}
         onKeyDown={handleTriggerKeyDown}
-        onFocus={onFocus}
-        onBlur={onBlur}
         className={cn(
           'flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-border/70 bg-background/70 px-3.5 py-2 text-left text-sm shadow-sm transition-colors',
           'hover:border-primary/30 hover:bg-background',
-          'glass-select-trigger',
-          open && 'border-foreground/20',
+          open && 'border-primary/40 ring-1 ring-primary/20',
           disabled && 'cursor-not-allowed opacity-50',
-          triggerClassName,
         )}
       >
         <span className="min-w-0 flex-1 truncate">{selected?.label ?? value}</span>
         <ChevronDown className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180 text-primary')} aria-hidden="true" />
       </button>
       {open && createPortal(
-        <LiquidGlassSurface
+        <ul
           ref={listRef}
-          id={listId}
           role="listbox"
-          aria-label={ariaLabel}
-          aria-labelledby={ariaLabel ? undefined : triggerId}
           style={listPosition ? {
             top: listPosition.top,
             left: listPosition.left,
@@ -177,15 +159,14 @@ export function GlassSelect({ value, onChange, options, id, ariaLabel, className
             maxHeight: listPosition.maxHeight,
             visibility: 'visible',
           } : { visibility: 'hidden' }}
-          className="glass-list pointer-events-auto fixed z-[500]"
+          className="glass-list pointer-events-auto fixed z-[500] overflow-y-auto overscroll-contain rounded-xl border border-primary/15 p-1.5 shadow-2xl shadow-black/25"
           data-hakus-overlay="glass-select"
         >
           {options.map((option, index) => {
             const isSelected = option.value === value
             return (
+              <li key={option.value}>
                 <button
-                  key={option.value}
-                  id={`${listId}-option-${index}`}
                   type="button"
                   role="option"
                   aria-selected={isSelected}
@@ -195,18 +176,19 @@ export function GlassSelect({ value, onChange, options, id, ariaLabel, className
                   className={cn(
                     'flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors',
                     isSelected
-                      ? 'bg-foreground/[0.08] font-medium text-foreground'
+                      ? 'bg-primary/15 font-medium text-primary'
                       : index === activeIndex
-                        ? 'bg-foreground/[0.06] text-foreground'
+                        ? 'bg-primary/10 text-foreground'
                         : 'text-foreground/90',
                   )}
                 >
                   <span className="min-w-0 flex-1 truncate">{option.label}</span>
                   {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}
                 </button>
+              </li>
             )
           })}
-        </LiquidGlassSurface>,
+        </ul>,
         rootRef.current?.closest<HTMLElement>('[data-hakus-overlay="dialog-content"]') ?? document.body,
       )}
     </div>

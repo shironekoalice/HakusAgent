@@ -1,6 +1,7 @@
 /**
  * Unified-diff hunk helpers: parse + build a single-hunk patch that
- * `git apply --3way` (via Tauri git_apply_patch) can stage or reverse.
+ * `git apply --recount` (via the Rust Runtime's `POST /v1/workspace/apply-hunk`)
+ * can stage or reverse.
  */
 
 export interface ParsedDiffLine {

@@ -7,11 +7,9 @@ import { ChatView } from '@/components/chat/ChatView'
 import { TopBar } from '@/components/layout/TopBar'
 import { ResizeHandle } from '@/components/layout/ResizeHandle'
 import { WindowResizeEdges } from '@/components/layout/WindowResizeEdges'
-import { SettingsDialog } from '@/components/settings/SettingsDialog'
-import { FirstRunSetup } from '@/components/FirstRunSetup'
 import { AwakeningSplash } from '@/components/AwakeningSplash'
-import { RemoteProjectWizard } from '@/components/settings/panels/RemoteProjectWizard'
 import { TextContextMenu } from '@/components/ui/TextContextMenu'
+import { DeferredRemoteProjectWizard } from '@/components/settings/panels/DeferredRemoteProjectWizard'
 
 import { useSessionStore } from '@/store/session'
 import { useSettingsStore } from '@/store/settings'
@@ -28,6 +26,8 @@ import { localeForRuntime, useI18n, useLocaleStore } from '@/lib/i18n'
 
 const FlowWorkbench = lazy(() => import('@/components/flow/FlowWorkbench').then((module) => ({ default: module.FlowWorkbench })))
 const RightPanel = lazy(() => import('@/components/review/RightPanel').then((module) => ({ default: module.RightPanel })))
+const SettingsDialog = lazy(() => import('@/components/settings/SettingsDialog').then((module) => ({ default: module.SettingsDialog })))
+const FirstRunSetup = lazy(() => import('@/components/FirstRunSetup').then((module) => ({ default: module.FirstRunSetup })))
 
 const IS_TAURI = typeof __TAURI_INTERNALS__ !== 'undefined'
 // IS_ANDROID comes from @/lib/platform (UA + ?platform=android preview flag).
@@ -355,7 +355,13 @@ function App() {
     void (async () => {
       await loadSettings()
       if (cancelled) return
-      const url = useSettingsStore.getState().connection.serverUrl
+      // The explicit Rust browser preview is a local integration surface, so
+      // it must not inherit a stale sidecar/LAN URL from browser storage.
+      // Otherwise the shell can render an old provider catalog while the
+      // embedded Runtime is healthy on its fixed loopback port.
+      const configuredUrl = useSettingsStore.getState().connection.serverUrl
+      const url = IS_RUST_PREVIEW ? 'http://127.0.0.1:48081' : configuredUrl
+      if (IS_RUST_PREVIEW) apiClient.setBaseUrl(url)
       const isLoopback = /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)(:\d+)?\/?$/i.test(url)
       for (let attempt = 0; attempt < (isLoopback ? 20 : 1) && !cancelled; attempt += 1) {
         if (await useConnectionStore.getState().check(url)) {
@@ -425,6 +431,10 @@ function App() {
 
   // ── Watch for server URL changes (settings panel) ──────────────────
   useEffect(() => {
+    // The explicit Rust browser preview is an integration surface for the
+    // embedded Runtime. A persisted browser/sidecar URL must never override
+    // its fixed loopback endpoint after the preview effect has selected it.
+    if (IS_RUST_PREVIEW) return
     const isLoopback = /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)(:\d+)?\/?$/i.test(serverUrl)
     if (serverUrl && appReady && (!IS_ANDROID || !isLoopback)) {
       useConnectionStore.getState().check(serverUrl)
@@ -594,15 +604,25 @@ function App() {
               </div>
             )}
           </div>
-          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
-          <RemoteProjectWizard
-            open={Boolean(remoteReconnectProject)}
-            initialProject={remoteReconnectProject}
-            onOpenChange={(open) => { if (!open) setRemoteReconnectProject(null) }}
-            onConnected={(project) => { void completeRemoteReconnect(project) }}
-          />
+          {settingsOpen && (
+            <Suspense fallback={null}>
+              <SettingsDialog open onOpenChange={setSettingsOpen} />
+            </Suspense>
+          )}
+          {remoteReconnectProject && (
+            <DeferredRemoteProjectWizard
+              open
+              initialProject={remoteReconnectProject}
+              onOpenChange={(open) => { if (!open) setRemoteReconnectProject(null) }}
+              onConnected={(project) => { void completeRemoteReconnect(project) }}
+            />
+          )}
           <TextContextMenu />
-          {showFirstRun && <FirstRunSetup onComplete={() => setShowFirstRun(false)} />}
+          {showFirstRun && (
+            <Suspense fallback={null}>
+              <FirstRunSetup onComplete={() => setShowFirstRun(false)} />
+            </Suspense>
+          )}
           <Toaster />
           <WindowResizeEdges />
         </div>

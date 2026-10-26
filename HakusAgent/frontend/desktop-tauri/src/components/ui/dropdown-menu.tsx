@@ -3,7 +3,6 @@ import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
 import { Check, ChevronRight, Circle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { X } from 'lucide-react'
-import { LiquidGlassSurface } from '@/components/ui/liquid-glass-surface'
 
 type DropdownMenuRootProps = React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Root>
 
@@ -47,28 +46,27 @@ const DropdownMenuContent = React.forwardRef<
       sideOffset={sideOffset}
       collisionPadding={8}
       className={cn(
-        // Radix Content stays the positioning and collision boundary. The
-        // shared surface below owns the material and visual radius.
-        'hakus-dropdown-content z-50 min-w-[10rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--ui-radius-surface)] border border-transparent bg-transparent !p-0 text-popover-foreground shadow-none',
+        // macOS-style: larger radius, frosted glass, soft shadow.
+        // backdrop-blur-2xl + bg-popover/70 gives the translucent look
+        // that lets the underlying chat content show through subtly.
+      'z-50 min-w-[10rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--ui-radius-surface)] border border-border/50 bg-popover/70 p-1.5 text-popover-foreground shadow-lg backdrop-blur-2xl',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
         className,
       )}
       {...props}
       data-hakus-overlay="menu-content"
     >
-      <LiquidGlassSurface className="w-full" contentClassName="hakus-menu-surface-content">
-        <div aria-hidden className="hakus-sheet-grabber" />
-        <div className="hakus-mobile-menu-header">
-          <span className="hakus-mobile-menu-title">{mobileTitle}</span>
-          <DropdownMenuPrimitive.Item asChild>
-            <button type="button" className="hakus-mobile-menu-close" aria-label="关闭">
-              <span>关闭</span>
-              <X className="h-4 w-4" />
-            </button>
-          </DropdownMenuPrimitive.Item>
-        </div>
-        <div className="hakus-mobile-menu-body">{children}</div>
-      </LiquidGlassSurface>
+      <div aria-hidden className="hakus-sheet-grabber" />
+      <div className="hakus-mobile-menu-header">
+        <span className="hakus-mobile-menu-title">{mobileTitle}</span>
+        <DropdownMenuPrimitive.Item asChild>
+          <button type="button" className="hakus-mobile-menu-close" aria-label="关闭">
+            <span>关闭</span>
+            <X className="h-4 w-4" />
+          </button>
+        </DropdownMenuPrimitive.Item>
+      </div>
+      <div className="hakus-mobile-menu-body">{children}</div>
     </DropdownMenuPrimitive.Content>
   </DropdownMenuPortal>
 ))
@@ -141,22 +139,18 @@ DropdownMenuSubTrigger.displayName = DropdownMenuPrimitive.SubTrigger.displayNam
 const DropdownMenuSubContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.SubContent>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
->(({ className, children, ...props }, ref) => (
+>(({ className, ...props }, ref) => (
   <DropdownMenuPortal>
     <DropdownMenuPrimitive.SubContent
       ref={ref}
       collisionPadding={8}
       className={cn(
-        'hakus-dropdown-content z-50 min-w-[8rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--ui-radius-surface)] border border-transparent bg-transparent !p-0 text-popover-foreground shadow-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+        'z-50 min-w-[8rem] max-w-[calc(100vw-1rem)] max-h-[min(70vh,32rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--ui-radius-surface)] border bg-popover p-1.5 text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
         className,
       )}
       {...props}
       data-hakus-overlay="menu-sub-content"
-    >
-      <LiquidGlassSurface className="w-full" contentClassName="hakus-menu-surface-content">
-        {children}
-      </LiquidGlassSurface>
-    </DropdownMenuPrimitive.SubContent>
+    />
   </DropdownMenuPortal>
 ))
 DropdownMenuSubContent.displayName = DropdownMenuPrimitive.SubContent.displayName

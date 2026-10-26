@@ -15,6 +15,11 @@ import {
 } from "@/api/tauriBridge";
 import { detectSystemLocale } from "@/lib/i18n";
 import { PHONE_VIEWPORT_QUERY } from "@/lib/responsive";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  projectAndroidVoiceResult,
+  projectAndroidVoiceStatus,
+} from "@/lib/androidFeatureAdapter";
 
 const isAndroidRuntime =
   typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
@@ -31,6 +36,9 @@ const mobileCopy = (zh: string, en: string) => detectSystemLocale() === "zh-CN" 
 // phone out of media-query-driven rules.
 if (!isAndroidRuntime) {
   document.documentElement.classList.add("is-rounded-window");
+}
+if (typeof __TAURI_INTERNALS__ !== "undefined" && !isAndroidRuntime) {
+  document.documentElement.classList.add("is-tauri-window");
 }
 const syncPhoneClass = () => {
   let matches = false;
@@ -74,10 +82,40 @@ if (typeof __TAURI_INTERNALS__ !== "undefined") {
       setAutoDownload: async () => ({ status: "not-available" }),
       setAutoInstallOnAppQuit: async () => ({ status: "not-available" }),
     };
+    const androidCeliaUnavailable = mobileCopy(
+      "Android 上的 Celia 扩展不可用",
+      "The Celia extension is unavailable on Android",
+    );
+    const androidCeliaRuntimeUnavailable = mobileCopy(
+      "Android Runtime 扩展服务不可用",
+      "The Android Runtime extension service is unavailable",
+    );
     const mobileVoice = {
-      status: async () => ({ running: false, pid: null, startedAt: null, lastError: mobileCopy("Android 暂不支持桌面 Celia 进程", "The desktop Celia process is not available on Android") }),
-      startCelia: async () => ({ ok: false, running: false, pid: null, error: mobileCopy("Android 暂不支持桌面 Celia 进程", "The desktop Celia process is not available on Android") }),
-      stopCelia: async () => ({ ok: true, running: false, pid: null, error: null }),
+      status: async () => {
+        try {
+          const value = await invoke("plugin:hakus-android-asr|status");
+          return projectAndroidVoiceStatus(value, androidCeliaUnavailable);
+        } catch {
+          return projectAndroidVoiceStatus(undefined, androidCeliaRuntimeUnavailable);
+        }
+      },
+      startCelia: async (options?: { threadId?: string }) => {
+        try {
+          void options;
+          const value = await invoke("plugin:hakus-android-asr|start", { modelDir: "" });
+          return projectAndroidVoiceResult(value, "start", androidCeliaUnavailable);
+        } catch {
+          return projectAndroidVoiceResult(undefined, "start", androidCeliaRuntimeUnavailable);
+        }
+      },
+      stopCelia: async () => {
+        try {
+          const value = await invoke("plugin:hakus-android-asr|stop");
+          return projectAndroidVoiceResult(value, "stop", androidCeliaUnavailable);
+        } catch {
+          return projectAndroidVoiceResult(undefined, "stop", androidCeliaRuntimeUnavailable);
+        }
+      },
     };
 
   (window as any).electron = {

@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:android:aarch64": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../../scripts/android-aarch64-build.ps1",
     "tauri:build:win": "tauri build --bundles nsis",
     "tauri:build:mac": "tauri build --bundles dmg",
     "tauri:build:linux": "tauri build --bundles appimage"
@@ -43,7 +44,6 @@
     "@xyflow/react": "^12.11.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "liquid-glass-react": "1.1.1",
     "lucide-react": "^1.31.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
