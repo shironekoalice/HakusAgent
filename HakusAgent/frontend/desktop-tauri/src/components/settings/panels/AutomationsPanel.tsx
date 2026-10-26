@@ -220,7 +220,6 @@ export function AutomationsPanel() {
               <button
                 className="shrink-0 text-muted-foreground hover:text-foreground"
                 onClick={() => void toggleRuns(auto.id)}
-                aria-expanded={expandedId === auto.id}
                 title={copy('运行历史', 'Run history')}
               >
                 {expandedId === auto.id ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -273,7 +272,7 @@ export function AutomationsPanel() {
               </div>
             </div>
             {expandedId === auto.id && (
-              <div className="liquid-glass-disclosure mx-2 mb-2 border-t border-border/60 px-3 py-2">
+              <div className="border-t border-border/60 px-3 py-2">
                 {runsLoading ? (
                   <div className="flex items-center gap-1.5 py-1 text-[11px] text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" /> {copy('加载中…', 'Loading…')}

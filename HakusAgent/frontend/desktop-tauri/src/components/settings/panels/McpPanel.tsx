@@ -642,7 +642,6 @@ function ServerCard({
       <div className="flex items-center gap-3 p-3">
         <button
           onClick={onExpand}
-          aria-expanded={expanded}
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           aria-label={expanded ? copy('收起', 'Collapse') : copy('展开', 'Expand')}
         >
@@ -761,7 +760,7 @@ function ServerCard({
 
       {/* Expanded body */}
       {expanded && (
-        <div className="liquid-glass-disclosure mx-2 mb-2 border-t border-border p-3">
+        <div className="border-t border-border bg-muted/20 p-3">
           <div className="grid grid-cols-2 gap-3 text-[11px]">
             <div>
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{copy('传输方式', 'Transport')}</div>

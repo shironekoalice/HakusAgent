@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/toast'
 import { useSettingsStore } from '@/store/settings'
+import { useSessionStore } from '@/store/session'
 import { apiClient } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { playVoiceNotification } from '@/lib/voiceNotifications'
@@ -28,6 +29,12 @@ export function TtsPanel() {
   const [cloneProgress, setCloneProgress] = useState('')
   const [cloneVoiceId, setCloneVoiceId] = useState<string | null>(null)
   const [cloneError, setCloneError] = useState('')
+  /**
+   * Python interpreters the Rust side actually found and verified.
+   *
+   * Empty while loading, or on a machine with no Python — the select then shows
+   * a single explanatory option rather than an empty box the user can type into.
+   */
   const cloneFileRef = useRef<HTMLInputElement | null>(null)
   const clonePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -205,10 +212,9 @@ export function TtsPanel() {
       const result = voiceStatus?.running
         ? await voice.stopCelia()
         : await voice.startCelia({
-            celiaPath: settings.celiaPath,
             configPath: settings.celiaConfigPath,
-            pythonCommand: settings.celiaPythonCommand,
             openInTerminal: settings.celiaOpenInTerminal,
+            threadId: useSessionStore.getState().activeSessionId || undefined,
           })
       if (!result.ok) {
         toast.error(result.error || copy('Celia 语音通话启动失败', 'Could not start Celia voice call'))
@@ -269,29 +275,11 @@ export function TtsPanel() {
             {settings.voiceCallBackend === 'celia' && (
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <Label htmlFor="celia-path">{copy('Celia 项目路径', 'Celia project path')}</Label>
-                  <input
-                    id="celia-path"
-                    value={settings.celiaPath}
-                    onChange={(e) => settings.update({ celiaPath: e.target.value })}
-                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  />
-                </div>
-                <div className="space-y-1.5">
                   <Label htmlFor="celia-config">{copy('配置文件', 'Config file')}</Label>
                   <input
                     id="celia-config"
                     value={settings.celiaConfigPath}
                     onChange={(e) => settings.update({ celiaConfigPath: e.target.value })}
-                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="celia-python">{copy('Python 解释器', 'Python interpreter')}</Label>
-                  <input
-                    id="celia-python"
-                    value={settings.celiaPythonCommand}
-                    onChange={(e) => settings.update({ celiaPythonCommand: e.target.value })}
                     className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
                   />
                 </div>

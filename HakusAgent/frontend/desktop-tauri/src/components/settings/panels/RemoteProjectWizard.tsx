@@ -34,11 +34,10 @@ import { REMOTE_RUNTIME_CONNECTED_EVENT, useProjectsStore } from '@/store/projec
 import { useToast } from '@/components/ui/toast'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
-import { GlassSelect } from '@/components/ui/glass-select'
 
 type Step = 0 | 1 | 2 | 3
 
-interface Props {
+export interface RemoteProjectWizardProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialProject?: Project | null
@@ -50,7 +49,7 @@ const stepNames = {
   'en-US': ['Connection', 'Configuration', 'Connecting', 'Directory'],
 } as const
 
-export function RemoteProjectWizard({ open: isOpen, onOpenChange, initialProject, onConnected }: Props) {
+export function RemoteProjectWizard({ open: isOpen, onOpenChange, initialProject, onConnected }: RemoteProjectWizardProps) {
   const { locale } = useI18n()
   const zh = locale === 'zh-CN'
   const toast = useToast()
@@ -327,9 +326,11 @@ export function RemoteProjectWizard({ open: isOpen, onOpenChange, initialProject
               <div className="min-h-0 flex-1 space-y-4 overflow-auto pr-1">
                 {kind === 'ssh' ? <>
                   <Field label={copy('SSH 配置别名（可选）', 'SSH config alias (optional)')}>
-                    <GlassSelect
+                    <select
                       value={alias}
-                      onChange={(selected) => {
+                      autoComplete="off"
+                      onChange={(event) => {
+                        const selected = event.target.value
                         setAlias(selected)
                         const saved = sshHosts.find((item) => item.alias === selected)
                         if (!saved) return
@@ -341,14 +342,12 @@ export function RemoteProjectWizard({ open: isOpen, onOpenChange, initialProject
                           setAuthMethod('key')
                         }
                       }}
-                      ariaLabel={copy('SSH 配置别名', 'SSH config alias')}
-                      options={[
-                        { value: '', label: copy('不使用别名', 'No alias') },
-                        ...(alias && !sshHosts.some((item) => item.alias === alias) ? [{ value: alias, label: alias }] : []),
-                        ...sshHosts.map((item) => ({ value: item.alias, label: item.alias })),
-                      ]}
-                      triggerClassName="h-9 rounded-md border-input bg-background px-3 text-sm"
-                    />
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="">{copy('不使用别名', 'No alias')}</option>
+                      {alias && !sshHosts.some((item) => item.alias === alias) && <option value={alias}>{alias}</option>}
+                      {sshHosts.map((item) => <option key={item.alias} value={item.alias}>{item.alias}</option>)}
+                    </select>
                   </Field>
                   <div className="grid grid-cols-[minmax(0,1fr)_116px] gap-3">
                     <Field label={copy('主机', 'Host')}><Input autoComplete="off" placeholder="server.example.com" value={host} onChange={(event) => { setAlias(''); setHost(event.target.value) }} /></Field>
@@ -389,14 +388,10 @@ export function RemoteProjectWizard({ open: isOpen, onOpenChange, initialProject
                 </> : <>
                   <Field label={kind === 'wsl' ? copy('WSL 发行版', 'WSL distribution') : copy('运行中的容器', 'Running container')}>
                     <div className="flex gap-2">
-                      <GlassSelect
-                        value={targetValue}
-                        onChange={setTargetValue}
-                        ariaLabel={kind === 'wsl' ? 'WSL distribution' : 'Docker container'}
-                        options={[{ value: '', label: copy('请选择', 'Select one') }, ...targets.map((target) => ({ value: target, label: target }))]}
-                        className="min-w-0 flex-1"
-                        triggerClassName="h-9 rounded-md border-input bg-background px-3 text-sm"
-                      />
+                      <select aria-label={kind === 'wsl' ? 'WSL distribution' : 'Docker container'} value={targetValue} onChange={(event) => setTargetValue(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm">
+                        <option value="">{copy('请选择', 'Select one')}</option>
+                        {targets.map((target) => <option value={target} key={target}>{target}</option>)}
+                      </select>
                       <Button type="button" variant="outline" size="icon" title={copy('刷新列表', 'Refresh list')} onClick={() => void remoteOs.listTargets(kind).then(setTargets).catch((cause) => setError(String(cause)))}><RefreshCw className="h-4 w-4" /></Button>
                     </div>
                   </Field>

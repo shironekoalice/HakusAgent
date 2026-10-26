@@ -155,6 +155,8 @@ type MessageKey =
   | 'automations'
   | 'automationsDesc'
   | 'skillsDesc'
+  | 'extensions'
+  | 'extensionsDesc'
   | 'trayDesc'
   | 'mcpDesc'
   | 'wechatDesc'
@@ -194,7 +196,8 @@ const messages: Record<ResolvedLocale, Record<MessageKey, string>> = {
     connection: '连接', advanced: '高级', about: '关于与更新',
     modelDesc: 'AI Provider 与 API Key', characterDesc: '人格与开场白', chatDesc: '发送行为与显示', appearanceDesc: '主题与字体',
     voiceDesc: 'Celia 通话、任务播报与提示音', memoryDesc: '短期与长期记忆', toolsDesc: '工具开关与权限模式',
-    skillsDesc: '安装、启用与管理任务能力', automationsDesc: '定时触发 Agent 执行周期任务', trayDesc: '任务栏图标与全局快捷键', mcpDesc: '外部 MCP server 接入与工具调用',
+    skillsDesc: '安装、启用与管理任务能力', extensions: '扩展', extensionsDesc: '已安装扩展的权限与信任状态',
+    automationsDesc: '定时触发 Agent 执行周期任务', trayDesc: '任务栏图标与全局快捷键', mcpDesc: '外部 MCP server 接入与工具调用',
     wechatDesc: 'ClawBot 扫码连接', projectsDesc: '文件夹注册表：添加、重命名、置顶与移除', connectionDesc: '服务地址与超时',
     advancedDesc: '诊断、导入导出与重启', aboutDesc: '版本信息与自动更新',
     settingsGeneral: '通用', settingsModels: '模型与模型商', settingsWorkspaceData: '工作区与数据', settingsToolsIntegrations: '工具与集成', settingsAppearanceAbout: '外观与关于',
@@ -224,7 +227,8 @@ const messages: Record<ResolvedLocale, Record<MessageKey, string>> = {
     connection: 'Connection', advanced: 'Advanced', about: 'About & updates',
     modelDesc: 'AI providers and API keys', characterDesc: 'Personality and greeting', chatDesc: 'Sending and display', appearanceDesc: 'Theme and typography',
     voiceDesc: 'Celia calls, broadcasts, and sounds', memoryDesc: 'Short- and long-term memory', toolsDesc: 'Tool switches and permission mode',
-    skillsDesc: 'Install, enable, and manage capabilities', automationsDesc: 'Run the agent on a schedule', trayDesc: 'Taskbar icon and global shortcut', mcpDesc: 'External MCP servers and tools',
+    skillsDesc: 'Install, enable, and manage capabilities', extensions: 'Extensions', extensionsDesc: 'Permissions and trust state of installed extensions',
+    automationsDesc: 'Run the agent on a schedule', trayDesc: 'Taskbar icon and global shortcut', mcpDesc: 'External MCP servers and tools',
     wechatDesc: 'ClawBot QR connection', projectsDesc: 'Folder registry: add, rename, pin, and remove', connectionDesc: 'Server address and timeout',
     advancedDesc: 'Diagnostics, import/export, and restart', aboutDesc: 'Version information and updates',
     settingsGeneral: 'General', settingsModels: 'Models & providers', settingsWorkspaceData: 'Workspace & data', settingsToolsIntegrations: 'Tools & integrations', settingsAppearanceAbout: 'Appearance & about',

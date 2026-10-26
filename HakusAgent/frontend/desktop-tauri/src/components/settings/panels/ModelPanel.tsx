@@ -38,6 +38,7 @@ import { useSettingsStore } from '@/store/settings'
 import { apiClient, BackendOutdatedError } from '@/api/client'
 import { BackendOutdatedBanner } from '@/components/settings/BackendOutdatedBanner'
 import { ProviderLogo } from '@/components/ui/provider-logo'
+import { ModelPickerDialog, type DiscoveredModel, mergeModelIds } from '@/components/settings/panels/ModelPickerDialog'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import type {
@@ -161,6 +162,12 @@ export function ModelPanel() {
   const [customSaving, setCustomSaving] = useState(false)
   const [customModels, setCustomModels] = useState<string[]>([])
   const [customNewModel, setCustomNewModel] = useState('')
+  // New-provider model discovery. A provider being created has no saved
+  // configuration, so the probe carries the endpoint and key from the form
+  // itself; the Runtime accepts an unknown id when it is given an endpoint.
+  const [customPickerOpen, setCustomPickerOpen] = useState(false)
+  const [customDiscovering, setCustomDiscovering] = useState(false)
+  const [customDiscovered, setCustomDiscovered] = useState<DiscoveredModel[]>([])
   // 自定义模型商编辑器里的就地重命名（与内置模型商同一套交互）。
   const [editingCustomModel, setEditingCustomModel] = useState<string | null>(null)
   const [editingCustomValue, setEditingCustomValue] = useState('')
@@ -459,11 +466,51 @@ export function ModelPanel() {
     }
   }
 
-  const handlePickModel = (m: ProviderModel) => {
-    setModelName(m.id)
-    setProviderModels((current) => current.some((item) => item.toLowerCase() === m.id.toLowerCase()) ? current : [...current, m.id])
-    setModelDialogOpen(false)
-    toast.info(copy(`已选择模型: ${m.id} (记得点保存)`, `Selected model: ${m.id} (remember to save)`))
+  // === 新建模型商时的可用模型列表 ===
+  //
+  // The provider does not exist in config yet, so the probe has to carry the
+  // endpoint and key the user is about to save. The Runtime resolves an unknown
+  // id as a generic OpenAI-compatible route when a base_url is supplied, which
+  // is what makes this work before the first save.
+  const handleFetchCustomModels = async () => {
+    const baseUrlValue = customForm.base_url.trim()
+    if (!baseUrlValue) {
+      toast.error(copy('请先填写 Base URL', 'Enter a Base URL first'))
+      return
+    }
+    const providerId = customForm.id.trim() || 'custom-provider'
+    setCustomPickerOpen(true)
+    setCustomDiscovering(true)
+    setCustomDiscovered([])
+    try {
+      const overrides: Record<string, any> = { base_url: baseUrlValue }
+      if (customForm.api_key.trim()) overrides.api_key = customForm.api_key.trim()
+      const r = await apiClient.fetchProviderModels(providerId, overrides)
+      if (r.ok && r.models.length > 0) {
+        setCustomDiscovered(r.models)
+        toast.success(copy(`获取到 ${r.models.length} 个模型`, `Found ${r.models.length} models`))
+      } else if (!r.ok) {
+        toast.error(r.message || copy('获取模型列表失败', 'Could not fetch models'))
+      } else {
+        toast.info(copy('该服务未返回任何模型', 'This service returned no models'))
+      }
+    } catch (e: any) {
+      toast.error(copy(`获取失败：${e?.message || e}`, `Fetch failed: ${e?.message || e}`))
+    } finally {
+      setCustomDiscovering(false)
+    }
+  }
+
+  /**
+   * Append newly discovered ids, keeping any row the user already configured.
+   *
+   * Mirrors DSH's `byId.get(id) ?? adopt(candidate)`: the fetch is additive. A
+   * replace would silently discard a rename the user made before probing.
+   */
+  const handleApplyCustomModels = (ids: string[]) => {
+    if (ids.length === 0) return
+    setCustomModels((current) => mergeModelIds(current, ids))
+    toast.success(copy(`已添加 ${ids.length} 个模型`, `Added ${ids.length} model(s)`))
   }
 
   // === 多 Key 管理 ===
@@ -921,8 +968,8 @@ export function ModelPanel() {
                   const prefix = copy(`即将删除 ${deleteSelection.length} 个模型商：${names}。`, `About to delete ${deleteSelection.length} provider(s): ${names}. `)
                   return hasBuiltin
                     ? prefix + copy(
-                        '内置模型商将被重置并从列表隐藏（之后可从「添加提供方」重新启用）。此操作不会删除已有会话记录，且无法撤销。',
-                        'Built-in providers are reset and hidden from the lists (re-enable them from "Add provider" later). Session history is kept. This cannot be undone.',
+                        '内置模型商将被重置并从列表隐藏（之后可从「添加内置模型商」重新启用）。此操作不会删除已有会话记录，且无法撤销。',
+                        'Built-in providers are reset and hidden from the lists (re-enable them from "Add built-in model provider" later). Session history is kept. This cannot be undone.',
                       )
                     : prefix + copy(
                         '此操作只移除本地配置，不会删除已有会话记录，且无法撤销。',
@@ -950,7 +997,7 @@ export function ModelPanel() {
             onClick={() => openProviderEditor()}
           >
             <Plus className="h-4 w-4" />
-            {copy('添加提供方', 'Add provider')}
+            {copy('添加内置模型商', 'Add built-in model provider')}
           </button>
           <button
             type="button"
@@ -962,7 +1009,7 @@ export function ModelPanel() {
             }}
           >
             <Plus className="h-4 w-4" />
-            {copy('添加自定义提供方', 'Add custom provider')}
+            {copy('添加自定义模型商', 'Add custom model provider')}
           </button>
         </div>
 
@@ -1001,7 +1048,7 @@ export function ModelPanel() {
           <div>
             <div className="flex items-center gap-2">
               <Plus className="h-5 w-5 text-primary" />
-              <h2 className="text-xl font-semibold tracking-tight">{copy('添加自定义模型商', 'Add custom provider')}</h2>
+              <h2 className="text-xl font-semibold tracking-tight">{copy('添加自定义模型商', 'Add custom model provider')}</h2>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
               {copy('添加一个兼容 OpenAI Chat Completions 的第三方服务或内网网关。', 'Add an OpenAI Chat Completions-compatible service or private gateway.')}
@@ -1030,7 +1077,22 @@ export function ModelPanel() {
           </div>
 
           <div className="space-y-2">
-            <Label>{copy('模型列表', 'Models')}</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label>{copy('模型列表', 'Models')}</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleFetchCustomModels}
+                disabled={customDiscovering || !customForm.base_url.trim()}
+                title={!customForm.base_url.trim() ? copy('请先填写 Base URL', 'Enter a Base URL first') : undefined}
+              >
+                {customDiscovering
+                  ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  : <ListPlus className="mr-1 h-3.5 w-3.5" />}
+                {copy('获取模型列表', 'Fetch models')}
+              </Button>
+            </div>
             <p className="text-[11px] text-muted-foreground">{copy('列表中的第一个模型将作为当前模型。', 'The first model in the list becomes the current model.')}</p>
             <div className="space-y-1.5">
               {customModels.length === 0 ? (
@@ -1110,6 +1172,17 @@ export function ModelPanel() {
             </Button>
           </div>
         </div>
+
+        <ModelPickerDialog
+          open={customPickerOpen}
+          onOpenChange={setCustomPickerOpen}
+          providerLabel={customForm.display_name.trim() || customForm.id.trim() || copy('自定义模型商', 'Custom provider')}
+          models={customDiscovered}
+          knownIds={customModels}
+          loading={customDiscovering}
+          onApply={handleApplyCustomModels}
+          copy={copy}
+        />
       </div>
     )
   }
@@ -1450,48 +1523,24 @@ export function ModelPanel() {
       </div>
 
       {/* === 获取模型列表对话框 === */}
-      <Dialog open={modelDialogOpen} onOpenChange={setModelDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{selected?.display_name} {copy('可用模型列表', 'Available models')}</DialogTitle>
-            <DialogDescription>
-              {copy('点击模型名可填入 Model Name 字段（仍需点保存才生效）', 'Click a model to fill the Model Name field. Save to apply the change.')}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="max-h-[60vh] overflow-y-auto">
-            {fetchingModels ? (
-              <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {copy(`正在从 ${selected?.display_name} 拉取模型列表...`, `Fetching models from ${selected?.display_name}...`)}
-              </div>
-            ) : fetchedModels.length > 0 ? (
-              <div className="space-y-1">
-                {fetchedModels.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => handlePickModel(m)}
-                    className="flex w-full items-center justify-between rounded-lg border border-transparent px-3 py-2 text-left text-sm transition-colors hover:border-primary/40 hover:bg-primary/10"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-mono text-[12px]">{m.id}</div>
-                      {m.name && m.name !== m.id && (
-                        <div className="truncate text-[11px] text-muted-foreground">{m.name}</div>
-                      )}
-                    </div>
-                    {m.owned_by && (
-                      <Badge variant="secondary" className="ml-2 text-[9px]">{m.owned_by}</Badge>
-                    )}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                {copy('未获取到任何模型', 'No models returned')}
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* === 获取模型列表对话框（多选 / 全选）=== */}
+      <ModelPickerDialog
+        open={modelDialogOpen}
+        onOpenChange={setModelDialogOpen}
+        providerLabel={selected?.display_name ?? ''}
+        models={fetchedModels}
+        knownIds={providerModels}
+        loading={fetchingModels}
+        onApply={(ids) => {
+          if (ids.length === 0) return
+          setProviderModels((current) => mergeModelIds(current, ids))
+          // Keep the single-pick affordance the old dialog had: the first
+          // newly added model also becomes the field's model name.
+          if (!modelName.trim()) setModelName(ids[0])
+          toast.info(copy(`已添加 ${ids.length} 个模型（记得点保存）`, `Added ${ids.length} model(s) — remember to save`))
+        }}
+        copy={copy}
+      />
 
       {/* === 多 Key 管理对话框 === */}
       <Dialog open={keysDialogOpen} onOpenChange={setKeysDialogOpen}>

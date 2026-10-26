@@ -55,6 +55,8 @@ interface VoiceProcessStatus {
   pid: number | null
   startedAt: number | null
   lastError: string | null
+  state?: 'started' | 'unavailable' | 'rejected' | 'crashed'
+  extensionId?: string
 }
 
 interface VoiceProcessResult {
@@ -62,6 +64,7 @@ interface VoiceProcessResult {
   running: boolean
   pid: number | null
   error: string | null
+  text?: string | null
 }
 
 interface ElectronAPI {
@@ -104,10 +107,9 @@ interface ElectronAPI {
   voice: {
     status: () => Promise<VoiceProcessStatus>
     startCelia: (options?: {
-      celiaPath?: string
       configPath?: string
-      pythonCommand?: string
       openInTerminal?: boolean
+      threadId?: string
     }) => Promise<VoiceProcessResult>
     stopCelia: () => Promise<VoiceProcessResult>
   }
