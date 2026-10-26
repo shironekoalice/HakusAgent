@@ -7395,6 +7395,34 @@ button:focus-visible .cx-rail-marker::before {
   color: hsl(0 75% 70%);
 }
 
+/* The run-bar chips live inside the Flow workbench, whose plane stays dark in
+   both app themes. Inheriting the app-themed chip palette would put light-theme
+   greens and browns on a dark panel, so tone them from the canvas tokens
+   instead. */
+.flow-workbench .rp-chip-ok {
+  background: hsl(var(--fz-success-ch) / 0.16);
+  color: var(--fz-success);
+}
+
+.flow-workbench .rp-chip-warn {
+  background: hsl(var(--fz-warning-ch) / 0.16);
+  color: var(--fz-warning);
+}
+
+.flow-workbench .rp-chip-warn:hover {
+  background: hsl(var(--fz-warning-ch) / 0.24);
+}
+
+.flow-workbench .rp-chip-danger {
+  background: hsl(var(--fz-danger-ch) / 0.16);
+  color: var(--fz-danger);
+}
+
+.flow-workbench .rp-chip-info {
+  background: hsl(var(--fz-primary-ch) / 0.16);
+  color: var(--fz-primary);
+}
+
 /* Empty state */
 .rp-empty {
   display: flex;
@@ -7681,23 +7709,112 @@ button:focus-visible .cx-rail-marker::before {
    icon chip only.
    ═══════════════════════════════════════════════════════════════ */
 .flow-workbench {
-  --fz-canvas: hsl(225 18% 6%);
-  --fz-panel: hsl(225 14% 9%);
-  --fz-node: hsl(226 16% 13%);
-  --fz-node-hover: hsl(226 16% 15%);
-  --fz-node-border: hsl(226 12% 20%);
-  --fz-node-inset: hsl(226 18% 10%);
-  --fz-hairline: hsl(226 12% 17%);
+  --fz-canvas-ch: 225 18% 6%;
+  --fz-panel-ch: 225 14% 9%;
+  --fz-node-ch: 226 16% 13%;
+  --fz-node-hover-ch: 226 16% 15%;
+  --fz-node-border-ch: 226 12% 20%;
+  --fz-node-inset-ch: 226 18% 10%;
+  --fz-hairline-ch: 226 12% 17%;
+  --fz-canvas: hsl(var(--fz-canvas-ch));
+  --fz-panel: hsl(var(--fz-panel-ch));
+  --fz-node: hsl(var(--fz-node-ch));
+  --fz-node-hover: hsl(var(--fz-node-hover-ch));
+  --fz-node-border: hsl(var(--fz-node-border-ch));
+  --fz-node-inset: hsl(var(--fz-node-inset-ch));
+  --fz-hairline: hsl(var(--fz-hairline-ch));
   --fz-text-hi: hsl(225 20% 92%);
   --fz-text-mid: hsl(224 12% 66%);
   --fz-text-low: hsl(225 10% 45%);
-  --fz-primary: hsl(217 100% 65%);
-  --fz-success: hsl(152 58% 53%);
-  --fz-warning: hsl(38 86% 59%);
-  --fz-danger: hsl(0 84% 69%);
+  /* Panels inside the workbench are painted with --fz-panel / --fz-node, but
+     their text, borders and fills still resolve the app-theme tokens
+     (--cx-*, --card, --border, --muted, --background, --popover). On the light
+     theme that put #0d0d0d labels on the dark rail — 1.06:1, invisible — and
+     turned 42%-alpha white surfaces into mid grey. Rebinding the group here
+     makes every panel agree with the plane it is painted on. Portaled dialogs
+     render outside this element, so they correctly stay app-themed. */
+  --cx-text: var(--fz-text-hi);
+  --cx-text-secondary: var(--fz-text-mid);
+  --cx-text-tertiary: var(--fz-text-low);
+  --cx-icon: var(--fz-text-mid);
+  --cx-ghost-hover: hsl(0 0% 100% / 0.07);
+  --cx-ghost-active: hsl(0 0% 100% / 0.1);
+  --cx-hover: hsl(0 0% 100% / 0.05);
+  --cx-active: hsl(0 0% 100% / 0.08);
+  --cx-ring: hsl(0 0% 100% / 0.1);
+  --cx-ring-strong: hsl(0 0% 100% / 0.16);
+  --cx-hairline: var(--fz-hairline);
+  --foreground: 225 20% 92%;
+  --card: 225 14% 9%;
+  --card-foreground: 225 20% 92%;
+  --popover: 225 14% 12%;
+  --popover-foreground: 225 20% 92%;
+  --background: 225 18% 6%;
+  --muted: 226 16% 13%;
+  --muted-foreground: 224 12% 66%;
+  --border: 226 12% 22%;
+  --input: 226 12% 26%;
+  --primary: 217 100% 65%;
+  --primary-foreground: 225 18% 6%;
+  color-scheme: dark;
+  /* Run state. Node dot, node glow, status icon and run-bar chip all read
+     these — one palette for one state, so they can never drift apart.
+     Declared as raw channels so glow/tint variants can derive from the same
+     source with alpha: hsl(var(--fz-primary-ch) / 0.35). */
+  --fz-primary-ch: 217 100% 65%;
+  --fz-success-ch: 152 58% 53%;
+  --fz-warning-ch: 38 86% 59%;
+  --fz-danger-ch: 0 84% 69%;
+  --fz-edge-ch: 225 12% 32%;
+  --fz-port-ch: 225 12% 38%;
+  --fz-primary: hsl(var(--fz-primary-ch));
+  --fz-success: hsl(var(--fz-success-ch));
+  --fz-warning: hsl(var(--fz-warning-ch));
+  --fz-danger: hsl(var(--fz-danger-ch));
+  --fz-edge: hsl(var(--fz-edge-ch));
+  --fz-port: hsl(var(--fz-port-ch));
+  /* Warning copy needs a lighter step than the accent to stay legible as text. */
+  --fz-warning-text: hsl(38 60% 72%);
+  --fz-warning-text-hover: hsl(38 60% 80%);
   --fz-radius-node: 12px;
   --fz-shadow-node: 0 2px 6px hsl(0 0% 0% / 0.35), 0 10px 28px hsl(0 0% 0% / 0.28);
   --fz-shadow-node-hover: 0 4px 10px hsl(0 0% 0% / 0.4), 0 16px 40px hsl(0 0% 0% / 0.35);
+
+  /* Node identity colors, one token per registry type. The canvas is a dark
+     plane in both app themes, so these live here rather than on :root. Keyed
+     in registry.ts as `var(--flow-node-<type>)`; grouped by category.
+     Values are the exact swatches the registry shipped, so migrating to tokens
+     changes no pixel — it only gives the palette one place to be edited. */
+  /* io */
+  --flow-node-start: #34d399;
+  --flow-node-output: #94a3b8;
+  /* llm */
+  --flow-node-llm: #a78bfa;
+  --flow-node-prompt: #60a5fa;
+  /* logic */
+  --flow-node-condition: #fbbf24;
+  --flow-node-code: #22d3ee;
+  --flow-node-iteration: #c084fc;
+  --flow-node-join: #f59e0b;
+  /* tool */
+  --flow-node-tool: #f472b6;
+  --flow-node-subagent: #818cf8;
+  --flow-node-http: #38bdf8;
+  --flow-node-fileread: #60a5fa;
+  --flow-node-filewrite: #60a5fa;
+  --flow-node-filelist: #60a5fa;
+  /* human */
+  --flow-node-human: #fb7185;
+  /* data */
+  --flow-node-knowledge: #2dd4bf;
+  --flow-node-json: #facc15;
+  --flow-node-template: #4ade80;
+  --flow-node-regex: #a3e635;
+  --flow-node-datetime: #fb923c;
+  --flow-node-math: #22d3ee;
+  --flow-node-setvar: #c084fc;
+  --flow-node-getvar: #c084fc;
+  --flow-node-delay: #94a3b8;
 
   position: relative;
   display: flex;
@@ -7903,6 +8020,28 @@ button:focus-visible .cx-rail-marker::before {
   cursor: grabbing;
 }
 
+/* Alignment guides: full-pane hairlines shown while a drag is snapped onto a
+   shared edge with another node (see lib/flow/guides.ts). Screen-positioned by
+   the FlowGuides component, so they only ever need the one coordinate. */
+.flow-guide {
+  position: absolute;
+  pointer-events: none;
+  z-index: 7;
+  background: hsl(var(--primary) / 0.65);
+}
+
+.flow-guide-h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+.flow-guide-v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
 /* Top colour bar keyed off --node-color (set inline from the node def). */
 .flow-node-bar {
   position: absolute;
@@ -7920,7 +8059,7 @@ button:focus-visible .cx-rail-marker::before {
 
 .flow-node-selected {
   border-color: var(--fz-primary);
-  box-shadow: 0 0 0 2px hsl(217 100% 65% / 0.45), var(--fz-shadow-node);
+  box-shadow: 0 0 0 2px hsl(var(--fz-primary-ch) / 0.45), var(--fz-shadow-node);
 }
 
 /* Category icon chip: 30px, tinted with the node's category color. */
@@ -7932,7 +8071,7 @@ button:focus-visible .cx-rail-marker::before {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--node-color, #64748b) 16%, transparent);
+  background: color-mix(in srgb, var(--node-color, var(--fz-text-mid)) 16%, transparent);
   color: var(--node-color, var(--fz-text-mid));
 }
 
@@ -7976,8 +8115,8 @@ button:focus-visible .cx-rail-marker::before {
    above — a selected+hovered node keeps exactly this ring, and moving the
    pointer away must not change anything. */
 .flow-node.flow-node-selected {
-  border-color: hsl(var(--primary) / 0.8);
-  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.6), 0 6px 20px hsl(220 20% 4% / 0.14);
+  border-color: hsl(var(--fz-primary-ch) / 0.8);
+  box-shadow: 0 0 0 2px hsl(var(--fz-primary-ch) / 0.6), 0 6px 20px hsl(220 20% 4% / 0.14);
 }
 
 .flow-node-head {
@@ -8014,6 +8153,29 @@ button:focus-visible .cx-rail-marker::before {
 
 .flow-node-error .flow-node-dot {
   background: var(--fz-danger);
+}
+
+/* Status icons in the node footer. One rule per state, reading the same
+   channel the dot above uses — dot, glow, icon and run-bar chip are four views
+   of one state and must never disagree. */
+.flow-status-running {
+  color: var(--fz-primary);
+}
+
+.flow-status-done {
+  color: var(--fz-success);
+}
+
+.flow-status-error {
+  color: var(--fz-danger);
+}
+
+.flow-status-waiting {
+  color: var(--fz-warning);
+}
+
+.flow-status-skipped {
+  color: var(--fz-text-low);
 }
 
 .flow-node-title {
@@ -8163,8 +8325,8 @@ textarea.flow-field-inline-control {
 }
 
 .flow-switch-on {
-  background: hsl(217 100% 65% / 0.25);
-  border-color: hsl(217 100% 65% / 0.6);
+  background: hsl(var(--fz-primary-ch) / 0.25);
+  border-color: hsl(var(--fz-primary-ch) / 0.6);
 }
 
 .flow-switch-on .flow-switch-knob {
@@ -8206,15 +8368,15 @@ textarea.flow-field-inline-control {
 /* Execution states — running glows, done/error tint the status dot only.
    The card border stays neutral so the selection ring always reads. */
 .flow-node-running {
-  box-shadow: 0 0 0 1px hsl(217 100% 65% / 0.35), 0 0 20px hsl(217 100% 65% / 0.18), var(--fz-shadow-node);
+  box-shadow: 0 0 0 1px hsl(var(--fz-primary-ch) / 0.35), 0 0 20px hsl(var(--fz-primary-ch) / 0.18), var(--fz-shadow-node);
 }
 
 .flow-node-error {
-  box-shadow: 0 0 0 1px hsl(0 84% 69% / 0.35), var(--fz-shadow-node);
+  box-shadow: 0 0 0 1px hsl(var(--fz-danger-ch) / 0.35), var(--fz-shadow-node);
 }
 
 .flow-node-waiting {
-  box-shadow: 0 0 0 1px hsl(38 86% 59% / 0.4), 0 0 14px hsl(38 86% 59% / 0.2), var(--fz-shadow-node);
+  box-shadow: 0 0 0 1px hsl(var(--fz-warning-ch) / 0.4), 0 0 14px hsl(var(--fz-warning-ch) / 0.2), var(--fz-shadow-node);
 }
 
 .flow-node-skipped {
@@ -8224,10 +8386,10 @@ textarea.flow-field-inline-control {
 @keyframes flow-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 1px hsl(217 100% 65% / 0.3), 0 0 10px hsl(217 100% 65% / 0.15), var(--fz-shadow-node);
+    box-shadow: 0 0 0 1px hsl(var(--fz-primary-ch) / 0.3), 0 0 10px hsl(var(--fz-primary-ch) / 0.15), var(--fz-shadow-node);
   }
   50% {
-    box-shadow: 0 0 0 2px hsl(217 100% 65% / 0.5), 0 0 22px hsl(217 100% 65% / 0.3), var(--fz-shadow-node);
+    box-shadow: 0 0 0 2px hsl(var(--fz-primary-ch) / 0.5), 0 0 22px hsl(var(--fz-primary-ch) / 0.3), var(--fz-shadow-node);
   }
 }
 
@@ -8237,7 +8399,7 @@ textarea.flow-field-inline-control {
 .flow-handle {
   width: 13px !important;
   height: 13px !important;
-  border: 2.5px solid hsl(225 12% 38%) !important;
+  border: 2.5px solid var(--fz-port) !important;
   background: var(--fz-node) !important;
 }
 
@@ -8256,7 +8418,7 @@ textarea.flow-field-inline-control {
 
 /* Edges: 2px, visible on the dark canvas; the active edge glows primary. */
 .flow-edge {
-  stroke: hsl(225 12% 32%);
+  stroke: var(--fz-edge);
   transition: stroke 150ms ease;
 }
 
@@ -8269,7 +8431,7 @@ textarea.flow-field-inline-control {
   stroke: var(--fz-primary);
   stroke-dasharray: 6 4;
   animation: flow-dash 0.6s linear infinite;
-  filter: drop-shadow(0 0 4px hsl(217 100% 65% / 0.5));
+  filter: drop-shadow(0 0 4px hsl(var(--fz-primary-ch) / 0.5));
 }
 
 .flow-edge-label-bg {
@@ -8323,7 +8485,7 @@ textarea.flow-field-inline-control {
 }
 
 .flow-minimap .react-flow__minimap-mask {
-  fill: hsl(225 18% 6% / 0.72);
+  fill: hsl(var(--fz-canvas-ch) / 0.72);
 }
 
 .flow-minimap svg {
@@ -8538,8 +8700,8 @@ textarea.flow-field-inline-control {
 }
 
 .flow-icon-btn-danger:hover {
-  background: hsl(0 70% 55% / 0.16);
-  color: hsl(0 80% 65%);
+  background: hsl(var(--fz-danger-ch) / 0.16);
+  color: var(--fz-danger);
 }
 
 /* ── Top bar ────────────────────────────────────────────────── */
@@ -8575,7 +8737,7 @@ textarea.flow-field-inline-control {
 }
 
 .flow-name-input:focus {
-  border-color: hsl(217 100% 65% / 0.5);
+  border-color: hsl(var(--fz-primary-ch) / 0.5);
   background: var(--fz-node);
 }
 
@@ -8817,31 +8979,31 @@ textarea.flow-field-inline-control {
   align-items: center;
   gap: 0.5rem;
   padding: 0.3rem 0.75rem;
-  border-bottom: 1px solid hsl(38 86% 59% / 0.25);
-  background: hsl(38 86% 59% / 0.08);
+  border-bottom: 1px solid hsl(var(--fz-warning-ch) / 0.25);
+  background: hsl(var(--fz-warning-ch) / 0.08);
   font-size: 11px;
-  color: hsl(38 60% 72%);
+  color: var(--fz-warning-text);
 }
 
 .flow-beta-notice svg {
-  color: hsl(38 86% 62%);
+  color: var(--fz-warning);
 }
 
 .flow-beta-notice-close {
   flex-shrink: 0;
-  border: 1px solid hsl(38 86% 59% / 0.35);
+  border: 1px solid hsl(var(--fz-warning-ch) / 0.35);
   border-radius: 999px;
   background: transparent;
   padding: 2px 10px;
   font-size: 10.5px;
-  color: hsl(38 60% 72%);
+  color: var(--fz-warning-text);
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
 }
 
 .flow-beta-notice-close:hover {
-  background: hsl(38 86% 59% / 0.15);
-  color: hsl(38 60% 80%);
+  background: hsl(var(--fz-warning-ch) / 0.15);
+  color: var(--fz-warning-text-hover);
 }
 
 .flow-toolbar-zoom {

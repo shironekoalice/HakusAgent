@@ -20,7 +20,6 @@ import { useSettingsStore } from '@/store/settings'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import type { FieldDef } from '@/lib/flow/types'
-import { GlassSelect } from '@/components/ui/glass-select'
 
 interface Props {
   field: FieldDef
@@ -107,16 +106,21 @@ export function FlowField({ field, value, variant = 'full', data, onChange, onFo
     if (isSelect) {
       const opts = dynamicOptions.length ? dynamicOptions : (field.options ?? [])
       return (
-        <GlassSelect
+        <select
+          className={common}
           value={str}
-          onChange={(next) => onChange(field.key, next)}
-          options={str && !opts.some((o) => o.value === str) ? [{ value: str, label: str }, ...opts] : opts}
-          ariaLabel={field.placeholder || field.label}
-          className="w-full"
-          triggerClassName={common}
-          onFocus={onFocus}
-          onBlur={onBlur}
-        />
+          onChange={(e) => onChange(field.key, e.target.value)}
+          title={field.placeholder || field.label}
+        >
+          {/* A value that is no longer offered must stay selectable, or the
+              field would silently snap to the first option on render. */}
+          {str && !opts.some((o) => o.value === str) ? <option value={str}>{str}</option> : null}
+          {opts.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
       )
     }
     switch (field.kind) {

@@ -3,6 +3,11 @@
  *
  * Kept in one place because the status has to stay consistent across the node
  * card, the inspector and the run panel.
+ *
+ * The icons carry `flow-status-*` classes rather than Tailwind palette
+ * utilities. Tailwind palette colors resolve against the app theme, but the
+ * canvas keeps the same dark plane in both themes, so `text-emerald-400` would
+ * be the one thing on the canvas that shifted when the app theme did.
  */
 
 import { AlertCircle, CheckCircle2, Loader2, Pause, SkipForward } from 'lucide-react'
@@ -29,10 +34,10 @@ export const STATUS_LABEL: Record<FlowNodeStatus, string> = {
 }
 
 export function StatusIcon({ status }: { status: FlowNodeStatus }) {
-  if (status === 'running') return <Loader2 className="h-3 w-3 animate-spin text-sky-400" />
-  if (status === 'done') return <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-  if (status === 'error') return <AlertCircle className="h-3 w-3 text-rose-400" />
-  if (status === 'skipped') return <SkipForward className="h-3 w-3 text-muted-foreground/60" />
-  if (status === 'waiting') return <Pause className="h-3 w-3 text-amber-400" />
+  if (status === 'running') return <Loader2 className="flow-status-running h-3 w-3 animate-spin" />
+  if (status === 'done') return <CheckCircle2 className="flow-status-done h-3 w-3" />
+  if (status === 'error') return <AlertCircle className="flow-status-error h-3 w-3" />
+  if (status === 'skipped') return <SkipForward className="flow-status-skipped h-3 w-3" />
+  if (status === 'waiting') return <Pause className="flow-status-waiting h-3 w-3" />
   return null
 }
