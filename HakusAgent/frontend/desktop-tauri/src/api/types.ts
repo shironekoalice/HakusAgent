@@ -19,12 +19,12 @@ export interface ChatRequest {
   stream?: boolean
   /**
    * Per-request provider override (e.g. "opencode" / "deepseek" / "glm").
-   * If set, the server uses an AgentCore bound to this provider for the
-   * turn, instead of the global default_model from config.yaml.
+   * If set, the runtime binds the turn to this provider instead of the
+   * global default model from config.
    *
    * This is what makes the TopBar "switch provider" dropdown actually
-   * take effect — without it, the server would silently reuse a cached
-   * AgentCore created with whatever provider was default at session start.
+   * take effect — without it, the runtime would silently reuse whatever
+   * provider was default at session start.
    */
   provider?: string
   /**
@@ -402,6 +402,79 @@ export interface SkillMutationReceipt {
   trust_note?: string
 }
 
+// ========== Extensions (installed plugin bundles) ==========
+
+export interface PluginCapabilityInventory {
+  filesystem_roots: string[]
+  network_hosts: string[]
+  lifecycle_mutation: boolean
+}
+
+export interface PluginExtensionDescriptor {
+  id: string
+  version: string
+  protocol: string
+  entrypoint: string
+  capabilities: string[]
+  permissions: string[]
+  supported_platforms: string[]
+  checksum: string
+}
+
+export interface PluginDiagnosticEntry {
+  level: 'warning' | 'error'
+  code: string
+  message: string
+}
+
+/** Redacted inventory entry from GET /v1/plugins — no install paths by construction. */
+export interface RuntimePluginInfo {
+  id: string
+  name: string
+  version: string
+  scope: 'builtin' | 'user' | 'workspace'
+  origin: string
+  enabled: boolean
+  trust_status: 'trusted' | 'not-reviewed' | 'content-changed' | 'capabilities-changed'
+  applicable: boolean
+  staged: boolean
+  capabilities: PluginCapabilityInventory
+  extension?: PluginExtensionDescriptor
+  content_hash: string
+  capability_hash: string
+  state_generation: number
+  skill_count: number
+  diagnostics: PluginDiagnosticEntry[]
+}
+
+export interface RuntimePluginsResponse {
+  plugins: RuntimePluginInfo[]
+}
+
+export interface RuntimeExtensionStatus {
+  extension_id: string
+  state: 'started' | 'unavailable' | 'rejected' | 'crashed'
+  running: boolean
+  pid: number | null
+  error: string | null
+}
+
+export interface PluginMutationResponse {
+  id: string
+  name: string
+  enabled: boolean
+  trust_status: RuntimePluginInfo['trust_status']
+  state_generation: number
+}
+
+/** Receipt returned by Runtime-owned plugin install/update/uninstall. */
+export interface PluginMutationReceiptResponse {
+  name: string
+  outcome: 'installed' | 'updated' | 'no_change' | 'uninstalled' | string
+  content_hash?: string
+  installed_content_hash?: string
+}
+
 // ========== Session Log (v0.12.0+, DeepSeek-Harness-style append-only JSONL) ==========
 
 export type SessionLogEventType =
@@ -462,6 +535,44 @@ export interface SessionLogStats {
   archive_size_bytes: number
   event_count: number
   current_turn: number
+}
+
+/** Canonical Rust Runtime ledger event used for durable replay. */
+export interface CanonicalLedgerEvent {
+  event_id: string
+  session_id: string
+  seq: number
+  event_type: string
+  workspace_id?: string | null
+  turn_id?: string | null
+  correlation_id?: string | null
+  parent_event_id?: string | null
+  actor: Record<string, unknown>
+  visibility: string
+  payload: Record<string, any>
+  timestamp: string
+}
+
+export interface CanonicalLedgerVerification {
+  session_id: string
+  event_count: number
+  last_seq: number
+  contiguous: boolean
+}
+
+export interface CanonicalLedgerResponse {
+  session_id: string
+  after_seq: number
+  events: CanonicalLedgerEvent[]
+  verification: CanonicalLedgerVerification
+  /**
+   * Canonical events in the session beyond the returned window.
+   *
+   * The Runtime read is bounded and returns the oldest events after the cursor,
+   * so a non-zero value means `events` is a prefix, not the whole transcript.
+   * `verification.last_seq` still reports the true tail.
+   */
+  omitted_events?: number
 }
 
 export type PermissionMode =
@@ -591,6 +702,7 @@ export type AgentEventType =
   | 'reflection_started'
   | 'reflection_completed'
   | 'approval_required'
+  | 'ssh_password_required'
   | 'goal_updated'
 
 export interface BaseAgentEvent {
@@ -610,6 +722,15 @@ export interface ApprovalRequiredEvent extends BaseAgentEvent {
     decision: string | null
     created_at?: number
     resolved_at?: number | null
+  }
+}
+
+export interface SshPasswordRequiredEvent extends BaseAgentEvent {
+  event_type: 'ssh_password_required'
+  approval: {
+    approvalId: string
+    runId: string
+    workerId: string
   }
 }
 
@@ -728,6 +849,8 @@ export interface TaskProgressEvent extends BaseAgentEvent {
   current_task: string
   phase: string
   detail: string
+  /** Whole-list rows with per-row status, on Runtime sessions. */
+  items?: Array<{ id?: number; content?: string; status?: string }>
 }
 
 export interface QuestionAskedEvent extends BaseAgentEvent {
@@ -762,6 +885,7 @@ export type AgentEvent =
   | QuestionAskedEvent
   | QuestionAnsweredEvent
   | ApprovalRequiredEvent
+  | SshPasswordRequiredEvent
   | GoalUpdatedEvent
 
 // ========== WebSocket 消息 ==========
@@ -894,6 +1018,15 @@ export interface TaskProgressAttachment {
   total: number
   current_task: string
   tasks?: string[]
+  /**
+   * The list as the Runtime reported it, each row with its own status.
+   *
+   * Present on Runtime sessions, where one frame carries the whole list. The
+   * legacy `tasks` array is a growing list of names with no per-row state, so
+   * the card can only infer completion from a prefix count; `items` removes
+   * that guess and is preferred when present.
+   */
+  items?: Array<{ content: string; status: string }>
 }
 
 export interface ChatMessage {
@@ -1029,6 +1162,33 @@ export interface MessageUpdateBody {
 export interface BulkImportBody {
   sessions: ServerSession[]
   messages: Record<string, ServerMessage[]>
+}
+
+/** Read-only summary returned by POST /v1/migrations/legacy-sessions. */
+export interface LegacyDiscoveredSession {
+  session_id: string
+  title: string
+  provider?: string | null
+  message_count: number
+  created_at: number
+  updated_at: number
+}
+
+export interface LegacyDiscoveredStore {
+  path: string
+  size_bytes: number
+  checkpoint_path?: string | null
+  sessions: LegacyDiscoveredSession[]
+}
+
+export interface LegacyRejectedStore {
+  path: string
+  reason: string
+}
+
+export interface LegacyDiscovery {
+  stores: LegacyDiscoveredStore[]
+  rejected: LegacyRejectedStore[]
 }
 
 export interface ConnectionSettings {

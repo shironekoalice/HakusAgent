@@ -14,6 +14,10 @@
  *     当服务端升级为发送 AgentEvent 时, 本客户端已就绪
  */
 
+import {
+  MAX_STREAM_RECONNECT_ATTEMPTS,
+  nextReconnectDelay,
+} from '@/lib/streamPolicy'
 import type {
   AgentEvent,
   AgentMode,
@@ -72,16 +76,35 @@ import type {
   ProjectUpdateBody,
   SessionLogEvent,
   SessionLogStats,
+  CanonicalLedgerEvent,
+  CanonicalLedgerResponse,
+  ToolCall,
   SkillsResponse,
   SkillMutationReceipt,
   ThreadGoal,
   WeChatStatus,
+  RuntimePluginsResponse,
+  PluginMutationResponse,
+  PluginMutationReceiptResponse,
+  LegacyDiscovery,
 } from './types'
 import { BROWSER_DYNAMIC_TOOL, embeddedBrowserAvailable } from '@/lib/agentBrowser'
 import { EXPECTED_BACKEND_API_VERSION_INT } from './types'
 import { refreshProjectFolder, syncProjectFolder } from './tauriBridge'
 
-export type StreamHandler = (chunk: ChatStreamChunk, event?: AgentEvent) => void
+export type StreamHandler = (
+  chunk: ChatStreamChunk,
+  event?: AgentEvent,
+  /** Canonical ledger seq of the event, when the stream provides one. */
+  ledgerSeq?: number,
+) => void
+
+/**
+ * Stream-state listener (Phase 6 Slice C). Fired when the canonical SSE
+ * connection dropped mid-turn and the client is resuming it; lets the UI
+ * render a "reconnecting" state instead of a silently frozen turn.
+ */
+export type StreamStateListener = (state: 'reconnecting', attempt: number) => void
 
 export function toRuntimeSkillMentions(message: string): string {
   return message.replace(
@@ -261,7 +284,10 @@ export class HakusAIClient {
     if (params.get('backend')?.toLowerCase() !== 'rust') return null
     const configured = params.get('backendUrl')
     if (configured) return configured.replace(/\/$/, '')
-    return 'http://127.0.0.1:48082'
+    // Browser preview uses the Vite dev server as a same-origin proxy for the
+    // embedded Runtime. This also works in the Codex browser container, which
+    // blocks direct cross-port loopback requests.
+    return window.location.origin
   }
 
   private async runtimeFetch(path: string, init: RequestInit = {}, timeoutMs = 12000): Promise<Response> {
@@ -282,6 +308,17 @@ export class HakusAIClient {
 
   getLocalBaseUrl(): string {
     return this.localBaseUrl
+  }
+
+  /**
+   * The Runtime's HTTP origin, for callers that need to hit a route directly.
+   *
+   * Exposed for the few places that post a body the typed helpers do not model
+   * (the workspace hunk route). Use the typed methods where they exist; this is
+   * the escape hatch, not the default.
+   */
+  runtimeBaseUrl(): string {
+    return this.baseUrl
   }
 
   setRemoteRuntime(url: string, token: string) {
@@ -350,6 +387,16 @@ export class HakusAIClient {
   listRuntimeAgentRuns<T = unknown>(): Promise<T> { return this.runtimeJson('/agent-runs', 'GET', undefined, 'List agent runs failed') }
   getRuntimeAgentRun<T = unknown>(runId: string): Promise<T> { return this.runtimeJson(`/agent-runs/${encodeURIComponent(runId)}`, 'GET', undefined, 'Get agent run failed') }
 
+  startRuntimeExtension<T = unknown>(extensionId: string, body: { thread_id?: string; event_type: string; payload?: unknown }): Promise<T> {
+    return this.runtimeJson(`/extensions/${encodeURIComponent(extensionId)}/start`, 'POST', body, 'Start extension failed')
+  }
+  stopRuntimeExtension<T = unknown>(extensionId: string): Promise<T> {
+    return this.runtimeJson(`/extensions/${encodeURIComponent(extensionId)}/stop`, 'POST', {}, 'Stop extension failed')
+  }
+  getRuntimeExtensionStatus<T = unknown>(extensionId: string): Promise<T> {
+    return this.runtimeJson(`/extensions/${encodeURIComponent(extensionId)}`, 'GET', undefined, 'Get extension status failed')
+  }
+
   listRuntimeFleetRuns<T = unknown>(): Promise<T> { return this.runtimeJson('/fleet/runs', 'GET', undefined, 'List fleet runs failed') }
   createRuntimeFleetRun<T = unknown>(body: unknown): Promise<T> { return this.runtimeJson('/fleet/runs', 'POST', body, 'Create fleet run failed') }
   getRuntimeFleetRun<T = unknown>(runId: string): Promise<T> { return this.runtimeJson(`/fleet/runs/${encodeURIComponent(runId)}`, 'GET', undefined, 'Get fleet run failed') }
@@ -363,6 +410,76 @@ export class HakusAIClient {
   interruptRuntimeFleetWorker<T = unknown>(workerId: string): Promise<T> { return this.runtimeJson(`/fleet/workers/${encodeURIComponent(workerId)}/interrupt`, 'POST', {}, 'Interrupt fleet worker failed') }
   stopRuntimeFleetWorker<T = unknown>(workerId: string): Promise<T> { return this.runtimeJson(`/fleet/workers/${encodeURIComponent(workerId)}/stop`, 'POST', {}, 'Stop fleet worker failed') }
   restartRuntimeFleetWorker<T = unknown>(workerId: string): Promise<T> { return this.runtimeJson(`/fleet/workers/${encodeURIComponent(workerId)}/restart`, 'POST', {}, 'Restart fleet worker failed') }
+  /** Submit an SSH password only to the authenticated Runtime secure-input boundary. */
+  provisionRuntimeFleetSshPassword<T = unknown>(runId: string, workerId: string, password: string): Promise<T> {
+    return this.runtimeJson(
+      `/fleet/runs/${encodeURIComponent(runId)}/workers/${encodeURIComponent(workerId)}/ssh-password`,
+      'POST',
+      { password },
+      'Provision SSH password failed',
+    )
+  }
+
+  /**
+   * Consume the durable Fleet event stream used by workspace-level controls.
+   * Fleet events are separate from a session turn stream, so the desktop must
+   * subscribe here to receive approvals that pause a remote worker.
+   */
+  async streamRuntimeFleetEvents(
+    runId: string,
+    onEvent: (event: AgentEvent | null, envelope: any) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!this.usesEmbeddedRuntime) this.runtimeUnsupported('Rust Runtime Fleet event stream')
+    const res = await this.runtimeFetch(
+      `/fleet/runs/${encodeURIComponent(runId)}/events`,
+      { headers: { Accept: 'text/event-stream' }, signal },
+      0,
+    )
+    if (!res.ok || !res.body) {
+      await this._throwForResponse(res, `${this.baseUrl}/v1/fleet/runs/${encodeURIComponent(runId)}/events`, 'Fleet event stream failed')
+    }
+
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let eventName = ''
+    let dataLines: string[] = []
+    let terminal = false
+    const dispatch = () => {
+      if (dataLines.length === 0) return
+      const raw = JSON.parse(dataLines.join('\n'))
+      const name = eventName || String(raw.event || '')
+      const mapped = this.runtimeEventToAgentEvent(name, raw.payload || raw)
+      onEvent(mapped, raw)
+      if (name === 'fleet.run.status_changed' && ['completed', 'failed', 'cancelled'].includes(String(raw.payload?.status || ''))) {
+        terminal = true
+      }
+      eventName = ''
+      dataLines = []
+    }
+
+    while (!terminal) {
+      const { done, value } = await reader.read()
+      if (done) {
+        dispatch()
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (line === '') {
+          dispatch()
+        } else if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim()
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trimStart())
+        }
+      }
+    }
+    await reader.cancel().catch(() => undefined)
+  }
 
   listRuntimeTasks<T = unknown>(): Promise<T> { return this.runtimeJson('/tasks', 'GET', undefined, 'List tasks failed') }
   createRuntimeTask<T = unknown>(body: unknown): Promise<T> { return this.runtimeJson('/tasks', 'POST', body, 'Create task failed') }
@@ -435,6 +552,21 @@ export class HakusAIClient {
   updateRuntimeSkill<T = unknown>(name: string, body: unknown = {}): Promise<T> { return this.runtimeJson(`/skills/${encodeURIComponent(name)}/update`, 'POST', body, 'Update skill failed') }
   trustRuntimeSkill<T = unknown>(name: string, body: unknown = {}): Promise<T> { return this.runtimeJson(`/skills/${encodeURIComponent(name)}/trust`, 'POST', body, 'Trust skill failed') }
   auditRuntimeSkill<T = unknown>(name: string): Promise<T> { return this.runtimeJson(`/skills/${encodeURIComponent(name)}/audit`, 'GET', undefined, 'Audit skill failed') }
+
+  listRuntimePlugins(): Promise<RuntimePluginsResponse> { return this.runtimeJson('/plugins', 'GET', undefined, 'List plugins failed') }
+  setPluginEnabled(name: string, enabled: boolean): Promise<PluginMutationResponse> {
+    return this.runtimeJson(`/plugins/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, 'POST', { enabled }, 'Set plugin enabled failed')
+  }
+  installRuntimePlugin(source: string, expectedContentHash?: string): Promise<PluginMutationReceiptResponse> {
+    const body = expectedContentHash ? { source, expected_content_hash: expectedContentHash } : { source }
+    return this.runtimeJson('/plugins/install', 'POST', body, 'Install plugin failed')
+  }
+  updateRuntimePlugin(name: string): Promise<PluginMutationReceiptResponse> {
+    return this.runtimeJson(`/plugins/${encodeURIComponent(name)}/update`, 'POST', {}, 'Update plugin failed')
+  }
+  uninstallRuntimePlugin(name: string): Promise<PluginMutationReceiptResponse> {
+    return this.runtimeJson(`/plugins/${encodeURIComponent(name)}`, 'DELETE', undefined, 'Uninstall plugin failed')
+  }
   createRuntimeMemory<T = unknown>(body: unknown): Promise<T> { return this.runtimeJson('/memory', 'POST', body, 'Create memory failed') }
   getRuntimeMemory<T = unknown>(id: string): Promise<T> { return this.runtimeJson(`/memory/${encodeURIComponent(id)}`, 'GET', undefined, 'Get memory failed') }
   listRuntimeMemory<T = unknown>(scope: string = 'all'): Promise<T> { return this.runtimeJson(`/memory?scope=${encodeURIComponent(scope)}&limit=200`, 'GET', undefined, 'List memory failed') }
@@ -476,6 +608,171 @@ export class HakusAIClient {
       created_at: Number.isFinite(timestamp) ? timestamp : Date.now(),
       updated_at: Number.isFinite(timestamp) ? timestamp : Date.now(),
     }
+  }
+
+  /**
+   * Rebuild the desktop message projection from the canonical ledger.
+   *
+   * The Runtime item snapshot is still accepted as a compatibility fallback,
+   * but new clients read durable facts from the ledger and derive the chat
+   * transcript from item lifecycle events. This keeps recovery independent of
+   * the UI's last in-memory stream boundary.
+   */
+  private runtimeMessagesFromLedger(
+    sessionId: string,
+    events: CanonicalLedgerEvent[],
+  ): ServerMessage[] {
+    type LedgerItem = {
+      item: Record<string, any>
+      firstSeq: number
+      tool?: Record<string, any>
+    }
+
+    const items = new Map<string, LedgerItem>()
+    for (const event of events) {
+      const payload = event.payload || {}
+      const rawItem = payload.item
+      const itemId = String(rawItem?.id || '')
+      if (!itemId) continue
+      const current = items.get(itemId) || {
+        item: { id: itemId },
+        firstSeq: event.seq,
+      }
+      if (rawItem && typeof rawItem === 'object') {
+        current.item = { ...current.item, ...rawItem }
+      }
+      if (payload.tool && typeof payload.tool === 'object') {
+        current.tool = { ...current.tool, ...payload.tool }
+      }
+      if (event.event_type === 'item.delta' && typeof payload.delta === 'string') {
+        current.item.detail = `${String(current.item.detail || '')}${payload.delta}`
+        current.item.summary = current.item.detail
+      }
+      current.firstSeq = Math.min(current.firstSeq, event.seq)
+      items.set(itemId, current)
+    }
+
+    const byTurn = new Map<string, LedgerItem[]>()
+    for (const entry of items.values()) {
+      const turnId = String(entry.item.turn_id || '')
+      if (!turnId) continue
+      const turnItems = byTurn.get(turnId) || []
+      turnItems.push(entry)
+      byTurn.set(turnId, turnItems)
+    }
+
+    const turns = [...byTurn.entries()]
+      .map(([turnId, turnItems]) => ({
+        turnId,
+        items: turnItems.sort((a, b) => a.firstSeq - b.firstSeq),
+        firstSeq: Math.min(...turnItems.map((entry) => entry.firstSeq)),
+      }))
+      .sort((a, b) => a.firstSeq - b.firstSeq)
+
+    const toMillis = (value: unknown): number => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value
+      const parsed = Date.parse(String(value || ''))
+      return Number.isFinite(parsed) ? parsed : Date.now()
+    }
+    const parseObject = (value: unknown): Record<string, any> => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+      if (typeof value !== 'string') return {}
+      try {
+        const parsed = JSON.parse(value)
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+      } catch {
+        return {}
+      }
+    }
+
+    const messages: ServerMessage[] = []
+    for (const turn of turns) {
+      const userItems = turn.items.filter((entry) => entry.item.kind === 'user_message')
+      for (const entry of userItems) {
+        const item = entry.item
+        const timestamp = toMillis(item.ended_at || item.started_at)
+        messages.push({
+          id: String(item.id),
+          session_id: sessionId,
+          role: 'user',
+          content: String(item.detail || item.summary || ''),
+          reasoning: null,
+          tool_calls: [],
+          input_tokens: null,
+          output_tokens: null,
+          error: null,
+          streaming: false,
+          created_at: timestamp,
+          updated_at: timestamp,
+        })
+      }
+
+      const assistantItems = turn.items.filter((entry) => entry.item.kind !== 'user_message')
+      if (assistantItems.length === 0) continue
+      const textSegments: Array<{ id: string; text: string; after_tool_call_id?: string }> = []
+      const reasoningSegments: Array<{ id: string; text: string; after_tool_call_id?: string }> = []
+      const toolCalls: ToolCall[] = []
+      let lastToolCallId: string | undefined
+      let textIndex = 0
+      let reasoningIndex = 0
+
+      for (const entry of assistantItems) {
+        const item = entry.item
+        const kind = String(item.kind || '')
+        if (kind === 'agent_message') {
+          textSegments.push({
+            id: `${turn.turnId}:text:${textIndex++}`,
+            text: String(item.detail || item.summary || ''),
+            ...(lastToolCallId ? { after_tool_call_id: lastToolCallId } : {}),
+          })
+        } else if (kind === 'agent_reasoning') {
+          reasoningSegments.push({
+            id: `${turn.turnId}:reasoning:${reasoningIndex++}`,
+            text: String(item.detail || item.summary || ''),
+            ...(lastToolCallId ? { after_tool_call_id: lastToolCallId } : {}),
+          })
+        } else if (kind === 'tool_call' || kind === 'command_execution' || kind === 'file_change') {
+          const metadata = parseObject(item.metadata)
+          const tool = entry.tool || {}
+          const callId = String(tool.id || metadata.tool_call_id || item.id)
+          const name = String(tool.name || metadata.tool_name || kind)
+          const argumentsValue = tool.input ?? parseObject(item.detail)
+          const startedAt = toMillis(item.started_at || item.ended_at)
+          toolCalls.push({
+            call_id: callId,
+            name,
+            arguments: parseObject(argumentsValue),
+            result: item.detail ? String(item.detail) : undefined,
+            success: item.status ? item.status === 'completed' : undefined,
+            duration: startedAt && item.ended_at ? Math.max(0, toMillis(item.ended_at) - startedAt) : undefined,
+            started_at: startedAt,
+            finished_at: item.ended_at ? toMillis(item.ended_at) : undefined,
+          })
+          lastToolCallId = callId
+        }
+      }
+
+      const firstItem = assistantItems[0].item
+      const lastItem = assistantItems[assistantItems.length - 1].item
+      const timestamp = toMillis(firstItem.started_at || firstItem.ended_at)
+      messages.push({
+        id: String(firstItem.id || `${turn.turnId}:assistant`),
+        session_id: sessionId,
+        role: 'assistant',
+        content: textSegments.map((segment) => segment.text).filter(Boolean).join('\n\n'),
+        reasoning: reasoningSegments.map((segment) => segment.text).filter(Boolean).join('\n\n') || null,
+        tool_calls: toolCalls,
+        input_tokens: null,
+        output_tokens: null,
+        error: assistantItems.some((entry) => entry.item.status === 'failed') ? String(firstItem.detail || firstItem.summary || '') : null,
+        streaming: false,
+        created_at: timestamp,
+        updated_at: toMillis(lastItem.ended_at || lastItem.started_at),
+        ...(textSegments.length ? { text_segments: textSegments } : {}),
+        ...(reasoningSegments.length ? { reasoning_segments: reasoningSegments } : {}),
+      })
+    }
+    return messages
   }
 
   setBaseUrl(url: string) {
@@ -2019,9 +2316,10 @@ export class HakusAIClient {
     model?: string,
     longRunningGoal = false,
     providerId?: string,
+    onStreamState?: StreamStateListener,
   ): Promise<void> {
     if (this.usesEmbeddedRuntime) {
-      await this.chatStreamEmbedded(message, sessionId, onChunk, signal, model || provider, runMode, projectId, reasoningEffort, longRunningGoal, providerId ?? provider)
+      await this.chatStreamEmbedded(message, sessionId, onChunk, signal, model || provider, runMode, projectId, reasoningEffort, longRunningGoal, providerId ?? provider, onStreamState)
       return
     }
     const res = await fetch(`${this.baseUrl}/api/chat/stream`, {
@@ -2096,6 +2394,7 @@ export class HakusAIClient {
     reasoningEffort?: string,
     longRunningGoal = false,
     providerId?: string,
+    onStreamState?: StreamStateListener,
   ): Promise<void> {
     const project = projectId
       ? (await this.listProjects()).find((candidate) => candidate.id === projectId) || null
@@ -2138,6 +2437,16 @@ export class HakusAIClient {
     // invocation. Keep the desktop UI's @ mention syntax while translating
     // only the wire prompt on Android.
     const runtimePrompt = toRuntimeSkillMentions(message)
+    // Capture the canonical cursor before enqueueing the turn. The SSE route
+    // remains the live transport for compatibility, but starting from this
+    // durable cursor prevents a reconnect from replaying the whole thread.
+    let resumeSeq = 0
+    try {
+      const ledger = await this.getCanonicalLedger(threadId, { limit: 1 })
+      resumeSeq = ledger.verification.last_seq
+    } catch (error) {
+      console.warn('[runtime] canonical cursor unavailable; using compatibility cursor:', error)
+    }
     const start = await this.runtimeFetch(`/threads/${encodeURIComponent(threadId)}/turns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2179,66 +2488,119 @@ export class HakusAIClient {
     }
     signal?.addEventListener('abort', interruptOnAbort, { once: true })
 
-    const res = await this.runtimeFetch(
-      `/threads/${encodeURIComponent(threadId)}/events?since_seq=0`,
-      { headers: { Accept: 'text/event-stream' }, signal },
-      0,
-    )
-    if (!res.ok || !res.body) {
-      throw new HakusAIError(`Runtime event stream failed: ${res.status} ${await res.text()}`)
-    }
-
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let eventName = ''
     let activeGoalStatus = longRunningGoal ? 'active' : 'none'
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-        for (const line of lines) {
-          if (line.startsWith('event:')) {
-            eventName = line.slice(6).trim()
-            continue
-          }
-          if (!line.startsWith('data:')) continue
-          const envelope = JSON.parse(line.slice(5).trim())
-          if (!longRunningGoal && envelope.turn_id && envelope.turn_id !== turnId) continue
-          const event = this.runtimeEventToAgentEvent(eventName || envelope.event, envelope.payload || envelope)
-          if (event) onChunk(this.eventToChunk(event), event)
-          if (eventName === 'thread_goal_updated') {
-            activeGoalStatus = String((envelope.payload || envelope).goal?.status || 'active')
-          } else if (eventName === 'thread_goal_cleared') {
-            activeGoalStatus = 'cleared'
-          }
-          if (eventName === 'turn.completed') {
-            if (longRunningGoal && !['complete', 'blocked', 'paused', 'usage_limited', 'budget_limited', 'cleared'].includes(activeGoalStatus)) {
+
+    // Consume one SSE connection from `since_seq` until the reader ends.
+    // Returns the last applied ledger seq and whether a terminal turn event
+    // was seen. Envelopes at or below `sinceSeq` are skipped: a resume
+    // re-opens the stream there, so nothing already delivered is applied
+    // twice.
+    const consumeTurnStream = async (
+      body: ReadableStream<Uint8Array>,
+      sinceSeq: number,
+    ): Promise<{ terminated: boolean; lastSeq: number }> => {
+      const reader = body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let eventName = ''
+      let lastSeq = sinceSeq
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) return { terminated: false, lastSeq }
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim()
               continue
             }
-            onChunk({ done: true })
-            if (project) {
-              try {
-                await syncProjectFolder({ path: project.path, sourceUri: project.source_uri })
-              } catch (error) {
-                // A completed turn remains visible if the user revoked the
-                // SAF grant while the stream was running.
-                console.warn('[runtime] project sync failed:', error)
-              }
+            if (!line.startsWith('data:')) continue
+            const envelope = JSON.parse(line.slice(5).trim())
+            if (typeof envelope.seq === 'number' && envelope.seq <= sinceSeq) continue
+            if (!longRunningGoal && envelope.turn_id && envelope.turn_id !== turnId) continue
+            const event = this.runtimeEventToAgentEvent(eventName || envelope.event, envelope.payload || envelope)
+            if (event) {
+              onChunk(
+                this.eventToChunk(event),
+                event,
+                typeof envelope.seq === 'number' ? envelope.seq : undefined,
+              )
             }
-            return
-          }
-          if (eventName === 'turn.failed' || eventName === 'turn.canceled' || eventName === 'turn.interrupted') {
-            return
+            if (typeof envelope.seq === 'number') lastSeq = envelope.seq
+            if (eventName === 'thread_goal_updated') {
+              activeGoalStatus = String((envelope.payload || envelope).goal?.status || 'active')
+            } else if (eventName === 'thread_goal_cleared') {
+              activeGoalStatus = 'cleared'
+            }
+            if (eventName === 'turn.completed') {
+              if (longRunningGoal && !['complete', 'blocked', 'paused', 'usage_limited', 'budget_limited', 'cleared'].includes(activeGoalStatus)) {
+                continue
+              }
+              onChunk({ done: true })
+              if (project) {
+                try {
+                  await syncProjectFolder({ path: project.path, sourceUri: project.source_uri })
+                } catch (error) {
+                  // A completed turn remains visible if the user revoked the
+                  // SAF grant while the stream was running.
+                  console.warn('[runtime] project sync failed:', error)
+                }
+              }
+              return { terminated: true, lastSeq }
+            }
+            if (eventName === 'turn.failed' || eventName === 'turn.canceled' || eventName === 'turn.interrupted') {
+              return { terminated: true, lastSeq }
+            }
           }
         }
+      } finally {
+        reader.releaseLock()
+      }
+    }
+
+    // Stream consumption with bounded resume (Phase 6 Slice C). A dropped
+    // SSE connection no longer masquerades as a finished turn: when the
+    // reader ends before a terminal event, the loop re-opens the stream
+    // from the last applied ledger seq instead of ending the turn silently
+    // with the Runtime still executing server-side. 401/403 throw
+    // immediately — retrying cannot succeed — and everything else gets
+    // MAX_STREAM_RECONNECT_ATTEMPTS bounded, backoff-spaced resumes before
+    // the failure surfaces to the caller.
+    let cursor = resumeSeq
+    let attempt = 0
+    try {
+      for (;;) {
+        const res = await this.runtimeFetch(
+          `/threads/${encodeURIComponent(threadId)}/events?source=canonical&since_seq=${encodeURIComponent(String(cursor))}`,
+          { headers: { Accept: 'text/event-stream' }, signal },
+          0,
+        )
+        if (!res.ok || !res.body) {
+          const status = res.status
+          const detail = await res.text().catch(() => '')
+          const error = new HakusAIError(`Runtime event stream failed: ${status} ${detail}`.trim(), undefined, status)
+          if (status === 401 || status === 403 || attempt >= MAX_STREAM_RECONNECT_ATTEMPTS) {
+            throw error
+          }
+          attempt += 1
+          onStreamState?.('reconnecting', attempt)
+          await new Promise<void>((resolve) => setTimeout(resolve, nextReconnectDelay(attempt)))
+          continue
+        }
+        const outcome = await consumeTurnStream(res.body, cursor)
+        if (outcome.terminated) return
+        attempt += 1
+        if (attempt >= MAX_STREAM_RECONNECT_ATTEMPTS) {
+          throw new HakusAIError('Runtime event stream ended before the turn reached a terminal event')
+        }
+        onStreamState?.('reconnecting', attempt)
+        await new Promise<void>((resolve) => setTimeout(resolve, nextReconnectDelay(attempt)))
+        cursor = outcome.lastSeq
       }
     } finally {
       signal?.removeEventListener('abort', interruptOnAbort)
-      reader.releaseLock()
     }
   }
 
@@ -2324,6 +2686,16 @@ export class HakusAIClient {
           } as ApprovalRecord,
         } as AgentEvent
       }
+      case 'approval_requested':
+        if (payload.reason !== 'ssh_password_required') return null
+        return {
+          event_type: 'ssh_password_required',
+          approval: {
+            approvalId: String(payload.approval_id || payload.id || ''),
+            runId: String(payload.run_id || ''),
+            workerId: String(payload.worker_id || ''),
+          },
+        } as AgentEvent
       case 'user_input.required': {
         const request = payload.request || {}
         const question = request.questions?.[0]
@@ -2361,6 +2733,27 @@ export class HakusAIClient {
       }
       case 'turn.failed':
         return { event_type: 'turn_failed', code: 'RUNTIME_ERROR', error: String(payload.error || payload.message || 'Runtime turn failed') }
+      case 'task.progress': {
+        // The Runtime publishes the session's progress list after a step writes
+        // it. This drives the execution-plan card, which previously had no
+        // producer on the Rust path: only the legacy server emitted
+        // `task_progress`, so the card stayed empty for Runtime sessions.
+        //
+        // `items` is carried so the card can render every row with its real
+        // status rather than inferring completion from a prefix count.
+        const items = Array.isArray(payload.items) ? payload.items : []
+        const total = Number(payload.total ?? items.length) || 0
+        const completed = Number(payload.completed ?? 0) || 0
+        return {
+          event_type: 'task_progress',
+          completed,
+          total,
+          current_task: String(payload.current_task || ''),
+          phase: '',
+          detail: '',
+          items,
+        } as unknown as AgentEvent
+      }
       case 'thread_goal_updated':
         return { event_type: 'goal_updated', goal: payload.goal || null } as AgentEvent
       case 'thread_goal_cleared':
@@ -2639,16 +3032,63 @@ export class HakusAIClient {
       const res = await this.runtimeFetch(`/threads/${encodeURIComponent(sessionId)}`)
       if (!res.ok) await this._throwForResponse(res, url, 'Get Runtime thread failed')
       const detail = await res.json()
+      let messages: ServerMessage[] = []
+      let ledgerIncomplete = false
+      try {
+        const ledger = await this.getCanonicalLedger(sessionId, { limit: 5000 })
+        // The Runtime read is bounded and returns the oldest events after the
+        // cursor, so a session longer than the window arrives as a prefix. Treat
+        // that as incomplete rather than presenting a partial transcript as the
+        // whole conversation; `verification.last_seq` reports the true tail.
+        const omitted = ledger.omitted_events ?? 0
+        const lastReturned = ledger.events.length > 0
+          ? ledger.events[ledger.events.length - 1].seq
+          : 0
+        const behindTail = ledger.verification.last_seq > lastReturned
+        ledgerIncomplete = omitted > 0 || behindTail
+        if (ledgerIncomplete) {
+          console.warn(
+            '[runtime] canonical ledger window is incomplete; falling back to the thread item projection:',
+            { omitted, lastReturned, lastSeq: ledger.verification.last_seq },
+          )
+        } else {
+          messages = this.runtimeMessagesFromLedger(sessionId, ledger.events)
+        }
+      } catch (error) {
+        // Older or partially migrated runtimes may expose the thread detail
+        // before they expose the canonical ledger. Keep startup usable while
+        // diagnostics make the compatibility path visible.
+        console.warn('[runtime] canonical ledger projection unavailable:', error)
+      }
+      if (ledgerIncomplete || messages.length === 0) {
+        messages = (detail.items || [])
+          .map((item: any) => this.runtimeMessage(sessionId, item))
+          .filter((item: ServerMessage | null): item is ServerMessage => item !== null)
+      }
       return {
         ...this.runtimeSession(detail.thread),
-        messages: (detail.items || [])
-          .map((item: any) => this.runtimeMessage(sessionId, item))
-          .filter((item: ServerMessage | null): item is ServerMessage => item !== null),
+        messages,
       }
     }
     const url = `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`
     const res = await this.fetchWithHardTimeout(url, {}, 10000)
     if (!res.ok) await this._throwForResponse(res, url, 'Get session failed')
+    return res.json()
+  }
+
+  /** Read the canonical SQLite ledger used for durable session replay. */
+  async getCanonicalLedger(
+    sessionId: string,
+    opts: { sinceSeq?: number; limit?: number } = {},
+  ): Promise<CanonicalLedgerResponse> {
+    if (!this.usesEmbeddedRuntime) this.runtimeUnsupported('canonical Runtime ledger')
+    const params = new URLSearchParams()
+    if (opts.sinceSeq !== undefined) params.set('since_seq', String(Math.max(0, opts.sinceSeq)))
+    if (opts.limit !== undefined) params.set('limit', String(Math.max(1, Math.min(5000, opts.limit))))
+    const query = params.toString() ? `?${params.toString()}` : ''
+    const path = `/threads/${encodeURIComponent(sessionId)}/ledger${query}`
+    const res = await this.runtimeFetch(path)
+    if (!res.ok) await this._throwForResponse(res, `${this.baseUrl}/v1${path}`, 'Get canonical Runtime ledger failed')
     return res.json()
   }
 
@@ -2974,6 +3414,16 @@ export class HakusAIClient {
     }, 30000)
     if (!res.ok) await this._throwForResponse(res, `${this.baseUrl}/api/sessions/migrate`, 'Migrate sessions failed')
     return res.json()
+  }
+
+  /** Scan for legacy Python session stores without importing or mutating them. */
+  async discoverLegacySessions(roots: string[] = []): Promise<LegacyDiscovery> {
+    return this.runtimeJson<LegacyDiscovery>(
+      '/migrations/legacy-sessions',
+      'POST',
+      { roots },
+      'Discover legacy sessions failed',
+    )
   }
 
   /** Export all sessions + messages as a single JSON (for backup/restore). */
