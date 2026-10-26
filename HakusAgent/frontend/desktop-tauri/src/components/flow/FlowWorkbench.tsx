@@ -38,6 +38,7 @@ import { FLOW_NODE_DEFS, getNodeDef } from '@/lib/flow/registry'
 import { cn } from '@/lib/utils'
 import { autoLayout } from '@/lib/flow/layout'
 import { alignNodes, distributeNodes } from '@/lib/flow/arrange'
+import { computeSnap, type GuideLine, type GuideRect } from '@/lib/flow/guides'
 import { useI18n } from '@/lib/i18n'
 import { ResizeHandle } from '@/components/layout/ResizeHandle'
 import { FlowSidebar } from './FlowSidebar'
@@ -68,6 +69,40 @@ const edgeTypes = { flow: FlowEdgePath } as any
 /** Smallest selection that can be aligned or distributed. */
 const ALIGN_MIN = 2
 const DISTRIBUTE_MIN = 3
+
+/** Fallback card size when a node has not been measured yet. */
+const UNMEASURED = { width: 200, height: 80 }
+
+const rectOf = (n: { position: { x: number; y: number }; width?: number; height?: number; measured?: { width?: number; height?: number } }): GuideRect => ({
+  x: n.position.x,
+  y: n.position.y,
+  width: n.measured?.width ?? n.width ?? UNMEASURED.width,
+  height: n.measured?.height ?? n.height ?? UNMEASURED.height,
+})
+
+/**
+ * Full-pane alignment lines shown while a drag is snapped. Rendered as a
+ * ReactFlow child (screen coordinates via flowToScreenPosition), so panning
+ * or zooming mid-drag keeps them glued to the right coordinate.
+ */
+function FlowGuides({ lines }: { lines: GuideLine[] }) {
+  const { flowToScreenPosition } = useReactFlow()
+  if (lines.length === 0) return null
+  return (
+    <>
+      {lines.map((line, i) => {
+        const screen = flowToScreenPosition(
+          line.orientation === 'horizontal' ? { x: 0, y: line.at } : { x: line.at, y: 0 },
+        )
+        return line.orientation === 'horizontal' ? (
+          <div key={`h${i}`} className="flow-guide flow-guide-h" style={{ top: screen.y }} />
+        ) : (
+          <div key={`v${i}`} className="flow-guide flow-guide-v" style={{ left: screen.x }} />
+        )
+      })}
+    </>
+  )
+}
 
 function FlowWorkbenchInner() {
   const { locale } = useI18n()
@@ -101,6 +136,28 @@ function FlowWorkbenchInner() {
     flow: { x: 0, y: 0 },
   })
   const wrapRef = useRef<HTMLDivElement>(null)
+
+  // Alignment snapping (lib/flow/guides.ts): while a drag is within
+  // GUIDE_THRESHOLD of a shared edge with another node, nudge it onto the
+  // alignment and draw full-pane guide lines. The offset rides React Flow's
+  // own position change in onNodesChange — d3-drag recomputes each change
+  // from the drag-start snapshot, so a fresh offset per tick cannot
+  // accumulate drift.
+  const [guides, setGuides] = useState<GuideLine[]>([])
+  const snapOffsetRef = useRef<{ dx: number; dy: number } | null>(null)
+  const onNodeDrag = useCallback((_: unknown, __: Node, draggedNodes: Node[]) => {
+    const current = useFlowStore.getState().graph
+    const draggedIds = new Set(draggedNodes.map((n) => n.id))
+    const dragged = current.nodes.filter((n) => draggedIds.has(n.id)).map(rectOf)
+    const others = current.nodes.filter((n) => !draggedIds.has(n.id)).map(rectOf)
+    const snap = computeSnap(dragged, others)
+    snapOffsetRef.current = { dx: snap.dx, dy: snap.dy }
+    setGuides(snap.lines)
+  }, [])
+  const clearGuides = useCallback(() => {
+    snapOffsetRef.current = null
+    setGuides([])
+  }, [])
 
   // In-app rename dialog state (replaces window.prompt's browser chrome).
   const [rename, setRename] = useState<{ nodeId: string; initial: string } | null>(null)
@@ -448,7 +505,10 @@ function FlowWorkbenchInner() {
                 const idx = next.findIndex((n) => n.id === ch.id)
                 if (idx < 0) continue
                 if (ch.type === 'position' && ch.position) {
-                  next[idx] = { ...next[idx], position: ch.position }
+                  let pos = ch.position
+                  const off = snapOffsetRef.current
+                  if (off) pos = { x: pos.x + off.dx, y: pos.y + off.dy }
+                  next[idx] = { ...next[idx], position: pos }
                   structural = true
                 } else if (ch.type === 'dimensions' && ch.dimensions) {
                   // Persist the measurement, otherwise the node stays hidden.
@@ -502,8 +562,12 @@ function FlowWorkbenchInner() {
               }
               if (structural) setNodes(next)
             }}
+            onNodeDrag={onNodeDrag}
             onNodeDragStart={beginBatch}
-            onNodeDragStop={endBatch}
+            onNodeDragStop={() => {
+              endBatch()
+              clearGuides()
+            }}
             onEdgesChange={(changes) => {
               let next = [...graph.edges]
               for (const ch of changes) {
@@ -572,10 +636,16 @@ function FlowWorkbenchInner() {
             panActivationKeyCode="Space"
             multiSelectionKeyCode={['Meta', 'Control']}
             deleteKeyCode={null}
+            // Grid snap carries ordinary drags; a nearby alignment guide
+            // (onNodeDrag) then overrides the grid by up to GUIDE_THRESHOLD,
+            // so node-to-node alignment always wins over the lattice.
+            snapToGrid
+            snapGrid={[8, 8]}
             proOptions={{ hideAttribution: true }}
             className="flow-canvas"
           >
             <Background gap={18} size={1} color="hsl(var(--flow-grid))" />
+            <FlowGuides lines={guides} />
             <Controls showInteractive={false} className="flow-controls" />
             <MiniMap
               className="flow-minimap"

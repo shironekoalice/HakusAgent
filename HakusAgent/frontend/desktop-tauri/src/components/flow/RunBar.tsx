@@ -6,11 +6,12 @@
  */
 
 import { useMemo, useRef } from 'react'
-import { Workflow } from 'lucide-react'
+import { TriangleAlert, Workflow } from 'lucide-react'
 import { useFlowStore } from '@/store/flow'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
+import { validateGraph } from '@/lib/flow/validation'
 
 const STATUS_TEXT: Record<string, { zh: string; en: string }> = {
   running: { zh: '执行中', en: 'Running' },
@@ -49,12 +50,45 @@ export function RunBar() {
   const statusText = (STATUS_TEXT[run.status] || STATUS_TEXT.idle)[zh ? 'zh' : 'en']
   const settled = run.status === 'idle' || run.status === 'done' || run.status === 'cancelled' || run.status === 'error'
 
+  // Graph defects, not run state: they are visible before the first Run and
+  // stay visible after a failure. Clicking a chip selects the offending nodes
+  // on the canvas (the selection ring is the shared highlight).
+  const validation = useMemo(() => validateGraph(graph), [graph])
+  const labelOf = (id: string) => String(graph.nodes.find((n) => n.id === id)?.data.label || id)
+  const selectIssues = (ids: string[]) => useFlowStore.getState().selectNodes(ids)
+
   return (
     <div className="flow-runbar">
       <span className={cn('rp-chip', CHIP_TONE[run.status] || 'rp-chip-info')}>
         <Workflow className="mr-1 h-3 w-3" />
         {statusText}
       </span>
+
+      {validation.cycleNodeIds.size > 0 ? (
+        <button
+          type="button"
+          className="rp-chip rp-chip-warn cursor-pointer"
+          title={[...validation.cycleNodeIds].map(labelOf).join(' · ')}
+          onClick={() => selectIssues([...validation.cycleNodeIds])}
+        >
+          <TriangleAlert className="mr-1 h-3 w-3" />
+          {zh
+            ? `图中有环 · ${validation.cycleNodeIds.size} 个节点无法执行`
+            : `cycle · ${validation.cycleNodeIds.size} node(s) can never run`}
+        </button>
+      ) : null}
+
+      {validation.unwired.length > 0 ? (
+        <button
+          type="button"
+          className="rp-chip rp-chip-warn cursor-pointer"
+          title={validation.unwired.map((u) => `${labelOf(u.nodeId)} (${u.portIds.join(', ')})`).join(' · ')}
+          onClick={() => selectIssues(validation.unwired.map((u) => u.nodeId))}
+        >
+          <TriangleAlert className="mr-1 h-3 w-3" />
+          {zh ? `${validation.unwired.length} 个节点输入未接` : `${validation.unwired.length} node(s) missing input`}
+        </button>
+      ) : null}
 
       {startKeys.map((k) => (
         <label key={k} className="flow-run-input">
