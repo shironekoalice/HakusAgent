@@ -15,7 +15,11 @@ use hakus_company::scheduler::HeartbeatRunner;
 use hakus_company::{CompanyStore, NewIssue, company_db_path};
 
 #[derive(Parser, Debug)]
-#[command(name = "hakus-company", version, about = "Company-scale multi-agent orchestration")]
+#[command(
+    name = "hakus-company",
+    version,
+    about = "Company-scale multi-agent orchestration"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -147,7 +151,15 @@ async fn main() -> Result<()> {
             let c = store.create_company(&name, &mission)?;
             println!("created company {} ({})", c.name, c.id);
         }
-        Cmd::Hire { company, name, role, parent, adapter, budget_cents, cron } => {
+        Cmd::Hire {
+            company,
+            name,
+            role,
+            parent,
+            adapter,
+            budget_cents,
+            cron,
+        } => {
             let agent = store.create_agent(
                 &company,
                 &name,
@@ -157,13 +169,24 @@ async fn main() -> Result<()> {
                 "{}",
                 budget_cents,
             )?;
-            println!("hired {} <{}> {} [{}]", agent.name, agent.role, agent.id, agent.adapter);
+            println!(
+                "hired {} <{}> {} [{}]",
+                agent.name, agent.role, agent.id, agent.adapter
+            );
             if let Some(cron) = cron {
                 let hb = store.create_heartbeat(&agent.id, &cron)?;
                 println!("heartbeat {} ({})", hb.id, hb.cron);
             }
         }
-        Cmd::Issue { company, title, body, goal, assignee, parent: parent_issue, role } => {
+        Cmd::Issue {
+            company,
+            title,
+            body,
+            goal,
+            assignee,
+            parent: parent_issue,
+            role,
+        } => {
             let assignee_id = match (&assignee, &role) {
                 (Some(id), _) => Some(id.clone()),
                 (None, Some(role)) => store
@@ -191,7 +214,10 @@ async fn main() -> Result<()> {
                 billing_code: "",
                 depth,
             })?;
-            println!("created issue {} [{}] depth={}", issue.id, issue.state, issue.depth);
+            println!(
+                "created issue {} [{}] depth={}",
+                issue.id, issue.state, issue.depth
+            );
         }
         Cmd::Board { company } => {
             print_board(&store, &company)?;
@@ -205,7 +231,13 @@ async fn main() -> Result<()> {
                 println!("(no pending approvals)");
             }
             for a in pending {
-                println!("{:<28} {:<14} subject={} by={}", a.id, a.kind, a.subject_id, a.requested_by.unwrap_or_default());
+                println!(
+                    "{:<28} {:<14} subject={} by={}",
+                    a.id,
+                    a.kind,
+                    a.subject_id,
+                    a.requested_by.unwrap_or_default()
+                );
             }
         }
         Cmd::Approve { id, by, reason } => {
@@ -214,14 +246,23 @@ async fn main() -> Result<()> {
         Cmd::Reject { id, by, reason } => {
             decide_approval(&store, &id, false, by.as_deref(), reason.as_deref())?;
         }
-        Cmd::Run { agent, mode, base_url } => {
+        Cmd::Run {
+            agent,
+            mode,
+            base_url,
+        } => {
             let runner = runner(store.clone(), &mode, base_url)?;
             let agent_row = resolve_agent(&store, &agent)?;
             let status = runner.run_agent(&agent_row.id).await?;
             println!("heartbeat -> {}", status.as_str());
             print_last_run(&store, &agent_row.id)?;
         }
-        Cmd::Daemon { poll, rounds, mode, base_url } => {
+        Cmd::Daemon {
+            poll,
+            rounds,
+            mode,
+            base_url,
+        } => {
             let runner = runner(store.clone(), &mode, base_url)?;
             if rounds == 0 {
                 runner.daemon(poll).await?;
@@ -262,10 +303,17 @@ fn runner(
     base_url: Option<String>,
 ) -> Result<HeartbeatRunner> {
     match mode {
-        "mock" => Ok(HeartbeatRunner::new(store, Arc::new(MockRuntime::default()))),
-        "python" => Ok(HeartbeatRunner::new(store, Arc::new(HttpPythonRuntime::new(base_url)))),
+        "mock" => Ok(HeartbeatRunner::new(
+            store,
+            Arc::new(MockRuntime::default()),
+        )),
+        "python" => Ok(HeartbeatRunner::new(
+            store,
+            Arc::new(HttpPythonRuntime::new(base_url)),
+        )),
         _ => {
-            let native: Arc<dyn AgentRuntime> = Arc::new(NativeLlmRuntime::from_env(SYSTEM_PROMPT)?);
+            let native: Arc<dyn AgentRuntime> =
+                Arc::new(NativeLlmRuntime::from_env(SYSTEM_PROMPT)?);
             let registry = RuntimeRegistry::new(native.clone())
                 .with("llm", native)
                 .with("mock", Arc::new(MockRuntime::default()))
@@ -294,7 +342,14 @@ fn print_board(store: &CompanyStore, company_id: &str) -> Result<()> {
         return Ok(());
     }
     // Grouped by state so the operator can see where work is piling up.
-    let order = ["in_progress", "blocked", "in_review", "todo", "backlog", "done"];
+    let order = [
+        "in_progress",
+        "blocked",
+        "in_review",
+        "todo",
+        "backlog",
+        "done",
+    ];
     for state in order {
         let group: Vec<_> = issues.iter().filter(|i| i.state == state).collect();
         if group.is_empty() {
@@ -303,7 +358,11 @@ fn print_board(store: &CompanyStore, company_id: &str) -> Result<()> {
         println!("── {state} ({}) ──", group.len());
         for issue in group {
             let who = agent_name(store, issue.assignee_agent_id.as_deref());
-            let depth = if issue.depth > 0 { format!(" d{}", issue.depth) } else { String::new() };
+            let depth = if issue.depth > 0 {
+                format!(" d{}", issue.depth)
+            } else {
+                String::new()
+            };
             println!("  [{:<17}] {}{}  {}", who, depth, "", issue.title);
         }
     }
@@ -314,12 +373,23 @@ fn print_board(store: &CompanyStore, company_id: &str) -> Result<()> {
 fn print_tree(store: &CompanyStore, company_id: &str) -> Result<()> {
     let agents = store.list_agents(company_id)?;
     let issues = store.list_board(company_id, None)?;
-    let roots: Vec<_> = agents.iter().filter(|a| a.parent_agent_id.is_none()).collect();
+    let roots: Vec<_> = agents
+        .iter()
+        .filter(|a| a.parent_agent_id.is_none())
+        .collect();
 
-    fn walk(store: &CompanyStore, agents: &[hakus_company::model::AgentRow], issues: &[hakus_company::model::IssueRow], node: &hakus_company::model::AgentRow, depth: usize) {
+    fn walk(
+        store: &CompanyStore,
+        agents: &[hakus_company::model::AgentRow],
+        issues: &[hakus_company::model::IssueRow],
+        node: &hakus_company::model::AgentRow,
+        depth: usize,
+    ) {
         let open = issues
             .iter()
-            .filter(|i| i.assignee_agent_id.as_deref() == Some(node.id.as_str()) && i.state != "done")
+            .filter(|i| {
+                i.assignee_agent_id.as_deref() == Some(node.id.as_str()) && i.state != "done"
+            })
             .count();
         println!(
             "{}{} <{}> [{}] · {} 待办",
@@ -329,7 +399,10 @@ fn print_tree(store: &CompanyStore, company_id: &str) -> Result<()> {
             node.adapter,
             open
         );
-        for child in agents.iter().filter(|a| a.parent_agent_id.as_deref() == Some(node.id.as_str())) {
+        for child in agents
+            .iter()
+            .filter(|a| a.parent_agent_id.as_deref() == Some(node.id.as_str()))
+        {
             walk(store, agents, issues, child, depth + 1);
         }
     }
@@ -393,7 +466,12 @@ fn print_last_run(store: &CompanyStore, agent_id: &str) -> Result<()> {
     let runs = store.list_runs(Some(agent_id), 1)?;
     if let Some(r) = runs.first() {
         let preview: String = r.output.chars().take(240).collect();
-        println!("run {}: {} · {} tok", r.id, r.status, r.input_tokens + r.output_tokens);
+        println!(
+            "run {}: {} · {} tok",
+            r.id,
+            r.status,
+            r.input_tokens + r.output_tokens
+        );
         if !preview.trim().is_empty() {
             println!("--- output ---\n{preview}");
         }

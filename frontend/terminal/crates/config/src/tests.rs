@@ -275,20 +275,14 @@ fn permissions_ruleset_mixed_actions_all_coexist() {
         .iter()
         .find(|r| r.path.as_deref() == Some("src/secrets.rs"))
         .unwrap();
-    assert_eq!(
-        path_deny.action,
-        hakus_execpolicy::PermissionAction::Deny
-    );
+    assert_eq!(path_deny.action, hakus_execpolicy::PermissionAction::Deny);
 
     let path_allow = ruleset
         .ask_rules
         .iter()
         .find(|r| r.path.as_deref() == Some("Cargo.toml"))
         .unwrap();
-    assert_eq!(
-        path_allow.action,
-        hakus_execpolicy::PermissionAction::Allow
-    );
+    assert_eq!(path_allow.action, hakus_execpolicy::PermissionAction::Allow);
 }
 
 #[test]
@@ -2875,12 +2869,9 @@ fn list_values_redacts_unicode_api_key_without_byte_slicing() {
 #[test]
 fn app_homes_prefer_home_env_before_platform_home_fallback() {
     let _lock = env_lock();
-    let home =
-        std::env::temp_dir().join(format!("hakus-config-home-env-{}", std::process::id()));
-    let userprofile = std::env::temp_dir().join(format!(
-        "hakus-config-userprofile-{}",
-        std::process::id()
-    ));
+    let home = std::env::temp_dir().join(format!("hakus-config-home-env-{}", std::process::id()));
+    let userprofile =
+        std::env::temp_dir().join(format!("hakus-config-userprofile-{}", std::process::id()));
     let _env = StateEnvRestore {
         home: env::var_os("HOME"),
         userprofile: env::var_os("USERPROFILE"),
@@ -2893,14 +2884,9 @@ fn app_homes_prefer_home_env_before_platform_home_fallback() {
         env::remove_var("HAKUS_HOME");
     }
 
-    assert_eq!(
-        hakus_home().expect("hakus home"),
-        home.join(HAKUS_APP_DIR)
-    );
-    let explicit = std::env::temp_dir().join(format!(
-        "hakus-config-explicit-home-{}",
-        std::process::id()
-    ));
+    assert_eq!(hakus_home().expect("hakus home"), home.join(HAKUS_APP_DIR));
+    let explicit =
+        std::env::temp_dir().join(format!("hakus-config-explicit-home-{}", std::process::id()));
     // Safety: test-only environment mutation is serialized by env_lock().
     unsafe {
         env::set_var("HAKUS_HOME", &explicit);
@@ -2982,9 +2968,11 @@ fn migrate_config_is_disabled_and_does_not_read_legacy_path() {
         env::remove_var("HAKUS_HOME");
     }
 
-    assert!(migrate_config_if_needed()
-        .expect("migration check")
-        .is_none());
+    assert!(
+        migrate_config_if_needed()
+            .expect("migration check")
+            .is_none()
+    );
     assert!(!primary_dir.join(CONFIG_FILE_NAME).exists());
 
     let _ = fs::remove_dir_all(home);
@@ -3125,7 +3113,12 @@ fn ensure_state_dir_does_not_read_legacy_subdir_on_first_write() {
         ensure_state_dir_with_migration("slop_ledger").expect("ensure_state_dir");
     assert_eq!(dir, state_env.primary("slop_ledger"));
     assert!(migration.is_none());
-    assert!(!state_env.primary("slop_ledger").join("slop_ledger.json").exists());
+    assert!(
+        !state_env
+            .primary("slop_ledger")
+            .join("slop_ledger.json")
+            .exists()
+    );
     assert!(state_env.legacy("slop_ledger").exists());
     let (_, repeated_migration) =
         ensure_state_dir_with_migration("slop_ledger").expect("idempotent ensure");
@@ -3307,10 +3300,7 @@ fn project_state_resolvers_reject_path_traversal_subdirs() {
     );
     let created =
         ensure_project_state_dir(&workspace, "a/b").expect("safe nested project state dir");
-    assert_eq!(
-        created,
-        canonical_workspace.join(HAKUS_APP_DIR).join("a/b")
-    );
+    assert_eq!(created, canonical_workspace.join(HAKUS_APP_DIR).join("a/b"));
 }
 
 #[test]

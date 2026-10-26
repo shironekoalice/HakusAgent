@@ -255,11 +255,8 @@ pub const MATRIX_BORDER_RGB: (u8, u8, u8) = (0, 204, 0); // #00CC00
 // Semantic colors
 pub const BORDER_COLOR_RGB: (u8, u8, u8) = WHALE_BORDER_RGB;
 
-pub const HAKUS_ACTION: Color = Color::Rgb(
-    HAKUS_ACTION_RGB.0,
-    HAKUS_ACTION_RGB.1,
-    HAKUS_ACTION_RGB.2,
-);
+pub const HAKUS_ACTION: Color =
+    Color::Rgb(HAKUS_ACTION_RGB.0, HAKUS_ACTION_RGB.1, HAKUS_ACTION_RGB.2);
 pub const HAKUS_ACCENT_SECONDARY: Color = Color::Rgb(
     HAKUS_ACCENT_SECONDARY_RGB.0,
     HAKUS_ACCENT_SECONDARY_RGB.1,

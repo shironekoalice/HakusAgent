@@ -232,9 +232,7 @@ impl ApiProvider {
     #[must_use]
     pub fn env_vars(self) -> &'static [&'static str] {
         self.metadata().map_or(
-            hakus_config::ProviderKind::Deepseek
-                .provider()
-                .env_vars(),
+            hakus_config::ProviderKind::Deepseek.provider().env_vars(),
             |provider| provider.env_vars(),
         )
     }
@@ -279,10 +277,8 @@ impl ApiProvider {
     pub fn credential_help(self) -> hakus_config::provider::CredentialHelp {
         self.metadata().map_or_else(
             || {
-                hakus_config::provider::provider_for_kind(
-                    hakus_config::ProviderKind::Deepseek,
-                )
-                .credential_help()
+                hakus_config::provider::provider_for_kind(hakus_config::ProviderKind::Deepseek)
+                    .credential_help()
             },
             hakus_config::provider::Provider::credential_help,
         )
@@ -3888,8 +3884,8 @@ impl<'de> Deserialize<'de> for ConfigFile {
         D: serde::Deserializer<'de>,
     {
         let mut document = toml::Value::deserialize(deserializer)?;
-        let root_custom = extract_custom_provider_tables(&mut document)
-            .map_err(serde::de::Error::custom)?;
+        let root_custom =
+            extract_custom_provider_tables(&mut document).map_err(serde::de::Error::custom)?;
         let mut profile_custom = HashMap::new();
         if let Some(profiles) = document
             .as_table_mut()
@@ -3897,8 +3893,8 @@ impl<'de> Deserialize<'de> for ConfigFile {
             .and_then(toml::Value::as_table_mut)
         {
             for (name, profile) in profiles {
-                let custom = extract_custom_provider_tables(profile)
-                    .map_err(serde::de::Error::custom)?;
+                let custom =
+                    extract_custom_provider_tables(profile).map_err(serde::de::Error::custom)?;
                 if !custom.is_empty() {
                     profile_custom.insert(name.clone(), custom);
                 }
@@ -4225,10 +4221,7 @@ impl Config {
             let parsed_controls =
                 hakus_config::load_project_config(workspace).is_some_and(|project| {
                     project.approval_policy.as_deref().is_some_and(|policy| {
-                        hakus_config::project_approval_policy_is_allowed(
-                            approval_baseline,
-                            policy,
-                        )
+                        hakus_config::project_approval_policy_is_allowed(approval_baseline, policy)
                     }) || project.sandbox_mode.as_deref().is_some_and(|sandbox| {
                         hakus_config::project_sandbox_mode_is_allowed(
                             self.sandbox_mode.as_deref(),
@@ -4700,9 +4693,7 @@ impl Config {
         let provider = self.api_provider();
         if matches!(
             provider,
-            ApiProvider::Deepseek
-                | ApiProvider::DeepseekCN
-                | ApiProvider::XiaomiMimo
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::XiaomiMimo
         ) {
             return;
         }
@@ -7541,10 +7532,10 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ApiProvider, mode
 mod home;
 mod paths;
 use paths::{
-    canonicalize_or_keep, hakus_home_dir, default_config_path, default_managed_config_path,
+    canonicalize_or_keep, default_config_path, default_managed_config_path,
     default_mcp_config_path, default_memory_path, default_notes_path, default_requirements_path,
-    default_skills_dir, env_config_path, expand_pathbuf, home_config_path, try_default_config_path,
-    workspace_config_key,
+    default_skills_dir, env_config_path, expand_pathbuf, hakus_home_dir, home_config_path,
+    try_default_config_path, workspace_config_key,
 };
 pub(crate) use paths::{effective_home_dir, expand_path};
 
@@ -7802,10 +7793,7 @@ fn provider_env_base_url_override(provider: ApiProvider) -> Option<String> {
 /// Resolve an env var, preferring the `HAKUS_*` form over the
 /// legacy `DEEPSEEK_*` form. Empty values are ignored so a blank shell export
 /// does not erase configured provider settings.
-fn hakus_env_var(
-    hakus_name: &str,
-    legacy_name: &str,
-) -> Result<String, std::env::VarError> {
+fn hakus_env_var(hakus_name: &str, legacy_name: &str) -> Result<String, std::env::VarError> {
     let read = || {
         std::env::var(hakus_name)
             .ok()
@@ -8444,8 +8432,8 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
         *field = Some(value);
     }
     if policy.permits_secret_bearing_values()
-        && let Ok(value) = std::env::var("HAKUS_HTTP_HEADERS")
-            .or_else(|_| std::env::var("DEEPSEEK_HTTP_HEADERS"))
+        && let Ok(value) =
+            std::env::var("HAKUS_HTTP_HEADERS").or_else(|_| std::env::var("DEEPSEEK_HTTP_HEADERS"))
         && let Ok(headers) = parse_http_headers(&value)
         && !headers.is_empty()
     {
@@ -8925,9 +8913,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     {
         config.memory_path = Some(value);
     }
-    if let Ok(value) =
-        std::env::var("HAKUS_MEMORY").or_else(|_| std::env::var("DEEPSEEK_MEMORY"))
-    {
+    if let Ok(value) = std::env::var("HAKUS_MEMORY").or_else(|_| std::env::var("DEEPSEEK_MEMORY")) {
         let on = matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "on" | "true" | "yes" | "y" | "enabled"
@@ -9016,8 +9002,8 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     {
         config.requirements_path = Some(value);
     }
-    if let Ok(value) = std::env::var("HAKUS_MAX_SUBAGENTS")
-        .or_else(|_| std::env::var("DEEPSEEK_MAX_SUBAGENTS"))
+    if let Ok(value) =
+        std::env::var("HAKUS_MAX_SUBAGENTS").or_else(|_| std::env::var("DEEPSEEK_MAX_SUBAGENTS"))
         && let Ok(parsed) = value.parse::<usize>()
     {
         config.max_subagents = Some(parsed.clamp(1, MAX_SUBAGENTS));
@@ -9481,10 +9467,7 @@ fn moonshot_base_url_uses_kimi_code(base_url: &str) -> bool {
 /// route-specific K3 capability and request shaping are not safe for arbitrary
 /// Kimi-hosted paths.
 pub(crate) fn moonshot_base_url_is_exact_kimi_code(base_url: &str) -> bool {
-    hakus_config::provider::is_exact_kimi_code_route(
-        hakus_config::ProviderKind::Moonshot,
-        base_url,
-    )
+    hakus_config::provider::is_exact_kimi_code_route(hakus_config::ProviderKind::Moonshot, base_url)
 }
 
 /// The exact Moonshot direct-API endpoint, normalized only for an
@@ -10223,9 +10206,7 @@ fn merge_skills_config(
             max_install_size_bytes: override_cfg
                 .max_install_size_bytes
                 .or(base.max_install_size_bytes),
-            scan_hakus_only: override_cfg
-                .scan_hakus_only
-                .or(base.scan_hakus_only),
+            scan_hakus_only: override_cfg.scan_hakus_only.or(base.scan_hakus_only),
         }),
     }
 }
@@ -10927,9 +10908,9 @@ fn provider_uses_oauth_credentials(config: &Config, provider: ApiProvider) -> bo
     !auth_mode_disables_api_key(config.auth_mode_for_provider(provider).as_deref())
         && !config.provider_uses_custom_endpoint(provider)
         && ((provider == ApiProvider::Moonshot
-                && config
-                    .provider_config_for(provider)
-                    .is_some_and(provider_config_uses_kimi_imported_token))
+            && config
+                .provider_config_for(provider)
+                .is_some_and(provider_config_uses_kimi_imported_token))
             || (provider == ApiProvider::Xai
                 && config
                     .provider_config_for(provider)
@@ -11882,8 +11863,7 @@ fn provider_secret_store_api_key_with_mode(
     // Secret-store regressions opt in with an isolated HAKUS_HOME and an
     // explicit backend, matching the secrets crate's own test discipline.
     #[cfg(test)]
-    if !hakus_paths::hakus_home_is_explicit()
-        || std::env::var_os("HAKUS_SECRET_BACKEND").is_none()
+    if !hakus_paths::hakus_home_is_explicit() || std::env::var_os("HAKUS_SECRET_BACKEND").is_none()
     {
         return None;
     }
@@ -12146,9 +12126,7 @@ fn clear_api_key_unlocked() -> Result<()> {
 /// once, and every deletion failure is returned as a human-readable entry so
 /// the caller can fail loudly instead of claiming a clean logout while
 /// credentials linger in the store (#5196).
-fn clear_all_provider_api_keys_from_secret_store(
-    secrets: &hakus_secrets::Secrets,
-) -> Vec<String> {
+fn clear_all_provider_api_keys_from_secret_store(secrets: &hakus_secrets::Secrets) -> Vec<String> {
     let mut failures = Vec::new();
     let mut cleared_slots = std::collections::HashSet::new();
     for provider in ApiProvider::all() {

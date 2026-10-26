@@ -530,6 +530,13 @@ impl FleetManager {
             .get(&run_id.0)
             .cloned()
             .ok_or_else(|| anyhow!("fleet run {} does not exist", run_id.0))?;
+        let lifecycle = state
+            .run_status_overrides
+            .get(&run_id.0)
+            .unwrap_or(&run.status);
+        if matches!(lifecycle, FleetRunStatus::Paused) {
+            return Ok(FleetTickReport::default());
+        }
         let worker_ids = worker_ids_for_run(&run, max_workers);
 
         for task in active_tasks_for_run(&state, run_id) {
@@ -650,6 +657,78 @@ impl FleetManager {
     /// already reached a terminal state, so it is safe to call repeatedly.
     pub fn resume_run(&self, run_id: &FleetRunId) -> Result<FleetResumeReport> {
         self.resume_run_at(run_id, Utc::now())
+    }
+
+    /// Put a run into a durable credential wait state and expose one stable
+    /// approval id to the secure-input client. The password itself is never
+    /// accepted by this manager or written to its ledger.
+    pub fn request_ssh_password(
+        &self,
+        run_id: &FleetRunId,
+        worker_id: &str,
+    ) -> Result<String> {
+        let state = self.ledger.rebuild_state()?;
+        let run = state
+            .runs
+            .get(&run_id.0)
+            .ok_or_else(|| anyhow!("fleet run {} does not exist", run_id.0))?;
+        let worker = run
+            .worker_specs
+            .iter()
+            .find(|worker| worker.id == worker_id)
+            .ok_or_else(|| anyhow!("fleet worker {worker_id} does not exist in run {}", run_id.0))?;
+        let password_mode = matches!(
+            &worker.host,
+            FleetHostSpec::Ssh {
+                auth_mode: Some(mode),
+                ..
+            } if mode.eq_ignore_ascii_case("password")
+        );
+        if !password_mode {
+            bail!("fleet worker {worker_id} is not configured for SSH password authentication");
+        }
+        let approval_id = format!("ssh-password:{}:{}", run_id.0, worker_id);
+        if !state.approval_requests.contains_key(&approval_id) {
+            self.ledger.record_approval_requested(
+                &approval_id,
+                run_id,
+                worker_id,
+                "ssh_password_required",
+                &timestamp(),
+            )?;
+        }
+        self.ledger
+            .update_run_status(run_id, FleetRunStatus::Paused, &timestamp())?;
+        Ok(approval_id)
+    }
+
+    pub fn resolve_ssh_password(&self, run_id: &FleetRunId) -> Result<()> {
+        let state = self.ledger.rebuild_state()?;
+        if !state.runs.contains_key(&run_id.0) {
+            bail!("fleet run {} does not exist", run_id.0);
+        }
+        self.ledger
+            .update_run_status(run_id, FleetRunStatus::Running, &timestamp())?;
+        Ok(())
+    }
+
+    pub fn ledger_record_approval_decided(
+        &self,
+        approval_id: &str,
+        run_id: &FleetRunId,
+        worker_id: &str,
+    ) -> Result<()> {
+        let state = self.ledger.rebuild_state()?;
+        if state.approval_decisions.contains_key(approval_id) {
+            return Ok(());
+        }
+        self.ledger.record_approval_decided(
+            approval_id,
+            run_id,
+            worker_id,
+            "provisioned",
+            &timestamp(),
+        )
     }
 
     /// Resume reconciliation at an explicit instant. This is the deterministic
@@ -1510,6 +1589,10 @@ impl FleetManager {
                     started += 1;
                 }
                 Err(err) => {
+                    if err.message.contains("ssh_password_required") {
+                        self.request_ssh_password(run_id, worker_id)?;
+                        continue;
+                    }
                     let recoverable = matches!(err.kind, FleetHostErrorKind::Retryable);
                     let task = FleetExecutorTaskContext {
                         entry: task.entry.clone(),
@@ -1911,6 +1994,13 @@ impl FleetManager {
 
     fn refresh_run_status(&self, run_id: &FleetRunId) -> Result<()> {
         let state = self.ledger.rebuild_state()?;
+        if state
+            .run_status_overrides
+            .get(&run_id.0)
+            .is_some_and(|status| matches!(status, FleetRunStatus::Paused))
+        {
+            return Ok(());
+        }
         let mut has_queued = false;
         let mut has_running = false;
         let mut has_failed = false;
@@ -2145,6 +2235,10 @@ fn worker_host_for_run(
 fn host_label(host: &FleetHostSpec) -> String {
     match host {
         FleetHostSpec::Local => "local".to_string(),
+        FleetHostSpec::Wsl { distro, .. } => distro
+            .as_deref()
+            .map(|distro| format!("wsl:{distro}"))
+            .unwrap_or_else(|| "wsl:default".to_string()),
         FleetHostSpec::Ssh { host, .. } => format!("ssh:{host}"),
         FleetHostSpec::Docker { image, .. } => format!("docker:{image}"),
     }
@@ -2364,7 +2458,7 @@ fn validate_task_cwd_for_host(
     host: &FleetHostSpec,
     task_cwd: &Path,
 ) -> Result<()> {
-    if !matches!(host, FleetHostSpec::Ssh { .. }) {
+    if !matches!(host, FleetHostSpec::Ssh { .. } | FleetHostSpec::Wsl { .. }) {
         return Ok(());
     }
     let workspace_root = crate::tools::spec::resolve_strict_authority_path(
@@ -2499,6 +2593,9 @@ mod tests {
             working_directory: Some(PathBuf::from("/srv/hakus")),
             env_allowlist: Vec::new(),
             hakus_binary: Some("/usr/local/bin/hakus".to_string()),
+            jump_host: None,
+            port_forward: None,
+            auth_mode: None,
         };
 
         let error = validate_task_cwd_for_host(tmp.path(), &ssh, &nested_cwd)
@@ -2547,6 +2644,9 @@ mod tests {
                 working_directory: Some(PathBuf::from("/srv/hakus")),
                 env_allowlist: Vec::new(),
                 hakus_binary: Some("/usr/local/bin/hakus".to_string()),
+                jump_host: None,
+                port_forward: None,
+                auth_mode: None,
             },
             trust_level: None,
             labels: BTreeMap::new(),

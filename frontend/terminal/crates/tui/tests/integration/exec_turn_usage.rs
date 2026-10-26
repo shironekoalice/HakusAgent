@@ -186,10 +186,7 @@ fn run_exec_stream_json(server: &MockServer) -> Vec<Value> {
     let stdout_reader = read_pipe_in_background(child.stdout.take().expect("stdout pipe"));
     let stderr_reader = read_pipe_in_background(child.stderr.take().expect("stderr pipe"));
 
-    let status = match child
-        .wait_timeout(RUN_TIMEOUT)
-        .expect("wait for hakus-tui")
-    {
+    let status = match child.wait_timeout(RUN_TIMEOUT).expect("wait for hakus-tui") {
         Some(status) => status,
         None => {
             let _ = child.kill();

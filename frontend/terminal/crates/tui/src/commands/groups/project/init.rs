@@ -66,10 +66,7 @@ fn ensure_hakus_gitignored(workspace: &Path) {
     };
 
     let gitignore = git_root.join(".gitignore");
-    let entries = [
-        "**/.hakus/*",
-        "!**/.hakus/constitution.json",
-    ];
+    let entries = ["**/.hakus/*", "!**/.hakus/constitution.json"];
 
     // Read existing contents once.
     let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();

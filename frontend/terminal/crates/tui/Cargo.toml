@@ -35,6 +35,7 @@ hakus-lane = { path = "../lane", version = "0.9.10" }
 hakus-paths = { path = "../paths", version = "0.9.10" }
 hakus-protocol = { path = "../protocol", version = "0.9.10" }
 hakus-release = { path = "../release", version = "0.9.10" }
+hakus-state = { path = "../state", version = "0.9.10" }
 hakus-secrets = { path = "../secrets", version = "0.9.10" }
 hakus-telemetry = { path = "../telemetry", version = "0.9.10" }
 hakus-tools = { path = "../tools", version = "0.9.10" }
@@ -136,7 +137,7 @@ objc2 = "0.6.3"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 # `windows` re-exports most of windows-core's types but not all of them
 # (BOOL, HRESULT, … live in windows-core itself); window_control.rs names
 # windows_core::BOOL for the EnumWindows callback, so it must be a direct

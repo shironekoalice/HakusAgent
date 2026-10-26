@@ -22,12 +22,12 @@ pub use adapter::{
 };
 pub use context::ContextBuilder;
 pub use decision::{Action, Applied, Decision};
+pub use model::{
+    AgentRow, AgentStatus, CompanyRow, CostEventRow, GoalKind, GoalRow, HeartbeatRow,
+    HeartbeatRunRow, IssueRow, IssueState, RunStatus,
+};
 pub use scheduler::{HeartbeatRunner, SchedulerConfig};
 pub use store::NewIssue;
-pub use model::{
-    AgentRow, AgentStatus, CompanyRow, CostEventRow, GoalKind, GoalRow, HeartbeatRow, HeartbeatRunRow,
-    IssueRow, IssueState, RunStatus,
-};
 pub use store::{CompanyStore, StoreError};
 
 use std::path::PathBuf;

@@ -173,12 +173,7 @@ fn query_oauth_token(path: &Path) -> Result<Option<String>> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .with_context(|| {
-        format!(
-            "opening {} read-only",
-            hakus_config::quote_os_path(path)
-        )
-    })?;
+    .with_context(|| format!("opening {} read-only", hakus_config::quote_os_path(path)))?;
     let value: Option<String> = connection
         .query_row(
             "SELECT value FROM ItemTable WHERE key = ?1",

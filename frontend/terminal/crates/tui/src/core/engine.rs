@@ -3028,6 +3028,25 @@ impl Engine {
             .await;
     }
 
+    /// Add a composed user turn message to the session and publish its exact
+    /// provider bytes to the host.
+    ///
+    /// Every user turn item a durable host records is composed here, so the
+    /// receipt and the session can never describe different content: the same
+    /// `Vec<ContentBlock>` is moved into the session and sent as
+    /// [`Event::UserMessageComposed`]. See that variant for why the bytes
+    /// cannot be recomposed after the fact.
+    async fn add_composed_user_message(&mut self, message: Message) {
+        self.add_session_message(message.clone()).await;
+        let _ = self
+            .tx_event
+            .send(Event::UserMessageComposed {
+                session_id: self.session.id.clone(),
+                blocks: message.content,
+            })
+            .await;
+    }
+
     fn goal_snapshot_for_event(&self) -> Option<GoalSnapshot> {
         match self.config.goal_state.lock() {
             Ok(state) => {
@@ -3045,6 +3064,37 @@ impl Engine {
         if let Some(snapshot) = self.goal_snapshot_for_event() {
             let _ = self.tx_event.send(Event::GoalUpdated { snapshot }).await;
         }
+    }
+
+    /// Publish the session's todo list after a turn wrote it.
+    ///
+    /// The list is read through [`Engine::todo_source`], the same authority the
+    /// tool reported to the model, so a consumer reacting to this event cannot
+    /// render something the model was not told. An empty list is published
+    /// rather than suppressed: clearing the list is a change a consumer must
+    /// apply, and staying silent would leave a stale panel on screen.
+    async fn emit_todo_updated(&self) {
+        let snapshot = self.todo_source().snapshot().await;
+        let completed = snapshot
+            .items
+            .iter()
+            .filter(|item| item.status.is_settled())
+            .count();
+        let total = snapshot.items.len();
+        let current_task = snapshot
+            .in_progress_id
+            .and_then(|id| snapshot.items.iter().find(|item| item.id == id))
+            .map(|item| item.content.clone());
+        let _ = self
+            .tx_event
+            .send(Event::TodoUpdated {
+                items: snapshot.items,
+                completed,
+                total,
+                current_task,
+                completion_pct: snapshot.completion_pct,
+            })
+            .await;
     }
 
     fn record_goal_usage_for_turn(&self, usage: &Usage, elapsed: std::time::Duration) {
@@ -4646,7 +4696,10 @@ impl Engine {
                 policy_narrowing: self.last_policy_narrowing.as_ref(),
             },
         );
-        self.session.add_message(user_msg);
+        // Publish the composed bytes before the session snapshot: a durable
+        // host records this item, and the receipt must not be able to arrive
+        // after a later turn's composition.
+        self.add_composed_user_message(user_msg).await;
 
         self.emit_session_updated().await;
 

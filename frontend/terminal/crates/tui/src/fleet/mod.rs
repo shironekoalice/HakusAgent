@@ -12,6 +12,7 @@ pub mod profile;
 pub mod roster;
 pub mod scheduler;
 pub mod scout;
+pub mod ssh_secret;
 pub mod store;
 pub mod task_spec;
 pub mod worker_runtime;

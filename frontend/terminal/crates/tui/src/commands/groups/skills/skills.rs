@@ -32,8 +32,7 @@ fn discover_visible_skills(app: &App) -> SkillRegistry {
 
 #[cfg(test)]
 fn discover_visible_skills(app: &App) -> SkillRegistry {
-    let mode =
-        crate::skills::SkillDiscoveryMode::from_hakus_only(app.skills_scan_hakus_only);
+    let mode = crate::skills::SkillDiscoveryMode::from_hakus_only(app.skills_scan_hakus_only);
     TEST_HOME_DIR
         .with(|home| {
             if let Some(home) = home.borrow().as_deref() {

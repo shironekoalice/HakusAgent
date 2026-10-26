@@ -595,9 +595,5 @@ fn export_verb_writes_agent_plugins_bundle() {
     // No MCP servers declared, so no mcp.json is written.
     assert!(!bundle.join("mcp.json").exists());
     // The installed bundle keeps its legacy manifest and stays untouched.
-    assert!(
-        root.path()
-            .join(".hakus/plugins/demo/plugin.toml")
-            .exists()
-    );
+    assert!(root.path().join(".hakus/plugins/demo/plugin.toml").exists());
 }

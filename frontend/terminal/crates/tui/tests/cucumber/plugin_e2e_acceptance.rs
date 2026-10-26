@@ -859,10 +859,7 @@ async fn plugin_toml_binary_lifecycle_skill_and_stdio_mcp_acceptance() {
         "show reviewed Skill inventory",
     );
     assert!(
-        !workspace
-            .home()
-            .join(".hakus/plugins/state.json")
-            .exists(),
+        !workspace.home().join(".hakus/plugins/state.json").exists(),
         "show must remain read-only"
     );
 

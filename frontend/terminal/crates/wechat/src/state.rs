@@ -273,10 +273,8 @@ mod tests {
 
     #[test]
     fn settings_round_trip_persists_auto_reply_and_user_preferences() {
-        let state_dir = std::env::temp_dir().join(format!(
-            "hakus-wechat-settings-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let state_dir =
+            std::env::temp_dir().join(format!("hakus-wechat-settings-{}", uuid::Uuid::new_v4()));
         let state = WechatState::new(state_dir.clone());
         let mut users = HashMap::new();
         users.insert(
@@ -298,7 +296,10 @@ mod tests {
         assert!(loaded.auto_reply);
         let user = loaded.users.get("wechat-user").expect("user settings");
         assert_eq!(user.model.as_deref(), Some("provider/model"));
-        assert_eq!(user.workspace.as_deref(), Some(std::path::Path::new("workspace")));
+        assert_eq!(
+            user.workspace.as_deref(),
+            Some(std::path::Path::new("workspace"))
+        );
 
         std::fs::remove_dir_all(state_dir).expect("remove temporary state");
     }

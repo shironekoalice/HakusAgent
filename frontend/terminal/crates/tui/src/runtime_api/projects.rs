@@ -98,23 +98,38 @@ fn canonical_project_path(state: &RuntimeApiState, raw: &str) -> Result<PathBuf,
     if !path.is_absolute() {
         return Err(ApiError::bad_request("project path must be absolute"));
     }
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| ApiError::bad_request(format!("resolve project path: {error}")))?;
+    let canonical = match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(error) if !state.mobile_enabled && path.is_dir() => {
+            // Windows can reject canonicalize for an existing non-ASCII path
+            // with ERROR_INVALID_NAME even though the directory is readable.
+            // Desktop project selection does not need a containment check, so
+            // retain the validated absolute path instead of rejecting it. The
+            // mobile path stays strict because it enforces the SAF workspace
+            // boundary below.
+            tracing::debug!(path = %path.display(), %error, "canonicalize failed; retaining existing desktop directory path");
+            path
+        }
+        Err(error) => {
+            return Err(ApiError::bad_request(format!("resolve project path: {error}")));
+        }
+    };
     if !canonical.is_dir() {
         return Err(ApiError::bad_request("project path is not a directory"));
     }
-    let workspace_root = state
-        .workspace
-        .canonicalize()
-        .map_err(|error| ApiError::internal(format!("resolve runtime workspace: {error}")))?;
     // Desktop can work on any folder selected through the native picker.
     // Android must stay inside the app-managed workspace because its SAF
     // mirror is the only filesystem boundary available to the runtime.
-    if state.mobile_enabled && !canonical.starts_with(&workspace_root) {
-        return Err(ApiError::forbidden(
-            "project path must stay inside the application workspace",
-        ));
+    if state.mobile_enabled {
+        let workspace_root = state
+            .workspace
+            .canonicalize()
+            .map_err(|error| ApiError::internal(format!("resolve runtime workspace: {error}")))?;
+        if !canonical.starts_with(&workspace_root) {
+            return Err(ApiError::forbidden(
+                "project path must stay inside the application workspace",
+            ));
+        }
     }
     Ok(canonical)
 }

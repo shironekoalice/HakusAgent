@@ -1,11 +1,11 @@
 //! QR login state machine.
 
-use base64::Engine;
+use crate::QR_POLL_INTERVAL_SECS;
 use crate::client::IlLinkClient;
 use crate::models::{QrLoginStatus, QrStatusResponse, WechatError};
-use crate::QR_POLL_INTERVAL_SECS;
-use std::sync::atomic::{AtomicBool, Ordering};
+use base64::Engine;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 use tokio::time::{Duration, sleep};
 
@@ -185,18 +185,12 @@ fn parse_qr_status(resp: QrStatusResponse) -> QrLoginStatus {
             redirect_host: resp.redirect_host.unwrap_or_default(),
         },
         "expired" => QrLoginStatus::Expired,
-        "confirmed" => {
-            QrLoginStatus::Confirmed {
-                account_id: resp
-                    .ilink_bot_id
-                    .unwrap_or_default(),
-                bot_token: resp.bot_token.unwrap_or_default(),
-                base_url: resp
-                    .baseurl
-                    .unwrap_or_else(|| crate::ILINK_BASE.into()),
-                route_tag: resp.route_tag,
-            }
-        }
+        "confirmed" => QrLoginStatus::Confirmed {
+            account_id: resp.ilink_bot_id.unwrap_or_default(),
+            bot_token: resp.bot_token.unwrap_or_default(),
+            base_url: resp.baseurl.unwrap_or_else(|| crate::ILINK_BASE.into()),
+            route_tag: resp.route_tag,
+        },
         other => {
             tracing::warn!("WeChat: unknown QR status: {other}");
             QrLoginStatus::Waiting

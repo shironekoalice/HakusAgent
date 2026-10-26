@@ -1454,7 +1454,6 @@ mod dialect_seam_tests {
         }
     }
 
-
     #[test]
     fn streaming_and_blocking_bodies_are_distinguished_not_conflated() {
         let client = client("deepseek", |providers| {

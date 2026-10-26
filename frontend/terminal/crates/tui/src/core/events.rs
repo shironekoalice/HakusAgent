@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::config::ApiProvider;
 use crate::error_taxonomy::ErrorEnvelope;
-use crate::models::{Message, SystemPrompt, Tool, Usage};
+use crate::models::{ContentBlock, Message, SystemPrompt, Tool, Usage};
 use crate::tools::goal::GoalSnapshot;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::{AgentWorkerStatus, CoordinationDetailProjection, SubAgentResult};
@@ -282,6 +282,31 @@ pub enum Event {
     /// `create_goal` or `update_goal` tool calls.
     GoalUpdated { snapshot: GoalSnapshot },
 
+    /// The session's todo list changed.
+    ///
+    /// Emitted when a turn's tool batch wrote the canonical progress list, so a
+    /// consumer that renders the list (the desktop execution-plan card, the
+    /// sidebar work panel) updates because the list *changed* rather than
+    /// because it happened to poll at the right moment.
+    ///
+    /// The counts are derived from the same snapshot the tool reported to the
+    /// model, so a consumer reacting to this event cannot render something the
+    /// model was not told. The whole list is carried, not a diff: it is small
+    /// and bounded, and a consumer that missed an event still renders correctly
+    /// from the next one.
+    TodoUpdated {
+        /// Items in the list after the change, in list order.
+        items: Vec<crate::tools::todo::TodoItem>,
+        /// Items settled (completed or cancelled).
+        completed: usize,
+        /// Items in the list.
+        total: usize,
+        /// The item currently in progress, if exactly one is.
+        current_task: Option<String>,
+        /// Settled fraction (0..=100) after the change.
+        completion_pct: u8,
+    },
+
     /// The interactive engine is in the configured quiet period before one
     /// already-authorized goal continuation. This is lifecycle state, not a
     /// status string: Esc/Ctrl+C can cancel it without pretending a provider
@@ -518,6 +543,35 @@ pub enum Event {
         system_prompt: Option<SystemPrompt>,
         model: String,
         workspace: PathBuf,
+    },
+
+    /// The exact provider-facing content of one composed user turn item.
+    ///
+    /// `SessionUpdated` carries the authoritative conversation, but it is a
+    /// full-transcript snapshot emitted for the UI. A durable host that stores
+    /// the model input per turn needs the *just-composed* user blocks and needs
+    /// them as a receipt rather than as a second read of session state, so that
+    /// a restart cannot rebuild different bytes.
+    ///
+    /// The blocks are emitted from the same composition seam that installs the
+    /// message into the session — after `working_set.observe_user_message` and
+    /// after `<turn_meta>` is built — so they are exactly what the provider
+    /// receives. They cannot be recomposed later: the block embeds the local
+    /// date, the workspace path, the observed working set, and a git snapshot
+    /// that is emitted only when it changes, and that change test advances
+    /// per-session state. Recording the bytes is therefore the only way the
+    /// durable record can agree with the wire.
+    ///
+    /// One event is emitted per composed user turn item, in composition order:
+    /// the submitted prompt first, then each steer the turn drains. Hosts that
+    /// store user items should attach each payload to the matching item and
+    /// leave the durable bytes alone when the counts disagree.
+    UserMessageComposed {
+        /// The session whose turn composed these blocks.
+        #[allow(dead_code)]
+        session_id: String,
+        /// Composition-ordered provider content blocks for one user item.
+        blocks: Vec<ContentBlock>,
     },
 
     /// Request user decision after sandbox denial

@@ -243,9 +243,30 @@ fn resolve_working_directory(requested: Option<&Path>) -> Result<PathBuf, String
         if !canonical.is_dir() {
             return Err("Project path is not a directory".into());
         }
-        return Ok(canonical);
+        return Ok(strip_verbatim_prefix(canonical));
     }
     Ok(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+/// `Path::canonicalize` returns `\\?\C:\...` on Windows, and shells do not
+/// accept the verbatim prefix as a working directory: cmd.exe classifies it
+/// as a UNC path, prints "UNC paths are not supported", and silently falls
+/// back to `C:\Windows` — the terminal would run outside the session
+/// workspace while claiming otherwise. The plain form is the same directory
+/// in the shape the PTY needs.
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    const VERBATIM: &str = r"\\?\";
+    let text = path.as_os_str().to_string_lossy();
+    match text.strip_prefix(VERBATIM) {
+        Some(stripped) => PathBuf::from(stripped.to_string()),
+        None => path,
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn clamp_dimension(value: u16, min: u16, max: u16) -> u16 {
@@ -278,6 +299,14 @@ mod tests {
     fn invalid_working_directory_is_reported() {
         let cwd = resolve_working_directory(Some(Path::new("Z:/path/that/does/not/exist")));
         assert!(cwd.is_err());
+    }
+
+    #[test]
+    fn resolved_working_directory_drops_the_verbatim_prefix() {
+        let cwd = resolve_working_directory(Some(Path::new("."))).expect("cwd resolves");
+        let text = cwd.as_os_str().to_string_lossy();
+        assert!(!text.starts_with(r"\\?\"), "verbatim prefix survived: {cwd:?}");
+        assert!(cwd.is_dir(), "stripped path still resolves: {cwd:?}");
     }
 
     #[test]

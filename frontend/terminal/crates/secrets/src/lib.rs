@@ -1316,10 +1316,7 @@ mod tests {
 
         let secrets = Secrets::auto_detect_read_only();
 
-        assert_eq!(
-            secrets.get("moonshot").unwrap().as_deref(),
-            None
-        );
+        assert_eq!(secrets.get("moonshot").unwrap().as_deref(), None);
         assert!(
             !primary.exists(),
             "diagnostic lookup must not migrate the legacy store"
@@ -1531,10 +1528,7 @@ mod tests {
                 .join("secrets")
                 .join("secrets.json")
         );
-        assert_eq!(
-            primary_store.get("xiaomi-mimo").unwrap().as_deref(),
-            None
-        );
+        assert_eq!(primary_store.get("xiaomi-mimo").unwrap().as_deref(), None);
         assert!(
             legacy.exists(),
             "the legacy store is untouched and is not used"

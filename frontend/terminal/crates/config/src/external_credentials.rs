@@ -636,26 +636,22 @@ mod tests {
         );
 
         let grant = consent
-            .read_grant(
-                ProviderKind::Xai,
-                ExternalCredentialSource::GrokCli,
-                &path,
-            )
+            .read_grant(ProviderKind::Xai, ExternalCredentialSource::GrokCli, &path)
             .expect("exact consent tuple");
         assert_eq!(grant.path(), path);
 
         assert!(
             consent
-                .read_grant(ProviderKind::Antigravity, ExternalCredentialSource::GrokCli, &path)
+                .read_grant(
+                    ProviderKind::Antigravity,
+                    ExternalCredentialSource::GrokCli,
+                    &path
+                )
                 .is_err()
         );
         assert!(
             consent
-                .read_grant(
-                    ProviderKind::Xai,
-                    ExternalCredentialSource::DshCli,
-                    &path
-                )
+                .read_grant(ProviderKind::Xai, ExternalCredentialSource::DshCli, &path)
                 .is_err()
         );
         assert!(

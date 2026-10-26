@@ -426,6 +426,9 @@ pub struct FleetExecutor {
     workspace: std::path::PathBuf,
     adapter: super::host::LocalProcessFleetHostAdapter,
     ssh_adapters: std::collections::BTreeMap<String, super::host::SshFleetHostAdapter>,
+    wsl_adapters: std::collections::BTreeMap<String, super::host::WslFleetHostAdapter>,
+    docker_adapters: std::collections::BTreeMap<String, super::host::DockerFleetHostAdapter>,
+    ssh_password_vault: Option<std::sync::Arc<crate::fleet::ssh_secret::SshPasswordVault>>,
     streams: std::collections::BTreeMap<String, WorkerStream>,
 }
 
@@ -501,7 +504,9 @@ fn observe_worker_stream_line(
 
 enum WorkerStreamHost {
     Local,
+    Wsl(String),
     Ssh(String),
+    Docker(String),
 }
 
 #[derive(Debug, Clone)]
@@ -531,8 +536,21 @@ impl FleetExecutor {
             adapter: super::host::LocalProcessFleetHostAdapter::new(&workspace),
             workspace,
             ssh_adapters: std::collections::BTreeMap::new(),
+            wsl_adapters: std::collections::BTreeMap::new(),
+            docker_adapters: std::collections::BTreeMap::new(),
+            ssh_password_vault: None,
             streams: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Attach the Runtime-owned in-memory SSH password vault. Executors used
+    /// by CLI/tests may omit it and retain the existing key-only behavior.
+    pub fn with_ssh_password_vault(
+        mut self,
+        vault: std::sync::Arc<crate::fleet::ssh_secret::SshPasswordVault>,
+    ) -> Self {
+        self.ssh_password_vault = Some(vault);
+        self
     }
 
     /// Start a worker process and begin tracking its event stream.
@@ -589,14 +607,31 @@ impl FleetExecutor {
                 let adapter = self.ssh_adapters.entry(key.clone()).or_insert(
                     super::host::SshFleetHostAdapter::new(&self.workspace, config)?,
                 );
+                if let Some(vault) = &self.ssh_password_vault
+                    && let Some(broker) = vault.take(worker_id)
+                {
+                    adapter.provision_broker(broker)?;
+                }
                 let handle = adapter.start_worker(request)?;
                 (handle, WorkerStreamHost::Ssh(key))
             }
-            FleetHostSpec::Docker { image, .. } => {
-                return Err(super::host::FleetHostError {
-                    kind: super::host::FleetHostErrorKind::Configuration,
-                    message: format!("docker fleet workers are not wired yet (image {image})"),
-                });
+            FleetHostSpec::Wsl { .. } => {
+                let config = super::host::WslFleetHostConfig::from_host_spec(host)?;
+                let key = worker_id.to_string();
+                let adapter = self.wsl_adapters.entry(key.clone()).or_insert(
+                    super::host::WslFleetHostAdapter::new(&self.workspace, config)?,
+                );
+                let handle = adapter.start_worker(request)?;
+                (handle, WorkerStreamHost::Wsl(key))
+            }
+            FleetHostSpec::Docker { .. } => {
+                let config = super::host::DockerFleetHostConfig::from_host_spec(host)?;
+                let key = worker_id.to_string();
+                let adapter = self.docker_adapters.entry(key.clone()).or_insert(
+                    super::host::DockerFleetHostAdapter::new(&self.workspace, config)?,
+                );
+                let handle = adapter.start_worker(request)?;
+                (handle, WorkerStreamHost::Docker(key))
             }
         };
         self.streams.insert(
@@ -636,12 +671,26 @@ impl FleetExecutor {
     /// executor is the only owner that can reliably reach the live local/SSH
     /// adapter handle.
     pub fn stop_worker(&mut self, worker_id: &str) -> Result<()> {
-        let ssh_key = match self.streams.get(worker_id).map(|stream| &stream.host) {
+        let host_key = match self.streams.get(worker_id).map(|stream| &stream.host) {
             Some(WorkerStreamHost::Local) => None,
+            Some(WorkerStreamHost::Wsl(key)) => {
+                let adapter = self.wsl_adapters.get_mut(key).ok_or_else(|| {
+                    anyhow::anyhow!("tracked WSL Fleet worker {worker_id} has no host adapter")
+                })?;
+                adapter.stop_worker(worker_id)?;
+                return Ok(());
+            }
             Some(WorkerStreamHost::Ssh(key)) => Some(key.clone()),
+            Some(WorkerStreamHost::Docker(key)) => {
+                let adapter = self.docker_adapters.get_mut(key).ok_or_else(|| {
+                    anyhow::anyhow!("tracked Docker Fleet worker {worker_id} has no host adapter")
+                })?;
+                adapter.stop_worker(worker_id)?;
+                return Ok(());
+            }
             None => return Ok(()),
         };
-        if let Some(key) = ssh_key {
+        if let Some(key) = host_key {
             let adapter = self.ssh_adapters.get_mut(&key).ok_or_else(|| {
                 anyhow::anyhow!("tracked SSH Fleet worker {worker_id} has no host adapter")
             })?;
@@ -662,11 +711,23 @@ impl FleetExecutor {
             WorkerStreamHost::Local => {
                 let _ = self.adapter.cleanup_worker(worker_id);
             }
+            WorkerStreamHost::Wsl(key) => {
+                if let Some(adapter) = self.wsl_adapters.get_mut(&key) {
+                    let _ = adapter.cleanup_worker(worker_id);
+                }
+                self.wsl_adapters.remove(&key);
+            }
             WorkerStreamHost::Ssh(key) => {
                 if let Some(adapter) = self.ssh_adapters.get_mut(&key) {
                     let _ = adapter.cleanup_worker(worker_id);
                 }
                 self.ssh_adapters.remove(&key);
+            }
+            WorkerStreamHost::Docker(key) => {
+                if let Some(adapter) = self.docker_adapters.get_mut(&key) {
+                    let _ = adapter.cleanup_worker(worker_id);
+                }
+                self.docker_adapters.remove(&key);
             }
         }
     }
@@ -719,8 +780,16 @@ impl FleetExecutor {
         }
         let status = match self.streams.get(worker_id).map(|s| &s.host)? {
             WorkerStreamHost::Local => self.adapter.read_status(worker_id).ok()?,
+            WorkerStreamHost::Wsl(key) => self
+                .wsl_adapters
+                .get_mut(key)
+                .and_then(|adapter| adapter.read_status(worker_id).ok())?,
             WorkerStreamHost::Ssh(key) => self
                 .ssh_adapters
+                .get_mut(key)
+                .and_then(|adapter| adapter.read_status(worker_id).ok())?,
+            WorkerStreamHost::Docker(key) => self
+                .docker_adapters
                 .get_mut(key)
                 .and_then(|adapter| adapter.read_status(worker_id).ok())?,
         };

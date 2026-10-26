@@ -167,10 +167,7 @@ fn dispatch_and_read_telemetry_with_endpoint(
         .env("USERPROFILE", &home)
         .env("HAKUS_HOME", &hakus_home)
         .env("HAKUS_SECRET_BACKEND", "file")
-        .env(
-            "HAKUS_RELEASE_BASE_URL",
-            "https://example.invalid/releases",
-        )
+        .env("HAKUS_RELEASE_BASE_URL", "https://example.invalid/releases")
         .arg("--config")
         .arg(&config_path)
         .args(["--telemetry", "true", "features", "list"]);

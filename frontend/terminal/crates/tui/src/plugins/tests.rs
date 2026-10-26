@@ -15,7 +15,6 @@ fn config(root: &Path) -> DiscoveryConfig {
         state_path: root.join("state/plugin-state.json"),
     }
 }
-
 fn write_plugin(config: &DiscoveryConfig, extra: &str) -> PathBuf {
     write_named_plugin(config, "demo", extra)
 }

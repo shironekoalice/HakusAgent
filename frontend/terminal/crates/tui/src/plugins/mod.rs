@@ -5,6 +5,7 @@ pub mod agent_plugin;
 pub mod context;
 pub mod discovery;
 pub mod export;
+pub mod extension_host;
 pub mod install;
 pub mod manifest;
 pub mod marketplace;

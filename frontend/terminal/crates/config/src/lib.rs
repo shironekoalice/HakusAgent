@@ -5,8 +5,8 @@ pub mod catalog;
 mod config_document;
 pub mod external_credentials;
 mod hakus_agent_bridge;
-pub mod modes;
 mod harness;
+pub mod modes;
 pub use hakus_agent_bridge::api_key_for_provider as hakus_agent_yaml_api_key;
 pub mod model_reference;
 pub mod models_dev;
@@ -69,10 +69,6 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result, bail};
 pub use app_mode::AppMode;
 pub use auth_source::{AuthSourceKind, ProviderAuthSourceToml};
-pub use hakus_execpolicy::ToolAskRule;
-use hakus_execpolicy::{ExecPolicyEngine, PermissionAction, Ruleset};
-use hakus_secrets::SecretSource;
-pub use hakus_secrets::Secrets;
 pub use external_credentials::{
     EXTERNAL_CREDENTIAL_CONSENT_VERSION, EXTERNAL_CREDENTIAL_READ_ONLY_SEMANTICS,
     ExternalCredentialAccess, ExternalCredentialConsentStatus, ExternalCredentialConsentToml,
@@ -80,6 +76,10 @@ pub use external_credentials::{
     default_dsh_credentials_path, external_credential_consent_status, quote_os_path,
     resolve_external_credential_path,
 };
+pub use hakus_execpolicy::ToolAskRule;
+use hakus_execpolicy::{ExecPolicyEngine, PermissionAction, Ruleset};
+use hakus_secrets::SecretSource;
+pub use hakus_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -3230,12 +3230,9 @@ impl ConfigToml {
             .flatten();
         // Root `base_url` is the legacy DeepSeek field; Xiaomi MiMo also
         // honours it when the per-provider table has no endpoint of its own.
-        let root_base_url = matches!(
-            provider,
-            ProviderKind::Deepseek | ProviderKind::XiaomiMimo
-        )
-        .then(|| self.base_url.clone())
-        .flatten();
+        let root_base_url = matches!(provider, ProviderKind::Deepseek | ProviderKind::XiaomiMimo)
+            .then(|| self.base_url.clone())
+            .flatten();
         let auth_mode = cli
             .auth_mode
             .clone()
@@ -3650,8 +3647,7 @@ pub fn telemetry_floor_in_force() -> bool {
     {
         return declared;
     }
-    let Ok(raw) =
-        std::env::var("HAKUS_TELEMETRY").or_else(|_| std::env::var("DEEPSEEK_TELEMETRY"))
+    let Ok(raw) = std::env::var("HAKUS_TELEMETRY").or_else(|_| std::env::var("DEEPSEEK_TELEMETRY"))
     else {
         return false;
     };
@@ -5795,10 +5791,7 @@ pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
 pub fn config_path_is_workspace_scoped(path: &Path) -> bool {
     config_path_is_workspace_scoped_with_context(
         path,
-        hakus_paths::hakus_home_override()
-            .ok()
-            .flatten()
-            .as_deref(),
+        hakus_paths::hakus_home_override().ok().flatten().as_deref(),
         hakus_paths::user_home().as_deref(),
         std::env::current_dir().ok().as_deref(),
     )

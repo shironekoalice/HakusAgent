@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::models::{ContentBlock, Message};
 use crate::runtime_threads::{
     CreateThreadRequest, RuntimeTurnStatus, ThreadDetail, ThreadListFilter, TurnItemKind,
-    TurnItemLifecycleStatus,
+    TurnItemLifecycleStatus, recorded_provider_blocks,
 };
 use crate::session_manager::{
     SavedSession, SessionListFilter, SessionManager, SessionMetadata, SessionMutator,
@@ -681,7 +681,13 @@ fn thread_detail_has_live_work(detail: &ThreadDetail) -> bool {
     })
 }
 
-pub(super) fn messages_from_thread_detail(detail: &ThreadDetail) -> Vec<Message> {
+/// Rebuild provider messages from a thread-detail projection.
+///
+/// `pub(crate)` rather than `pub(super)`: the durable transcript rebuild in
+/// `runtime_threads` asserts that this projection agrees with it about the
+/// engine-composed user blocks, because export and save-as-session persist
+/// whatever this returns.
+pub(crate) fn messages_from_thread_detail(detail: &ThreadDetail) -> Vec<Message> {
     let items_by_id: HashMap<&str, _> = detail
         .items
         .iter()
@@ -716,6 +722,19 @@ pub(super) fn messages_from_thread_detail(detail: &ThreadDetail) -> Vec<Message>
             match item.kind {
                 TurnItemKind::UserMessage => {
                     flush_assistant(&mut assistant_blocks, &mut messages);
+
+                    // Same rule as the durable transcript rebuild: replay the
+                    // blocks the engine composed for this item, because
+                    // `<turn_meta>` cannot be recomposed. This projection also
+                    // feeds export and save-as-session, so falling back to the
+                    // text alone here would persist a history the provider
+                    // never received.
+                    if let Some(blocks) = recorded_provider_blocks(item.metadata.as_ref()) {
+                        if !blocks.is_empty() {
+                            user_blocks.extend(blocks);
+                        }
+                        continue;
+                    }
 
                     let text = item.detail.as_deref().map(str::trim).unwrap_or("");
                     if !text.is_empty() {

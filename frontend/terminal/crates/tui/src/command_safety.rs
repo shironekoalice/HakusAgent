@@ -1969,10 +1969,7 @@ mod tests {
         assert_eq!(analyze_command("ls -la").level, SafetyLevel::Safe);
         assert_eq!(analyze_command("cat file.txt").level, SafetyLevel::Safe);
         assert_eq!(analyze_command("git status").level, SafetyLevel::Safe);
-        assert_eq!(
-            analyze_command("hakus --version").level,
-            SafetyLevel::Safe
-        );
+        assert_eq!(analyze_command("hakus --version").level, SafetyLevel::Safe);
         assert_eq!(analyze_command("hakus --help").level, SafetyLevel::Safe);
         assert_eq!(
             analyze_command("grep pattern file").level,

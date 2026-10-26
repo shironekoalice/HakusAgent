@@ -26,8 +26,10 @@ pub(crate) fn try_default_config_path() -> anyhow::Result<PathBuf> {
     #[cfg(test)]
     {
         with_test_state_path(try_default_config_path_from_environment, || {
-            Ok(crate::test_support::unsealed_test_state_root()
-                .join(hakus_config::CONFIG_FILE_NAME))
+            Ok(
+                crate::test_support::unsealed_test_state_root()
+                    .join(hakus_config::CONFIG_FILE_NAME),
+            )
         })
     }
 

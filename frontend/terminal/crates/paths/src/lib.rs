@@ -209,11 +209,9 @@ mod tests {
 
     #[test]
     fn relative_global_overrides_are_rejected_with_the_variable_name() {
-        let error = validate_absolute_path(
-            "HAKUS_CONFIG_PATH",
-            PathBuf::from(".hakus/config.toml"),
-        )
-        .expect_err("relative global config path must fail closed");
+        let error =
+            validate_absolute_path("HAKUS_CONFIG_PATH", PathBuf::from(".hakus/config.toml"))
+                .expect_err("relative global config path must fail closed");
         let message = error.to_string();
         assert!(message.contains("HAKUS_CONFIG_PATH"), "{message}");
         assert!(message.contains(".hakus/config.toml"), "{message}");

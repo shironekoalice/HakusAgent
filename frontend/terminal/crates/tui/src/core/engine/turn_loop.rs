@@ -634,8 +634,10 @@ impl Engine {
                 self.session
                     .working_set
                     .observe_user_message(&steer, &self.session.workspace);
-                self.add_session_message(self.user_text_message_with_turn_metadata(steer.clone()))
-                    .await;
+                self.add_composed_user_message(self.user_text_message_with_turn_metadata(
+                    steer.clone(),
+                ))
+                .await;
                 let _ = self
                     .tx_event
                     .send(Event::status(format!(
@@ -1609,8 +1611,10 @@ impl Engine {
                         self.session
                             .working_set
                             .observe_user_message(&steer, &self.session.workspace);
-                        self.add_session_message(self.user_text_message_with_turn_metadata(steer))
-                            .await;
+                        self.add_composed_user_message(
+                            self.user_text_message_with_turn_metadata(steer),
+                        )
+                        .await;
                     }
                     let _ = self
                         .tx_event
@@ -3392,6 +3396,11 @@ impl Engine {
             // sidebar "Goal:" line stays stale for the whole (possibly long)
             // goal-loop turn while get_goal already reflects the new objective.
             let mut goal_tool_ran = false;
+            // The canonical progress list is written by a tool, but its
+            // consumers (the work panel, a task panel) are engine clients. Give
+            // them an event instead of making each one poll and hope it looks at
+            // the right moment.
+            let mut todo_tool_ran = false;
 
             for outcome in outcomes.into_iter().flatten() {
                 let tool_input = outcome.input.clone();
@@ -3400,6 +3409,20 @@ impl Engine {
                 let result = outcome.terminal.into_legacy_result();
                 if matches!(outcome.name.as_str(), "create_goal" | "update_goal") {
                     goal_tool_ran = true;
+                }
+                // Detect the progress write from the result's own metadata
+                // rather than a name list: the tool is registered under several
+                // hidden compat aliases, and the metadata is what the tool
+                // itself declares about which surface it wrote.
+                if result.as_ref().is_ok_and(|output| {
+                    output
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("canonical_tool"))
+                        .and_then(Value::as_str)
+                        == Some(crate::tools::todo::CANONICAL_PROGRESS_TOOL)
+                }) {
+                    todo_tool_ran = true;
                 }
                 match result {
                     Ok(output) => {
@@ -3551,12 +3574,19 @@ impl Engine {
                 self.emit_goal_updated().await;
             }
 
+            // Same reasoning for the progress list: reflect a list this step
+            // wrote as soon as the step settles, so a long turn's panel tracks
+            // the work instead of waiting for the turn to end.
+            if todo_tool_ran {
+                self.emit_todo_updated().await;
+            }
+
             if !pending_steers.is_empty() {
                 for steer in pending_steers.drain(..) {
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);
-                    self.add_session_message(self.user_text_message_with_turn_metadata(steer))
+                    self.add_composed_user_message(self.user_text_message_with_turn_metadata(steer))
                         .await;
                 }
             }

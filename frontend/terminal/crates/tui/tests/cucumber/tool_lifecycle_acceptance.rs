@@ -292,9 +292,7 @@ fn public_tool_result_should_report_malformed_arguments_for(
 }
 
 #[then("CodeWhale should send the malformed argument error back to the mocked LLM")]
-fn hakus_should_send_malformed_argument_error_back_to_mocked_llm(
-    world: &mut ToolLifecycleWorld,
-) {
+fn hakus_should_send_malformed_argument_error_back_to_mocked_llm(world: &mut ToolLifecycleWorld) {
     let request = world
         .requests
         .iter()
@@ -571,10 +569,7 @@ fn run_hakus_exec(
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local").join("share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env(
-            "HAKUS_CONFIG_PATH",
-            home.join(".hakus").join("config.toml"),
-        )
+        .env("HAKUS_CONFIG_PATH", home.join(".hakus").join("config.toml"))
         .env(
             "DEEPSEEK_CONFIG_PATH",
             home.join(".deepseek").join("config.toml"),

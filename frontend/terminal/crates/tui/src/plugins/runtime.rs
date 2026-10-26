@@ -30,7 +30,8 @@ fn component_paths(plugin: &LoadedPlugin, capability: PluginActivationCapability
         | PluginActivationCapability::Lsp
         | PluginActivationCapability::Native
         | PluginActivationCapability::FilesystemRoots
-        | PluginActivationCapability::LifecycleMutation => &[],
+        | PluginActivationCapability::LifecycleMutation
+        | PluginActivationCapability::Extension => &[],
     }
 }
 

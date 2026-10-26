@@ -322,10 +322,7 @@ impl NetworkAuditor {
     #[must_use]
     pub fn default_path(enabled: bool) -> Option<Self> {
         let home = crate::config::effective_home_dir()?;
-        Some(Self::new(
-            home.join(".hakus").join("audit.log"),
-            enabled,
-        ))
+        Some(Self::new(home.join(".hakus").join("audit.log"), enabled))
     }
 
     /// Append one line. Best-effort: errors are logged via `eprintln!` but

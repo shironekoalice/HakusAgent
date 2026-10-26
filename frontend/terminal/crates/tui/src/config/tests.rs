@@ -81,11 +81,10 @@ fn malformed_config_error_omits_secret_contents_and_keys() {
 #[test]
 fn api_provider_metadata_helpers_follow_config_provider_metadata() {
     let sorted = ApiProvider::sorted_for_display();
-    let expected_sorted: Vec<ApiProvider> =
-        hakus_config::provider::providers_sorted_for_display()
-            .iter()
-            .map(|provider| ApiProvider::from_kind(provider.kind()))
-            .collect();
+    let expected_sorted: Vec<ApiProvider> = hakus_config::provider::providers_sorted_for_display()
+        .iter()
+        .map(|provider| ApiProvider::from_kind(provider.kind()))
+        .collect();
     assert_eq!(sorted, expected_sorted);
 
     for kind in hakus_config::ProviderKind::ALL {
@@ -102,9 +101,7 @@ fn api_provider_metadata_helpers_follow_config_provider_metadata() {
     assert_eq!(ApiProvider::DeepseekCN.metadata().map(|p| p.kind()), None);
     assert_eq!(
         ApiProvider::DeepseekCN.env_vars(),
-        hakus_config::ProviderKind::Deepseek
-            .provider()
-            .env_vars()
+        hakus_config::ProviderKind::Deepseek.provider().env_vars()
     );
     assert_eq!(
         ApiProvider::DeepseekCN.default_base_url(),
@@ -344,7 +341,6 @@ fn missing_provider_api_key_message_uses_provider_metadata() -> Result<()> {
 
     Ok(())
 }
-
 
 // GHSA-72w5-pf8h-xfp4 — regression: `allow_shell` must be opt-in.
 #[test]
@@ -1923,10 +1919,7 @@ impl Drop for EnvGuard {
             Self::restore_var("HAKUS_HOME", self.hakus_home.take());
             Self::restore_var("HAKUS_CONFIG_PATH", self.hakus_config_path.take());
             Self::restore_var("DEEPSEEK_CONFIG_PATH", self.deepseek_config_path.take());
-            Self::restore_var(
-                "HAKUS_SECRET_BACKEND",
-                self.hakus_secret_backend.take(),
-            );
+            Self::restore_var("HAKUS_SECRET_BACKEND", self.hakus_secret_backend.take());
             Self::restore_var(
                 "DEEPSEEK_SECRET_BACKEND",
                 self.deepseek_secret_backend.take(),
@@ -2805,11 +2798,8 @@ fn save_api_key_writes_config_file_under_cfg_test() -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "hakus-tui-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root =
+        env::temp_dir().join(format!("hakus-tui-test-{}-{}", std::process::id(), nanos));
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -3432,10 +3422,7 @@ fn save_key_refuses_plaintext_config_when_isolated_file_store_is_unwritable() ->
     let hakus_home = temp_root.path().join("hakus-home");
     let config_path = hakus_home.join("config.toml");
     fs::create_dir_all(hakus_home.join("secrets"))?;
-    fs::write(
-        hakus_home.join("secrets/secrets.json"),
-        "not valid json",
-    )?;
+    fs::write(hakus_home.join("secrets/secrets.json"), "not valid json")?;
     #[cfg(unix)]
     fs::set_permissions(
         hakus_home.join("secrets/secrets.json"),
@@ -3470,10 +3457,7 @@ fn provider_key_refuses_plaintext_config_when_secret_store_snapshot_fails() -> R
     let hakus_home = temp_root.path().join("hakus-home");
     let config_path = hakus_home.join("config.toml");
     fs::create_dir_all(hakus_home.join("secrets"))?;
-    fs::write(
-        hakus_home.join("secrets/secrets.json"),
-        "not valid json",
-    )?;
+    fs::write(hakus_home.join("secrets/secrets.json"), "not valid json")?;
     let _hakus_home = EnvVarGuard::set("HAKUS_HOME", &hakus_home);
     let _config_path = EnvVarGuard::set("HAKUS_CONFIG_PATH", &config_path);
     let _backend = EnvVarGuard::set("HAKUS_SECRET_BACKEND", "file");
@@ -3762,11 +3746,8 @@ fn clear_api_key_strips_root_and_provider_scoped_keys() -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "hakus-tui-clear-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root =
+        env::temp_dir().join(format!("hakus-tui-clear-{}-{}", std::process::id(), nanos));
     fs::create_dir_all(&temp_root)?;
     let temp_root = temp_root.canonicalize()?;
     let _guard = EnvGuard::new(&temp_root);
@@ -3951,7 +3932,6 @@ base_url = "https://openrouter.ai/api/v1" # pinned
     );
     Ok(())
 }
-
 
 /// Clearing credentials must not disturb comments, `api_key_env`, or
 /// provider tables with quoted names.
@@ -4448,10 +4428,8 @@ default_text_model = "deepseek-chat"
 "#,
     )?;
     {
-        let _generic_base = EnvVarGuard::set(
-            "HAKUS_BASE_URL",
-            "https://generic-gateway.example.test/v1",
-        );
+        let _generic_base =
+            EnvVarGuard::set("HAKUS_BASE_URL", "https://generic-gateway.example.test/v1");
         let config = Config::load(Some(config_path.clone()), None)?;
         assert!(config.provider_uses_custom_endpoint(ApiProvider::Deepseek));
         assert!(config.deepseek_api_key().is_err());
@@ -4740,8 +4718,6 @@ model = "managed-model"
     Ok(())
 }
 
-
-
 #[test]
 fn env_base_url_provenance_tracks_the_route_across_provider_switches() -> Result<()> {
     let _lock = lock_test_env();
@@ -4917,8 +4893,7 @@ fn auth_mode_none_suppresses_config_env_secret_and_oauth_credentials() -> Result
 #[test]
 fn active_provider_detects_env_only_api_key() -> Result<()> {
     let _lock = lock_test_env();
-    let temp_root =
-        env::temp_dir().join(format!("hakus-tui-env-only-key-{}", std::process::id()));
+    let temp_root = env::temp_dir().join(format!("hakus-tui-env-only-key-{}", std::process::id()));
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -5126,10 +5101,7 @@ fn default_user_paths_use_hakus_home_for_fresh_installs() -> Result<()> {
         config.memory_path(),
         temp_root.join(".hakus").join("memory.md")
     );
-    assert_eq!(
-        config.skills_dir(),
-        temp_root.join(".hakus").join("skills")
-    );
+    assert_eq!(config.skills_dir(), temp_root.join(".hakus").join("skills"));
 
     Ok(())
 }
@@ -7040,7 +7012,6 @@ fn openai_provider_uses_openai_compatible_defaults() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn direct_provider_ignores_foreign_deepseek_root_default_model() {
     let _lock = lock_test_env();
@@ -7145,7 +7116,6 @@ fn xiaomi_mimo_provider_drops_stale_deepseek_root_default_model() -> Result<()> 
     assert_eq!(config.default_model(), DEFAULT_XIAOMI_MIMO_MODEL);
     Ok(())
 }
-
 
 #[test]
 fn xiaomi_provider_alias_table_maps_to_mimo_config() -> Result<()> {
@@ -9090,8 +9060,6 @@ fn moonshot_credential_help_keeps_direct_and_kimi_code_routes_distinct() {
     );
 }
 
-
-
 #[test]
 fn moonshot_kimi_code_api_key_uses_coding_model() -> Result<()> {
     let _lock = lock_test_env();
@@ -10082,7 +10050,6 @@ fn provider_capability_openrouter_v4_pro_has_thinking_no_cache() {
         RequestPayloadMode::ChatCompletions
     );
 }
-
 
 #[test]
 fn invalid_provider_auth_source_is_not_explicit_configuration() {
@@ -11611,7 +11578,6 @@ fn session_provider_identity_fails_closed_for_removed_or_invalid_custom_table() 
     assert!(url_error.contains("base_url"));
     assert!(url_error.contains("will not fall back"));
 }
-
 
 /// Every provider must accept the model ids it advertises for itself.
 ///

@@ -1433,7 +1433,6 @@ mod tests {
         assert!(app.last_effective_reasoning_effort.is_none());
     }
 
-
     #[test]
     fn test_model_change_accepts_future_deepseek_model() {
         let _settings = SettingsPathGuard::new();
@@ -1617,9 +1616,8 @@ mod tests {
 
     #[test]
     fn provider_link_metadata_marks_custom_routes_as_configuration_owned() {
-        let links =
-            hakus_config::provider::provider_for_kind(hakus_config::ProviderKind::Custom)
-                .credential_help();
+        let links = hakus_config::provider::provider_for_kind(hakus_config::ProviderKind::Custom)
+            .credential_help();
 
         assert_eq!(
             links.acquisition,

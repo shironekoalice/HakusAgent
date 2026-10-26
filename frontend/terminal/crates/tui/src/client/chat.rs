@@ -3233,8 +3233,7 @@ fn is_reasoning_model_for_stream_on_route(
 /// endpoints (SenseNova serving GLM, LM Studio, vLLM frontends, …) commonly
 /// emit `reasoning_content` while rejecting nothing when it is absent.
 fn provider_streams_reasoning_content(provider: ApiProvider) -> bool {
-    provider_accepts_reasoning_content(provider)
-        || matches!(provider, ApiProvider::Custom)
+    provider_accepts_reasoning_content(provider) || matches!(provider, ApiProvider::Custom)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3944,75 +3943,76 @@ fn parse_sse_chunk_with_reasoning_style(
                     let tool_block_index = match continuation_block {
                         Some(last_block) => last_block,
                         None => match tool_indices.entry(tc_index) {
-                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                        std::collections::hash_map::Entry::Vacant(entry) => {
-                            // Close text block if transitioning to tool use
-                            if *text_started {
-                                events.push(StreamEvent::ContentBlockStop {
-                                    index: *content_index,
-                                });
-                                *content_index += 1;
-                                *text_started = false;
-                            }
-                            if *thinking_started {
-                                events.push(StreamEvent::ContentBlockStop {
-                                    index: *content_index,
-                                });
-                                *content_index += 1;
-                                *thinking_started = false;
-                            }
+                            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                // Close text block if transitioning to tool use
+                                if *text_started {
+                                    events.push(StreamEvent::ContentBlockStop {
+                                        index: *content_index,
+                                    });
+                                    *content_index += 1;
+                                    *text_started = false;
+                                }
+                                if *thinking_started {
+                                    events.push(StreamEvent::ContentBlockStop {
+                                        index: *content_index,
+                                    });
+                                    *content_index += 1;
+                                    *thinking_started = false;
+                                }
 
-                            let block_index = *content_index;
-                            let id = tc
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                // Some upstream gateways (and the responses-API
-                                // bridge) elide the `id` on the first chunk of a
-                                // tool call. Falling back to a constant string
-                                // collides when the model emits parallel tool
-                                // calls in the same delta — every call ended up
-                                // with the same id and downstream tool-result
-                                // routing matched the first one twice. Index by
-                                // the content-block position to keep the
-                                // fallback unique within the response.
-                                .unwrap_or_else(|| format!("call_{block_index}"));
-                            let name = tc
-                                .get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(Value::as_str);
-                            let name = tool_name_or_fallback(name, &id, "Streaming response chunk");
-                            let caller = tc.get("caller").and_then(|v| {
-                                v.get("type").and_then(Value::as_str).map(|caller_type| {
-                                    ToolCaller {
-                                        caller_type: caller_type.to_string(),
-                                        tool_id: v
-                                            .get("tool_id")
-                                            .and_then(Value::as_str)
-                                            .map(std::string::ToString::to_string),
-                                    }
-                                })
-                            });
+                                let block_index = *content_index;
+                                let id = tc
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                                    // Some upstream gateways (and the responses-API
+                                    // bridge) elide the `id` on the first chunk of a
+                                    // tool call. Falling back to a constant string
+                                    // collides when the model emits parallel tool
+                                    // calls in the same delta — every call ended up
+                                    // with the same id and downstream tool-result
+                                    // routing matched the first one twice. Index by
+                                    // the content-block position to keep the
+                                    // fallback unique within the response.
+                                    .unwrap_or_else(|| format!("call_{block_index}"));
+                                let name = tc
+                                    .get("function")
+                                    .and_then(|f| f.get("name"))
+                                    .and_then(Value::as_str);
+                                let name =
+                                    tool_name_or_fallback(name, &id, "Streaming response chunk");
+                                let caller = tc.get("caller").and_then(|v| {
+                                    v.get("type").and_then(Value::as_str).map(|caller_type| {
+                                        ToolCaller {
+                                            caller_type: caller_type.to_string(),
+                                            tool_id: v
+                                                .get("tool_id")
+                                                .and_then(Value::as_str)
+                                                .map(std::string::ToString::to_string),
+                                        }
+                                    })
+                                });
 
-                            let thought_signature = tc
-                                .pointer("/extra_content/google/thought_signature")
-                                .and_then(Value::as_str)
-                                .map(str::to_string);
-                            events.push(StreamEvent::ContentBlockStart {
-                                index: block_index,
-                                content_block: ContentBlockStart::ToolUse {
-                                    id,
-                                    name: from_api_tool_name(&name),
-                                    input: json!({}),
-                                    caller,
-                                    thought_signature,
-                                },
-                            });
-                            *content_index = (*content_index).saturating_add(1);
-                            entry.insert(block_index);
-                            block_index
-                        }
-                        }
+                                let thought_signature = tc
+                                    .pointer("/extra_content/google/thought_signature")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string);
+                                events.push(StreamEvent::ContentBlockStart {
+                                    index: block_index,
+                                    content_block: ContentBlockStart::ToolUse {
+                                        id,
+                                        name: from_api_tool_name(&name),
+                                        input: json!({}),
+                                        caller,
+                                        thought_signature,
+                                    },
+                                });
+                                *content_index = (*content_index).saturating_add(1);
+                                entry.insert(block_index);
+                                block_index
+                            }
+                        },
                     };
 
                     // Stream tool call arguments.

@@ -297,6 +297,202 @@ pub(super) async fn discard_path(
     })))
 }
 
+/// Apply (or reverse) one unified-diff hunk against the workspace.
+///
+/// This exists so the desktop Review panel's per-hunk Stage/Revert buttons can
+/// go through the Runtime instead of the Tauri process spawning `git apply`
+/// itself (`desktop-tauri/src-tauri/src/git_cmds.rs:104`). That desktop command
+/// takes a caller-supplied `workdir` and arbitrary patch text; this route is
+/// bound to `state.workspace` and validates `path` as workspace-relative, so the
+/// only thing a caller controls is *which hunk of which tracked file* moves.
+///
+/// The hunk body itself cannot be validated as a path can — it is patch syntax.
+/// What is checked instead: the target path may not escape the workspace, and
+/// `git apply` runs with `--unsafe-paths` withheld so a patch naming a path
+/// outside the repo is rejected by git rather than by this code.
+#[derive(Debug, Deserialize)]
+pub(super) struct GitApplyHunkRequest {
+    /// Workspace-relative path the hunk belongs to.
+    pub(super) path: String,
+    /// A standalone unified diff for exactly one hunk (`buildHunkPatch` output).
+    pub(super) patch: String,
+    /// Reverse the hunk (revert) instead of applying it.
+    #[serde(default)]
+    pub(super) reverse: bool,
+    /// Apply against the index (`--cached`) rather than the worktree.
+    #[serde(default)]
+    pub(super) cached: bool,
+}
+
+/// Upper bound on one hunk patch. A single hunk is at most a few hundred lines;
+/// 1 MiB is far above any real hunk and keeps a malformed or hostile body from
+/// being piped into git unbounded.
+const MAX_HUNK_PATCH_BYTES: usize = 1024 * 1024;
+
+/// Apply or reverse one hunk against the workspace.
+///
+/// `git apply` reads the diff from stdin, so this uses `std::process::Command`
+/// directly rather than `Git::output` (which is argv-only). The argv is a fixed
+/// literal list, so nothing in the request can influence the command line — the
+/// patch reaches git as data on stdin, never as arguments.
+pub(super) async fn apply_hunk(
+    State(state): State<RuntimeApiState>,
+    Json(request): Json<GitApplyHunkRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !collect_workspace_status(&state.workspace).git_repo {
+        return Err(ApiError::bad_request("Workspace is not a git repository"));
+    }
+    let path = validate_workspace_relative_path(&request.path)?;
+    if request.patch.len() > MAX_HUNK_PATCH_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "Hunk patch is {} bytes, over the {MAX_HUNK_PATCH_BYTES} byte limit",
+            request.patch.len()
+        )));
+    }
+    if request.patch.trim().is_empty() {
+        return Err(ApiError::bad_request("Hunk patch is empty"));
+    }
+
+    // `--cached` targets the index, so it is what makes "Stage hunk" stage and
+    // "Revert hunk" (reverse, on the worktree) discard. `--recount` lets git
+    // recompute hunk line counts, which the desktop's rebuild can make stale
+    // when it flips `+`/`-` for a reverse apply.
+    let mut args = vec!["apply", "--recount"];
+    if request.reverse {
+        args.push("--reverse");
+    }
+    if request.cached {
+        args.push("--cached");
+    }
+    args.push("-");
+
+    let output = apply_hunk_stdin(&args, &state.workspace, &request.patch)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(ApiError::bad_request(if stderr.is_empty() {
+            "git apply rejected the hunk".to_string()
+        } else {
+            stderr
+        }));
+    }
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "path": path,
+        "reverse": request.reverse,
+        "cached": request.cached,
+    })))
+}
+
+fn apply_hunk_stdin(
+    args: &[&str],
+    workspace: &FsPath,
+    patch: &str,
+) -> Result<std::process::Output, ApiError> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let program = Git::resolve().unwrap_or_else(|| "git".to_string());
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(workspace)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| ApiError::internal(format!("Failed to run git apply: {e}")))?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| ApiError::internal("git apply stdin unavailable"))?;
+        stdin
+            .write_all(patch.as_bytes())
+            .map_err(|e| ApiError::internal(format!("Failed to send the hunk to git: {e}")))?;
+    }
+    // Dropping stdin above closes the pipe, so git sees EOF and applies.
+    child
+        .wait_with_output()
+        .map_err(|e| ApiError::internal(format!("git apply did not finish: {e}")))
+}
+
+/// Create a git worktree inside the workspace.
+///
+/// This exists so the desktop's worktree creation goes through the Runtime
+/// instead of the Tauri process spawning `git worktree add` itself with a
+/// caller-supplied `workdir`. The route is bound to `state.workspace`, `path`
+/// must be workspace-relative, and both branch names go through
+/// `validate_git_reference`, so the caller controls only *where inside the
+/// workspace* the worktree lands and *which ref* it tracks — never the
+/// repository or the argv shape.
+#[derive(Debug, Deserialize)]
+pub(super) struct GitWorktreeRequest {
+    /// Workspace-relative directory the worktree is created in. It must not
+    /// exist yet; git rejects an existing non-empty destination itself.
+    pub(super) path: String,
+    /// Create and check out a new branch (`git worktree add -b`).
+    #[serde(default)]
+    pub(super) new_branch: Option<String>,
+    /// Check out an existing branch instead of the default one.
+    #[serde(default)]
+    pub(super) branch: Option<String>,
+}
+
+pub(super) async fn add_worktree(
+    State(state): State<RuntimeApiState>,
+    Json(request): Json<GitWorktreeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !collect_workspace_status(&state.workspace).git_repo {
+        return Err(ApiError::bad_request("Workspace is not a git repository"));
+    }
+    let path = validate_workspace_relative_path(&request.path)?;
+    let new_branch = request
+        .new_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(validate_git_reference)
+        .transpose()?;
+    let branch = request
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(validate_git_reference)
+        .transpose()?;
+
+    let mut args: Vec<&str> = vec!["worktree", "add"];
+    if let Some(name) = new_branch.as_deref() {
+        args.push("-b");
+        args.push(name);
+    }
+    args.push(path.as_str());
+    if let Some(name) = branch.as_deref() {
+        args.push(name);
+    }
+    let output = Git::output(&args, &state.workspace)
+        .map_err(|e| ApiError::internal(format!("Failed to run git worktree add: {e}")))?;
+    if !output.status.success() {
+        return Err(ApiError::bad_request(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "path": path,
+        "new_branch": new_branch,
+        "branch": branch,
+    })))
+}
+
 fn run_git(workspace: &FsPath, args: &[&str]) -> Option<String> {
     let output = Git::output(args, workspace).ok()?;
     if !output.status.success() {

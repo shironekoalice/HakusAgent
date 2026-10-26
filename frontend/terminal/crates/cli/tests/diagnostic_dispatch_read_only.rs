@@ -116,9 +116,7 @@ fn dispatcher_diagnostics_are_in_process_and_read_only() {
                 "{stdout}"
             );
             assert!(
-                stdout.contains(
-                    "legacy secret store: suppressed by explicit HAKUS_HOME isolation"
-                ),
+                stdout.contains("legacy secret store: suppressed by explicit HAKUS_HOME isolation"),
                 "{stdout}"
             );
             assert!(!stdout.contains("synthetic-legacy-fixture"), "{stdout}");

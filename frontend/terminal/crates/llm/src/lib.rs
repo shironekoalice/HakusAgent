@@ -70,12 +70,19 @@ impl LlmRoute {
         let base_url = std::env::var("HAKUS_LLM_BASE_URL")
             .unwrap_or_else(|_| "https://api.deepseek.com/v1".to_string());
         let api_key = std::env::var("HAKUS_LLM_API_KEY").unwrap_or_default();
-        let model = std::env::var("HAKUS_LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
+        let model =
+            std::env::var("HAKUS_LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
         let wire = WireFormat::parse(&std::env::var("HAKUS_LLM_WIRE").unwrap_or_default());
         if api_key.trim().is_empty() {
             bail!("HAKUS_LLM_API_KEY is not set");
         }
-        Ok(Self { base_url: base_url.trim_end_matches('/').to_string(), api_key, model, wire, timeout_secs: 600 })
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
+            model,
+            wire,
+            timeout_secs: 600,
+        })
     }
 
     pub fn new(base_url: &str, api_key: &str, model: &str, wire: WireFormat) -> Self {
@@ -105,10 +112,16 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into() }
+        Self {
+            role: Role::User,
+            content: content.into(),
+        }
     }
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: content.into() }
+        Self {
+            role: Role::System,
+            content: content.into(),
+        }
     }
 }
 
@@ -136,7 +149,10 @@ pub struct LlmClient {
 impl LlmClient {
     pub fn new(route: LlmRoute) -> Self {
         ensure_tls_provider();
-        Self { route, client: reqwest::Client::new() }
+        Self {
+            route,
+            client: reqwest::Client::new(),
+        }
     }
 
     pub fn route(&self) -> &LlmRoute {
@@ -172,18 +188,27 @@ impl LlmClient {
         });
 
         let res = self
-            .post(&format!("{}/chat/completions", self.route.base_url), &body, &[(
-                "authorization",
-                format!("Bearer {}", self.route.api_key),
-            )])
+            .post(
+                &format!("{}/chat/completions", self.route.base_url),
+                &body,
+                &[("authorization", format!("Bearer {}", self.route.api_key))],
+            )
             .await?;
 
-        let mut reply = ChatReply { model: self.route.model.clone(), ..Default::default() };
+        let mut reply = ChatReply {
+            model: self.route.model.clone(),
+            ..Default::default()
+        };
         Self::consume_sse(res, |payload| {
             if let Some(usage) = payload.get("usage") {
-                reply.usage.input_tokens += usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                reply.usage.output_tokens +=
-                    usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                reply.usage.input_tokens += usage
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                reply.usage.output_tokens += usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
             }
             if let Some(delta) = payload
                 .get("choices")
@@ -205,7 +230,12 @@ impl LlmClient {
         Ok(reply)
     }
 
-    async fn chat_anthropic<F>(&self, system: &str, user: &str, on_delta: &mut F) -> Result<ChatReply>
+    async fn chat_anthropic<F>(
+        &self,
+        system: &str,
+        user: &str,
+        on_delta: &mut F,
+    ) -> Result<ChatReply>
     where
         F: FnMut(&str),
     {
@@ -228,9 +258,15 @@ impl LlmClient {
             )
             .await?;
 
-        let mut reply = ChatReply { model: self.route.model.clone(), ..Default::default() };
+        let mut reply = ChatReply {
+            model: self.route.model.clone(),
+            ..Default::default()
+        };
         Self::consume_sse(res, |payload| {
-            let etype = payload.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+            let etype = payload
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             match etype {
                 "message_start" => {
                     if let Some(u) = payload.pointer("/message/usage") {
@@ -260,7 +296,12 @@ impl LlmClient {
         Ok(reply)
     }
 
-    async fn post(&self, url: &str, body: &Value, headers: &[(&str, String)]) -> Result<reqwest::Response> {
+    async fn post(
+        &self,
+        url: &str,
+        body: &Value,
+        headers: &[(&str, String)],
+    ) -> Result<reqwest::Response> {
         let mut req = self
             .client
             .post(url)
@@ -296,7 +337,9 @@ impl LlmClient {
                 let frame = buf[..pos].to_string();
                 buf = buf[pos + 2..].to_string();
                 for line in frame.lines() {
-                    let Some(payload) = line.strip_prefix("data:") else { continue };
+                    let Some(payload) = line.strip_prefix("data:") else {
+                        continue;
+                    };
                     let payload = payload.trim();
                     if payload == "[DONE]" {
                         return Ok(());

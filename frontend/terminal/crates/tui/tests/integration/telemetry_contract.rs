@@ -149,10 +149,7 @@ impl Fixture {
             // A pinned mirror version keeps the release crate from issuing a
             // metadata request, so the only egress a test can observe is the
             // one this file is about.
-            .env(
-                "HAKUS_RELEASE_BASE_URL",
-                "https://example.invalid/releases",
-            )
+            .env("HAKUS_RELEASE_BASE_URL", "https://example.invalid/releases")
             .env("DEEPSEEK_TUI_VERSION", env!("CARGO_PKG_VERSION"))
             .env("RUST_LOG", "warn")
             .stdin(Stdio::null());
@@ -1058,10 +1055,7 @@ fn plant_sentinels(fixture: &Fixture, base_url: &str) {
 fn exec_command(fixture: &Fixture, prompt: &str) -> Command {
     let mut command = fixture.command();
     command
-        .env(
-            "HAKUS_MCP_CONFIG",
-            fixture.hakus_home.join("mcp.json"),
-        )
+        .env("HAKUS_MCP_CONFIG", fixture.hakus_home.join("mcp.json"))
         .env(SENTINEL_API_KEY_ENV, SENTINEL_API_KEY)
         .args([
             "--config",

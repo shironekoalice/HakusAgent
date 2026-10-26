@@ -48,6 +48,14 @@ pub enum Feature {
     VisionModel,
     /// Enable the agent-callable `verify` adversarial self-critique tool (#4196).
     Verify,
+    /// Enable SSH jump-host and port-forwarding options.
+    ///
+    /// `docs/REFACTOR_SPEC.md` §9.3 requires these fields be reserved in the
+    /// Fleet host spec even when disabled, so the fields always exist and
+    /// round-trip; this gate is what decides whether `build_ssh_command` will
+    /// honour them. Off by default: an untested tunnel option that silently
+    /// expands where a worker can reach is worse than one that fails loudly.
+    SshAdvanced,
 }
 
 impl fmt::Display for Stage {
@@ -262,6 +270,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "verify_tool",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::SshAdvanced,
+        key: "ssh_advanced",
+        stage: Stage::Experimental,
+        default_enabled: false,
     },
 ];
 

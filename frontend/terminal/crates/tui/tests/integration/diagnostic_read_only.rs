@@ -343,10 +343,7 @@ fn doctor_json_does_not_inherit_an_ambient_legacy_secret_from_an_explicit_home()
         .env("USERPROFILE", &home)
         .env("HAKUS_HOME", &hakus_home)
         .env("HAKUS_SECRET_BACKEND", "file")
-        .env(
-            "HAKUS_RELEASE_BASE_URL",
-            "https://example.invalid/releases",
-        )
+        .env("HAKUS_RELEASE_BASE_URL", "https://example.invalid/releases")
         .env("DEEPSEEK_TUI_VERSION", env!("CARGO_PKG_VERSION"));
     preserve_host_rustup_home(&mut command);
     preserve_host_platform_runtime(&mut command);
@@ -616,10 +613,7 @@ fn run_sealed_diagnostic<const N: usize>(args: [&str; N]) -> Output {
         .env("HAKUS_SECRET_BACKEND", "file")
         // Keep the text doctor command offline: the release crate treats this
         // as a pinned mirror version and does not issue a metadata request.
-        .env(
-            "HAKUS_RELEASE_BASE_URL",
-            "https://example.invalid/releases",
-        )
+        .env("HAKUS_RELEASE_BASE_URL", "https://example.invalid/releases")
         .env("DEEPSEEK_TUI_VERSION", env!("CARGO_PKG_VERSION"));
     preserve_host_rustup_home(&mut command);
     preserve_host_platform_runtime(&mut command);
@@ -653,10 +647,7 @@ fn diagnostic_command(workspace: &std::path::Path, home: &std::path::Path) -> Co
         .env("HOME", home)
         .env("USERPROFILE", home)
         .env("HAKUS_SECRET_BACKEND", "file")
-        .env(
-            "HAKUS_RELEASE_BASE_URL",
-            "https://example.invalid/releases",
-        )
+        .env("HAKUS_RELEASE_BASE_URL", "https://example.invalid/releases")
         .env("DEEPSEEK_TUI_VERSION", env!("CARGO_PKG_VERSION"));
     preserve_host_rustup_home(&mut command);
     preserve_host_platform_runtime(&mut command);

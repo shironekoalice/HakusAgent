@@ -21,7 +21,11 @@ impl AgentStatus {
     }
 
     pub fn parse(s: &str) -> Self {
-        if s == "paused" { AgentStatus::Paused } else { AgentStatus::Active }
+        if s == "paused" {
+            AgentStatus::Paused
+        } else {
+            AgentStatus::Active
+        }
     }
 }
 

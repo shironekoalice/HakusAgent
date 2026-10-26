@@ -595,6 +595,26 @@ pub(crate) fn persist_custom_provider(
     Ok(path)
 }
 
+/// Repair custom provider tables created before the route kind became
+/// mandatory. This is intentionally limited to the fixed OpenAI-compatible
+/// custom route; it does not alter endpoint, model, credential, or metadata.
+pub(crate) fn ensure_custom_provider_kind(
+    config_path: Option<&Path>,
+    provider_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let provider_id = normalize_custom_provider_id(provider_id)?;
+    let path = config_toml_path(config_path)?;
+    mutate_config_document(&path, |doc| {
+        set_document_value(
+            doc,
+            &["providers", provider_id.as_str(), "kind"],
+            "openai-compatible",
+        )?;
+        Ok(())
+    })?;
+    Ok(path)
+}
+
 /// Persist optional presentation metadata for a named custom provider.
 /// Metadata is deliberately kept beside the route so it survives runtime
 /// restarts and remains available to every client (TUI, desktop, and mobile).

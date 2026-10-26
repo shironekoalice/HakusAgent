@@ -39,7 +39,8 @@ use super::CommandResult;
 
 /// Path to the global user commands directory: `~/.hakus/commands/`.
 fn global_commands_dir() -> PathBuf {
-    hakus_config::hakus_home().unwrap_or_else(|_| PathBuf::from(".hakus"))
+    hakus_config::hakus_home()
+        .unwrap_or_else(|_| PathBuf::from(".hakus"))
         .join("commands")
 }
 
@@ -362,9 +363,7 @@ mod tests {
             .filter_map(|component| component.as_os_str().to_str())
             .collect();
         assert!(
-            parts
-                .windows(2)
-                .any(|pair| pair == [".hakus", "commands"]),
+            parts.windows(2).any(|pair| pair == [".hakus", "commands"]),
             "expected .hakus/commands components in path, got: {}",
             dir.display()
         );

@@ -18,6 +18,7 @@ use super::path_identity::windows_file_identity;
 use crate::mcp::{McpServerConfig, is_relative_stdio_path_arg};
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const EXTENSION_PROTOCOL_V1: &str = "hakus.extension.v1";
 pub(crate) const MAX_PLUGIN_NAME_CHARS: usize = 64;
 const MAX_COMPONENT_PATHS: usize = 64;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -56,6 +57,29 @@ pub struct PluginManifest {
     pub capabilities: PluginCapabilities,
     #[serde(default)]
     pub when: Option<PluginWhen>,
+    /// Optional runtime extension descriptor. Declarative plugins remain
+    /// valid without it; feature-plane extensions must declare the versioned
+    /// host contract before they can be enabled.
+    #[serde(default)]
+    pub extension: Option<PluginExtensionManifest>,
+}
+
+/// Versioned descriptor for a feature-plane extension such as voice, an
+/// avatar renderer, or a provider adapter. The entrypoint is metadata only at
+/// this layer; execution remains behind the reviewed extension host.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginExtensionManifest {
+    pub id: String,
+    pub version: String,
+    pub protocol: String,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    pub supported_platforms: Vec<String>,
+    pub checksum: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -196,6 +220,9 @@ pub struct PluginInventory {
     pub filesystem_roots: Vec<String>,
     pub network_hosts: Vec<String>,
     pub lifecycle_mutation: bool,
+    /// The redacted, protocol-bound feature descriptor, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<PluginExtensionManifest>,
 }
 
 /// Host compatibility of a reviewed bundle. This is independent of trust,
@@ -256,6 +283,9 @@ impl PluginInventory {
         }
         if self.lifecycle_mutation {
             capabilities.push(PluginActivationCapability::LifecycleMutation);
+        }
+        if self.extension.is_some() {
+            capabilities.push(PluginActivationCapability::Extension);
         }
         capabilities
     }
@@ -585,6 +615,9 @@ impl PluginManifest {
         validate_optional_text("repository", self.plugin.repository.as_deref(), 2_048)?;
         validate_optional_text("license", self.plugin.license.as_deref(), 128)?;
         validate_unique_texts("keyword", &self.plugin.keywords, 128)?;
+        if let Some(extension) = &self.extension {
+            validate_extension_manifest(&self.plugin, extension)?;
+        }
         validate_unique_texts("filesystem root", &self.capabilities.filesystem_roots, 512)?;
         validate_unique_texts("network host", &self.capabilities.network_hosts, 253)?;
         let declared_network_hosts = self
@@ -924,6 +957,7 @@ impl PluginManifest {
             filesystem_roots,
             network_hosts,
             lifecycle_mutation: self.capabilities.lifecycle_mutation,
+            extension: self.extension.clone(),
         })
     }
 
@@ -1050,6 +1084,111 @@ fn validate_optional_text(
 ) -> Result<(), String> {
     if let Some(value) = value {
         validate_text(field, value, max_chars)?;
+    }
+    Ok(())
+}
+
+fn validate_extension_manifest(
+    plugin: &PluginMeta,
+    extension: &PluginExtensionManifest,
+) -> Result<(), String> {
+    if extension.id != plugin.name {
+        return Err(format!(
+            "extension id `{}` must match plugin name `{}`",
+            extension.id, plugin.name
+        ));
+    }
+    if extension.protocol != EXTENSION_PROTOCOL_V1 {
+        return Err(format!(
+            "extension `{}` uses unsupported protocol `{}`; expected `{EXTENSION_PROTOCOL_V1}`",
+            extension.id, extension.protocol
+        ));
+    }
+    let extension_version = Version::parse(extension.version.trim()).map_err(|error| {
+        format!(
+            "extension `{}` version `{}` is not valid semantic versioning: {error}",
+            extension.id, extension.version
+        )
+    })?;
+    let plugin_version = Version::parse(plugin.version.trim()).map_err(|error| {
+        format!(
+            "plugin `{}` version `{}` is not valid semantic versioning: {error}",
+            plugin.name, plugin.version
+        )
+    })?;
+    if extension_version != plugin_version {
+        return Err(format!(
+            "extension `{}` version `{}` must match plugin version `{}`",
+            extension.id, extension.version, plugin.version
+        ));
+    }
+    validate_text("extension entrypoint", &extension.entrypoint, 512)?;
+    if extension
+        .entrypoint
+        .chars()
+        .any(|character| character == '\0' || character == '\r' || character == '\n')
+    {
+        return Err("extension entrypoint may not contain control characters".to_string());
+    }
+    let entrypoint_argv = shell_words::split(&extension.entrypoint).map_err(|error| {
+        format!(
+            "extension `{}` entrypoint is not valid argument syntax: {error}",
+            extension.id
+        )
+    })?;
+    let Some(executable) = entrypoint_argv.first() else {
+        return Err(format!(
+            "extension `{}` entrypoint must contain an executable",
+            extension.id
+        ));
+    };
+    if Path::new(executable).is_absolute()
+        || looks_windows_absolute(executable)
+        || Path::new(executable)
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!(
+            "extension `{}` entrypoint executable must be a reviewed bare or contained path",
+            extension.id
+        ));
+    }
+    validate_mcp_argv_has_no_literal_credentials(&extension.id, &entrypoint_argv)?;
+    validate_unique_texts("extension capability", &extension.capabilities, 128)?;
+    validate_unique_texts("extension permission", &extension.permissions, 256)?;
+    validate_unique_texts(
+        "extension supported platform",
+        &extension.supported_platforms,
+        32,
+    )?;
+    const SUPPORTED_PLATFORMS: &[&str] = &[
+        "windows", "linux", "macos", "freebsd", "openbsd", "netbsd", "android", "ios",
+    ];
+    for platform in &extension.supported_platforms {
+        if !SUPPORTED_PLATFORMS.contains(&platform.to_ascii_lowercase().as_str()) {
+            return Err(format!(
+                "extension `{}` declares unsupported platform `{platform}`",
+                extension.id
+            ));
+        }
+    }
+    if extension.supported_platforms.is_empty() {
+        return Err(format!(
+            "extension `{}` must declare at least one supported platform",
+            extension.id
+        ));
+    }
+    let Some(digest) = extension.checksum.strip_prefix("sha256:") else {
+        return Err(format!(
+            "extension `{}` checksum must use the `sha256:<64 hex>` form",
+            extension.id
+        ));
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "extension `{}` checksum must use the `sha256:<64 hex>` form",
+            extension.id
+        ));
     }
     Ok(())
 }
@@ -1663,6 +1802,12 @@ fn hash_inventory_counts(inventory: &PluginInventory) -> BTreeMap<&'static str, 
     normalized.insert("filesystem", inventory.filesystem_roots.join("\n"));
     normalized.insert("network", inventory.network_hosts.join("\n"));
     normalized.insert("lifecycle", inventory.lifecycle_mutation.to_string());
+    if let Some(extension) = &inventory.extension {
+        normalized.insert(
+            "extension",
+            serde_json::to_string(extension).expect("extension manifest is serializable"),
+        );
+    }
     normalized
 }
 
@@ -1721,6 +1866,7 @@ pub(crate) fn capability_hash_v2(inventory: &PluginInventory) -> String {
         PluginActivationCapability::Native,
         PluginActivationCapability::FilesystemRoots,
         PluginActivationCapability::LifecycleMutation,
+        PluginActivationCapability::Extension,
     ] {
         hasher.update(b"inactive\0");
         hasher.update(capability.as_str().as_bytes());
@@ -1791,6 +1937,67 @@ mod tests {
         let second = PluginManifest::validate_from_path(&path).unwrap();
         assert_ne!(first.content_hash, second.content_hash);
         assert_eq!(first.capability_hash, second.capability_hash);
+    }
+
+    #[test]
+    fn validates_protocol_bound_extension_descriptor_and_binds_it_to_capability_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_manifest(
+            tmp.path(),
+            r#"
+[extension]
+id = "example-plugin"
+version = "1.2.3"
+protocol = "hakus.extension.v1"
+entrypoint = "python -m example_extension"
+capabilities = ["audio.capture", "audio.playback"]
+permissions = ["microphone", "network:provider"]
+supported_platforms = ["windows"]
+checksum = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#,
+        );
+        let validated = PluginManifest::validate_from_path(&path).unwrap();
+        let extension = validated.inventory.extension.as_ref().unwrap();
+        assert_eq!(extension.protocol, EXTENSION_PROTOCOL_V1);
+        assert_eq!(extension.entrypoint, "python -m example_extension");
+        assert!(validated
+            .inventory
+            .declared_capabilities()
+            .contains(&PluginActivationCapability::Extension));
+
+        fs::write(
+            &path,
+            fs::read_to_string(&path)
+                .unwrap()
+                .replace("audio.playback", "audio.output"),
+        )
+        .unwrap();
+        let changed = PluginManifest::validate_from_path(&path).unwrap();
+        assert_ne!(validated.capability_hash, changed.capability_hash);
+    }
+
+    #[test]
+    fn rejects_extension_descriptor_with_untrusted_protocol_or_checksum() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (field, protocol, checksum) in [
+            (
+                "protocol",
+                "hakus.extension.v0",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            ("checksum", EXTENSION_PROTOCOL_V1, "sha256:not-a-digest"),
+        ] {
+            let path = write_manifest(
+                tmp.path(),
+                &format!(
+                    "\n[extension]\nid = \"example-plugin\"\nversion = \"1.2.3\"\nprotocol = \"{protocol}\"\nentrypoint = \"python -m example_extension\"\nsupported_platforms = [\"windows\"]\nchecksum = \"{checksum}\"\n"
+                ),
+            );
+            assert!(
+                PluginManifest::validate_from_path(&path).is_err(),
+                "invalid extension {field} must be rejected"
+            );
+        }
     }
 
     #[test]

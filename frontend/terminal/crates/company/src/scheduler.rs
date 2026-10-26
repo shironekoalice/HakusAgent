@@ -57,7 +57,11 @@ impl HeartbeatRunner {
 
     /// Per-adapter dispatch: `llm` reasons in text, `python-http` acts on files.
     pub fn with_registry(store: Arc<CompanyStore>, runtimes: RuntimeRegistry) -> Self {
-        Self { store, runtimes, config: SchedulerConfig::default() }
+        Self {
+            store,
+            runtimes,
+            config: SchedulerConfig::default(),
+        }
     }
 
     pub fn with_config(mut self, config: SchedulerConfig) -> Self {
@@ -82,7 +86,8 @@ impl HeartbeatRunner {
         // 1) Budget guard — a runaway agent must never start another turn.
         let budget = agent.budget_monthly_cents;
         if budget > 0 && self.store.monthly_cost_cents(&agent.id)? >= budget {
-            self.store.set_agent_status(&agent.id, AgentStatus::Paused)?;
+            self.store
+                .set_agent_status(&agent.id, AgentStatus::Paused)?;
             self.store.finish_run(
                 &run.id,
                 RunStatus::SkippedBudget,
@@ -98,13 +103,15 @@ impl HeartbeatRunner {
 
         // 2) Pick work.
         let Some(issue) = self.store.pick_work(&agent.id, &agent.company_id)? else {
-            self.store.finish_run(&run.id, RunStatus::NoWork, 0, 0, 0, "", None)?;
+            self.store
+                .finish_run(&run.id, RunStatus::NoWork, 0, 0, 0, "", None)?;
             return Ok(RunStatus::NoWork);
         };
 
         // 3) Atomic checkout.
         if !self.store.checkout_issue(&issue.id, &run.id)? {
-            self.store.finish_run(&run.id, RunStatus::CheckoutLost, 0, 0, 0, "", None)?;
+            self.store
+                .finish_run(&run.id, RunStatus::CheckoutLost, 0, 0, 0, "", None)?;
             return Ok(RunStatus::CheckoutLost);
         }
         self.store.attach_run_issue(&run.id, &issue.id)?;
@@ -140,11 +147,13 @@ impl HeartbeatRunner {
             Ok(out) => {
                 let in_tok = out.input_tokens as i64;
                 let out_tok = out.output_tokens as i64;
-                let cost_cents = hakus_llm::Price::for_model(&out.model).cost_cents(hakus_llm::Usage {
-                    input_tokens: out.input_tokens,
-                    output_tokens: out.output_tokens,
-                });
-                self.store.add_comment(&issue.id, Some(&agent.id), &out.text)?;
+                let cost_cents =
+                    hakus_llm::Price::for_model(&out.model).cost_cents(hakus_llm::Usage {
+                        input_tokens: out.input_tokens,
+                        output_tokens: out.output_tokens,
+                    });
+                self.store
+                    .add_comment(&issue.id, Some(&agent.id), &out.text)?;
                 self.store.add_cost_event(
                     &agent.company_id,
                     Some(&agent.id),
@@ -199,7 +208,12 @@ impl HeartbeatRunner {
                     &stored_output,
                     None,
                 )?;
-                info!("{} finished {} ({})", agent.name, issue.title, next.as_str());
+                info!(
+                    "{} finished {} ({})",
+                    agent.name,
+                    issue.title,
+                    next.as_str()
+                );
                 Ok(RunStatus::Ok)
             }
             Err(err) => {
@@ -207,7 +221,8 @@ impl HeartbeatRunner {
                 self.store
                     .add_comment(&issue.id, Some(&agent.id), &format!("执行失败：{msg}"))?;
                 self.store.set_issue_state(&issue.id, IssueState::Blocked)?;
-                self.store.finish_run(&run.id, RunStatus::Error, 0, 0, 0, "", Some(&msg))?;
+                self.store
+                    .finish_run(&run.id, RunStatus::Error, 0, 0, 0, "", Some(&msg))?;
                 warn!("{} failed on {}: {msg}", agent.name, issue.title);
                 Ok(RunStatus::Error)
             }
@@ -277,8 +292,20 @@ mod tests {
     async fn manager_delegates_and_worker_completes() {
         let store = Arc::new(CompanyStore::open_in_memory().unwrap());
         let company = store.create_company("Acme", "ship v1").unwrap();
-        let ceo = store.create_agent(&company.id, "Alice", "ceo", None, "llm", "{}", 0).unwrap();
-        let eng = store.create_agent(&company.id, "Bob", "engineer", Some(&ceo.id), "llm", "{}", 0).unwrap();
+        let ceo = store
+            .create_agent(&company.id, "Alice", "ceo", None, "llm", "{}", 0)
+            .unwrap();
+        let eng = store
+            .create_agent(
+                &company.id,
+                "Bob",
+                "engineer",
+                Some(&ceo.id),
+                "llm",
+                "{}",
+                0,
+            )
+            .unwrap();
         let parent = store
             .create_issue(NewIssue {
                 assignee_agent_id: Some(&ceo.id),
@@ -300,11 +327,18 @@ mod tests {
         assert_eq!(runner.run_agent(&ceo.id).await.unwrap(), RunStatus::Ok);
 
         let children = store.list_children(&parent.id).unwrap();
-        assert_eq!(children.len(), 1, "CEO must have delegated exactly one ticket");
+        assert_eq!(
+            children.len(),
+            1,
+            "CEO must have delegated exactly one ticket"
+        );
         let child = &children[0];
         assert_eq!(child.assignee_agent_id.as_deref(), Some(eng.id.as_str()));
         assert_eq!(child.depth, 1);
-        assert_eq!(child.billing_code, ceo.id, "cost is billed to the delegator");
+        assert_eq!(
+            child.billing_code, ceo.id,
+            "cost is billed to the delegator"
+        );
         assert_eq!(child.state, "todo");
         // Parent stays open so the manager can review the outcome.
         assert_eq!(store.get_issue(&parent.id).unwrap().unwrap().state, "done");
@@ -330,7 +364,9 @@ mod tests {
     async fn heartbeat_completes_a_ticket_with_no_duplicate_execution() {
         let store = Arc::new(CompanyStore::open_in_memory().unwrap());
         let company = store.create_company("Acme", "ship it").unwrap();
-        let agent = store.create_agent(&company.id, "Alice", "ceo", None, "llm", "{}", 0).unwrap();
+        let agent = store
+            .create_agent(&company.id, "Alice", "ceo", None, "llm", "{}", 0)
+            .unwrap();
         let issue = store
             .create_issue(NewIssue {
                 assignee_agent_id: Some(&agent.id),
@@ -356,14 +392,29 @@ mod tests {
     async fn budget_exhaustion_pauses_the_agent() {
         let store = Arc::new(CompanyStore::open_in_memory().unwrap());
         let company = store.create_company("Acme", "ship it").unwrap();
-        let agent = store.create_agent(&company.id, "Bob", "engineer", None, "llm", "{}", 100).unwrap();
+        let agent = store
+            .create_agent(&company.id, "Bob", "engineer", None, "llm", "{}", 100)
+            .unwrap();
         store
-            .add_cost_event(&company.id, Some(&agent.id), None, None, "", "mock", 500, 500, 200)
+            .add_cost_event(
+                &company.id,
+                Some(&agent.id),
+                None,
+                None,
+                "",
+                "mock",
+                500,
+                500,
+                200,
+            )
             .unwrap();
 
         let runner = HeartbeatRunner::new(store.clone(), Arc::new(MockRuntime::default()));
         let status = runner.run_agent(&agent.id).await.unwrap();
         assert_eq!(status, RunStatus::SkippedBudget);
-        assert_eq!(store.get_agent(&agent.id).unwrap().unwrap().status, "paused");
+        assert_eq!(
+            store.get_agent(&agent.id).unwrap().unwrap().status,
+            "paused"
+        );
     }
 }

@@ -405,6 +405,16 @@ pub struct FleetWorkerSpec {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FleetHostSpec {
     Local,
+    /// A worker launched through the Windows WSL interop boundary.
+    Wsl {
+        /// Optional distribution name. `None` uses WSL's default distro.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        distro: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        working_directory: Option<PathBuf>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hakus_binary: Option<String>,
+    },
     Ssh {
         host: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -428,6 +438,34 @@ pub enum FleetHostSpec {
         env_allowlist: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         hakus_binary: Option<String>,
+        /// Optional jump host / bastion to proxy through (`ssh -J`).
+        ///
+        /// Reserved per `docs/REFACTOR_SPEC.md` §9.3 ("jump host and port-forward
+        /// fields reserved in the spec, even if initially disabled behind a
+        /// feature gate"). The field exists so a host spec carrying one round-trips
+        /// and serializes; **`build_ssh_command` refuses to use it** unless the
+        /// `ssh_advanced` feature is enabled, so a config that sets one fails loudly
+        /// today rather than silently ignoring the operator's intent.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        jump_host: Option<String>,
+        /// Port-forwarding spec to establish alongside the session
+        /// (`ssh -L`/`-R`), e.g. `"8080:127.0.0.1:8080"`.
+        ///
+        /// Reserved alongside `jump_host` under the same gate, and validated by
+        /// shape — a malformed mapping is rejected at parse time rather than
+        /// handed to `ssh` to fail on.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        port_forward: Option<String>,
+        /// Authentication mode: `"key"` (default, non-interactive `BatchMode`)
+        /// or `"password"` (interactive handoff per spec §9.3). The password
+        /// itself is never carried in a host spec — it reaches the runtime
+        /// through a secure input boundary and lives only in an in-memory
+        /// broker.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auth_mode: Option<String>,
     },
     #[serde(alias = "container")]
     #[serde(alias = "Container")]
@@ -1368,6 +1406,9 @@ mod tests {
                 working_directory,
                 env_allowlist,
                 hakus_binary,
+                jump_host,
+                port_forward,
+                auth_mode: _,
             } => {
                 assert_eq!(host, "builder.example.test");
                 assert_eq!(port, None);
@@ -1378,9 +1419,27 @@ mod tests {
                 assert_eq!(working_directory, None);
                 assert!(env_allowlist.is_empty());
                 assert_eq!(hakus_binary, None);
+                // Reserved fields default to None on legacy JSON, so an older
+                // stored spec loads unchanged rather than failing to parse.
+                assert_eq!(jump_host, None);
+                assert_eq!(port_forward, None);
             }
             other => panic!("expected ssh host spec, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn wsl_host_spec_round_trips() {
+        let spec = FleetHostSpec::Wsl {
+            distro: Some("Ubuntu".to_string()),
+            working_directory: Some(PathBuf::from("/home/ubuntu/project")),
+            hakus_binary: Some("/usr/local/bin/hakus".to_string()),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"kind\":\"wsl\""));
+        assert!(json.contains("Ubuntu"));
+        let back: FleetHostSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, spec);
     }
 
     #[test]
@@ -1504,6 +1563,9 @@ mod tests {
             working_directory: Some(PathBuf::from("/srv/hakus/work")),
             env_allowlist: vec!["HAKUS_PROFILE".to_string()],
             hakus_binary: Some("/usr/local/bin/hakus".to_string()),
+            jump_host: None,
+            port_forward: None,
+            auth_mode: None,
         };
         let json = serde_json::to_string_pretty(&spec).unwrap();
         assert!(json.contains("\"known_hosts\""));
@@ -1527,6 +1589,82 @@ mod tests {
             }
             other => panic!("expected ssh host spec, got {other:?}"),
         }
+    }
+
+    /// Phase 3 SSH gate: an SSH host spec cannot carry a password.
+    ///
+    /// This is the structural half of "password never persists". The SSH spec
+    /// has no password field — the only credential-shaped input is `identity`,
+    /// a *path* to a private key, and the `env_allowlist` names variables
+    /// without carrying their values. Asserting absence from the serialized form
+    /// is what turns "we did not add such a field" from a fact about today's
+    /// struct into a property a future change has to argue with.
+    ///
+    /// The port is included because `user`, `port` and `host` are all
+    /// attacker-influenced strings; if a password were ever smuggled through one
+    /// of them it would land in the same JSON.
+    #[test]
+    fn ssh_host_spec_serialization_carries_no_password() {
+        let spec = FleetHostSpec::Ssh {
+            host: "builder.trusted.example.com".to_string(),
+            port: Some(22),
+            user: Some("hakus".to_string()),
+            identity: Some(PathBuf::from("~/.ssh/hakus_fleet")),
+            known_hosts: Some(PathBuf::from("~/.ssh/known_hosts")),
+            host_key_fingerprint: Some("SHA256:aLGqZo1M6c...".to_string()),
+            working_directory: Some(PathBuf::from("/srv/hakus/work")),
+            env_allowlist: vec!["HAKUS_PROFILE".to_string()],
+            hakus_binary: Some("/usr/local/bin/hakus".to_string()),
+            jump_host: None,
+            port_forward: None,
+            auth_mode: None,
+        };
+        let json = serde_json::to_string_pretty(&spec).unwrap();
+        assert_no_secret_markers(&json);
+
+        // The allowlist names variables; it must never carry a value. A value
+        // would only appear here if someone started populating it from the
+        // environment, which is the mistake this pins against.
+        for entry in &spec_allowlist(&spec) {
+            assert!(
+                !entry.contains('='),
+                "an env allowlist entry must be a bare name, got {entry:?}"
+            );
+        }
+    }
+
+    fn spec_allowlist(spec: &FleetHostSpec) -> Vec<String> {
+        match spec {
+            FleetHostSpec::Ssh { env_allowlist, .. } => env_allowlist.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An `identity` is a filesystem path, never key material.
+    ///
+    /// A private key pasted into this field would be persisted verbatim into
+    /// every ledger record that quotes the host spec, so the shape check is
+    /// worth pinning: a path has no PEM armour.
+    #[test]
+    fn ssh_identity_field_is_a_path_not_key_material() {
+        let spec = FleetHostSpec::Ssh {
+            host: "builder.example.test".to_string(),
+            port: None,
+            user: None,
+            identity: Some(PathBuf::from("~/.ssh/id_ed25519")),
+            known_hosts: None,
+            host_key_fingerprint: None,
+            working_directory: None,
+            env_allowlist: Vec::new(),
+            hakus_binary: None,
+            jump_host: None,
+            port_forward: None,
+            auth_mode: None,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(!json.contains("PRIVATE KEY"), "{json}");
+        assert!(!json.contains("BEGIN OPENSSH"), "{json}");
+        assert_no_secret_markers(&json);
     }
 
     #[test]

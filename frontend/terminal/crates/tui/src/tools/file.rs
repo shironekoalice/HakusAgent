@@ -497,6 +497,10 @@ async fn acquire_file_mutation(
 ) -> Result<OwnedMutexGuard<()>, ToolError> {
     let lock = file_mutation_lock(path)?;
     if let Some(cancel) = context.cancel_token.as_ref() {
+        // Race the wait against cancellation so a cancelled turn never sits
+        // blocked on a lock it will not use. The caller re-checks the token
+        // after this returns, because `select!` picks an arbitrary ready branch
+        // and can therefore hand back a guard for an already-cancelled turn.
         tokio::select! {
             guard = lock.lock_owned() => Ok(guard),
             () = cancel.cancelled() => Err(ToolError::cancelled("Operation aborted")),
@@ -1320,6 +1324,8 @@ impl WriteFileTool {
         let path_str = required_str(&input, "path")?;
         let file_content = required_str(&input, "content")?;
         let file_path = context.resolve_path(path_str)?;
+        // Held across the read-modify-write so two concurrent writers to one
+        // path cannot interleave, and released before the result is built.
         let mutation_guard = acquire_file_mutation(&file_path, context).await?;
         check_file_operation_cancelled(context)?;
 
@@ -1859,6 +1865,8 @@ impl EditFileTool {
         let path_str = required_str(&input, "path")?;
         let edits = parse_contract_edits(&input)?;
         let file_path = context.resolve_path(path_str)?;
+        // Held across the read-modify-write so two concurrent editors of one
+        // path cannot both write from the same snapshot and lose an update.
         let mutation_guard = acquire_file_mutation(&file_path, context).await?;
         check_file_operation_cancelled(context)?;
 

@@ -8,6 +8,8 @@
 //! - **Checkpoints** — named state snapshots for restoring conversation progress.
 //! - **Jobs** — background task tracking with status and progress.
 //! - **Dynamic tools** — per-thread tool registrations.
+//! - **Runtime ledger** — versioned append-only events with per-session cursors
+//!   and a checksum-bound importer for legacy Python JSONL.
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -21,11 +23,12 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 static SESSION_INDEX_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use hakus_paths::{HAKUS_APP_DIR, hakus_home_override};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -134,6 +137,289 @@ pub struct MessageRecord {
     pub created_at: i64,
     /// ID of the parent message, forming a tree structure. `None` for root messages.
     pub parent_entry_id: Option<i64>,
+}
+
+/// An event submitted to the canonical runtime ledger without a client-owned
+/// sequence number. The state store allocates `seq` atomically per session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LedgerEventAppend {
+    pub event_id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub workspace_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub parent_event_id: Option<String>,
+    pub actor: Value,
+    pub visibility: String,
+    pub payload: Value,
+    pub timestamp: String,
+}
+
+/// A canonical event returned by the ledger after sequence allocation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LedgerEventRecord {
+    pub event_id: String,
+    pub session_id: String,
+    pub seq: u64,
+    pub event_type: String,
+    pub workspace_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub parent_event_id: Option<String>,
+    pub actor: Value,
+    pub visibility: String,
+    pub payload: Value,
+    pub timestamp: String,
+}
+
+/// Result of a read-only ledger integrity check.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerVerification {
+    pub session_id: String,
+    pub event_count: u64,
+    pub last_seq: u64,
+    pub contiguous: bool,
+}
+
+/// Aggregate counters used by Runtime diagnostics. The values are deliberately
+/// read-only and do not expose event payloads or credential-shaped fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerStats {
+    pub event_count: u64,
+    pub session_count: u64,
+}
+
+/// One session whose ledger sequence is not contiguous.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerIntegrityFailure {
+    pub session_id: String,
+    pub event_count: u64,
+    pub last_seq: u64,
+}
+
+/// Result of verifying every ledger session.
+///
+/// Only failures carry per-session detail, so a healthy store produces a small
+/// response while a damaged one names the sessions to investigate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LedgerIntegrityReport {
+    pub sessions_verified: u64,
+    pub events_verified: u64,
+    pub non_contiguous: Vec<LedgerIntegrityFailure>,
+}
+
+impl LedgerIntegrityReport {
+    /// True when every verified session's sequence was contiguous.
+    pub fn is_healthy(&self) -> bool {
+        self.non_contiguous.is_empty()
+    }
+}
+
+/// Summary returned by the one-way legacy JSONL importer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerImportSummary {
+    pub session_id: String,
+    pub source_path: PathBuf,
+    pub source_sha256: String,
+    pub imported: u64,
+    pub skipped: u64,
+}
+
+/// Summary returned by importing Python's SQLite session projection and its
+/// optional JSON checkpoint file into the Rust state boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacySessionImportSummary {
+    pub target_session_id: String,
+    pub source_session_id: String,
+    pub source_sha256: String,
+    pub imported_messages: u64,
+    pub skipped_messages: u64,
+    pub imported_checkpoints: u64,
+    pub skipped_checkpoints: u64,
+}
+
+/// One session inside a discovered legacy Python store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacyDiscoveredSession {
+    pub session_id: String,
+    pub title: String,
+    pub provider: Option<String>,
+    pub message_count: u64,
+    /// Milliseconds since the Unix epoch, as the legacy store records them.
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A legacy Python session store found on the search path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacyDiscoveredStore {
+    pub path: PathBuf,
+    /// On-disk size, so a person can tell a real store from a stub.
+    pub size_bytes: u64,
+    /// `Some` when a sibling `checkpoints.json` exists next to the store.
+    pub checkpoint_path: Option<PathBuf>,
+    pub sessions: Vec<LegacyDiscoveredSession>,
+}
+
+/// A `sessions.db` that was found but cannot be read as a legacy store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacyRejectedStore {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+/// The read-only result of scanning for legacy Python session stores.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LegacyDiscovery {
+    pub stores: Vec<LegacyDiscoveredStore>,
+    pub rejected: Vec<LegacyRejectedStore>,
+}
+
+impl LegacyDiscovery {
+    /// Total sessions across every readable store.
+    pub fn total_sessions(&self) -> u64 {
+        self.stores
+            .iter()
+            .map(|store| store.sessions.len() as u64)
+            .sum()
+    }
+
+    /// Total messages across every readable store.
+    pub fn total_messages(&self) -> u64 {
+        self.stores
+            .iter()
+            .flat_map(|store| store.sessions.iter())
+            .map(|session| session.message_count)
+            .sum()
+    }
+}
+
+/// Read one legacy store's session list without modifying it.
+///
+/// The schema is checked before any row is read: a SQLite file that is not a
+/// Python session store must be rejected as such, not reported as an empty
+/// store a caller might then "import" nothing from.
+fn read_legacy_session_store(path: &Path) -> Result<LegacyDiscoveredStore> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    for table in ["sessions", "messages"] {
+        let present: Option<String> = source
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if present.is_none() {
+            anyhow::bail!("not a legacy session store: no `{table}` table");
+        }
+    }
+    let mut statement = source
+        .prepare(
+            r#"
+            SELECT s.id, s.title, s.provider, s.created_at, s.updated_at,
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)
+            FROM sessions s
+            ORDER BY s.updated_at DESC, s.id ASC
+            "#,
+        )
+        .context("failed to prepare legacy session discovery query")?;
+    let sessions = statement
+        .query_map([], |row| {
+            Ok(LegacyDiscoveredSession {
+                session_id: row.get(0)?,
+                title: row.get(1)?,
+                provider: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                message_count: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .with_context(|| format!("failed to read sessions from {}", path.display()))?;
+    let checkpoint_path = {
+        let sibling = path.with_file_name("checkpoints.json");
+        sibling.is_file().then_some(sibling)
+    };
+    Ok(LegacyDiscoveredStore {
+        path: path.to_path_buf(),
+        size_bytes: metadata.len(),
+        checkpoint_path,
+        sessions,
+    })
+}
+
+type RawLedgerEvent = (
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+);
+
+fn decode_ledger_event(raw: RawLedgerEvent) -> Result<LedgerEventRecord> {
+    let (
+        event_id,
+        session_id,
+        seq,
+        event_type,
+        workspace_id,
+        turn_id,
+        correlation_id,
+        parent_event_id,
+        actor_json,
+        visibility,
+        payload_json,
+        timestamp,
+    ) = raw;
+    Ok(LedgerEventRecord {
+        event_id,
+        session_id,
+        seq: u64::try_from(seq).context("ledger sequence is negative")?,
+        event_type,
+        workspace_id,
+        turn_id,
+        correlation_id,
+        parent_event_id,
+        actor: serde_json::from_str(&actor_json).context("invalid ledger actor JSON")?,
+        visibility,
+        payload: serde_json::from_str(&payload_json).context("invalid ledger payload JSON")?,
+        timestamp,
+    })
+}
+
+/// Validate the stable envelope shape before an event becomes durable. The
+/// registry is intentionally additive: unknown event names remain replayable
+/// for forward compatibility, while the core runtime events cannot silently
+/// lose the payload needed by desktop projections.
+fn validate_ledger_payload(event_type: &str, payload: &Value) -> Result<()> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("ledger payload for {event_type} must be a JSON object"))?;
+    let required: &[&str] = match event_type {
+        "thread.started" | "thread.updated" => &["thread"],
+        "turn.started" | "turn.completed" | "turn.failed" | "turn.canceled" => &["turn"],
+        "item.started" | "item.completed" | "item.failed" => &["item"],
+        "item.delta" => &["delta", "kind"],
+        _ => &[],
+    };
+    for key in required {
+        if !object.contains_key(*key) {
+            anyhow::bail!("ledger payload for {event_type} is missing '{key}'");
+        }
+    }
+    Ok(())
 }
 
 /// A named checkpoint capturing the state of a thread at a point in time.
@@ -353,6 +639,820 @@ impl StateStore {
     /// Returns the filesystem path of the underlying SQLite database.
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Append one event and allocate its per-session sequence in the same
+    /// SQLite write transaction. Clients must never provide a sequence.
+    pub fn append_ledger_event(&self, event: &LedgerEventAppend) -> Result<LedgerEventRecord> {
+        if event.event_id.trim().is_empty() {
+            anyhow::bail!("ledger event_id cannot be empty");
+        }
+        if event.session_id.trim().is_empty() {
+            anyhow::bail!("ledger session_id cannot be empty");
+        }
+        if event.event_type.trim().is_empty() {
+            anyhow::bail!("ledger event_type cannot be empty");
+        }
+        if event.visibility.trim().is_empty() {
+            anyhow::bail!("ledger visibility cannot be empty");
+        }
+        validate_ledger_payload(&event.event_type, &event.payload)?;
+
+        let actor = redact_legacy_value(event.actor.clone());
+        let payload = redact_legacy_value(event.payload.clone());
+        let actor_json =
+            serde_json::to_string(&actor).context("failed to serialize ledger event actor")?;
+        let payload_json =
+            serde_json::to_string(&payload).context("failed to serialize ledger event payload")?;
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin ledger append transaction")?;
+
+        // Event IDs are the migration idempotency boundary. A retry after a
+        // process restart must return the original record instead of turning a
+        // durable event into a shadow-write error.
+        if let Some(existing) = tx
+            .query_row(
+                r#"
+                SELECT event_id, session_id, seq, event_type, workspace_id, turn_id,
+                       correlation_id, parent_event_id, actor_json, visibility,
+                       payload_json, timestamp
+                FROM ledger_events
+                WHERE event_id = ?1
+                "#,
+                params![event.event_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed to check ledger event idempotency")?
+        {
+            let existing = decode_ledger_event(existing)?;
+            if existing.session_id != event.session_id
+                || existing.event_type != event.event_type
+                || existing.payload != payload
+            {
+                anyhow::bail!(
+                    "ledger event_id '{}' already exists with different content",
+                    event.event_id
+                );
+            }
+            tx.commit().context("failed to finish idempotent ledger append")?;
+            return Ok(existing);
+        }
+        let next_seq: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM ledger_events WHERE session_id = ?1",
+                params![event.session_id],
+                |row| row.get(0),
+            )
+            .context("failed to allocate ledger event sequence")?;
+        tx.execute(
+            r#"
+            INSERT INTO ledger_events (
+                event_id, session_id, seq, event_type, workspace_id, turn_id,
+                correlation_id, parent_event_id, actor_json, visibility,
+                payload_json, timestamp
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "#,
+            params![
+                event.event_id,
+                event.session_id,
+                next_seq,
+                event.event_type,
+                event.workspace_id,
+                event.turn_id,
+                event.correlation_id,
+                event.parent_event_id,
+                actor_json,
+                event.visibility,
+                payload_json,
+                event.timestamp,
+            ],
+        )
+        .context("failed to append ledger event")?;
+        tx.commit().context("failed to commit ledger event")?;
+
+        Ok(LedgerEventRecord {
+            event_id: event.event_id.clone(),
+            session_id: event.session_id.clone(),
+            seq: u64::try_from(next_seq).context("ledger sequence overflow")?,
+            event_type: event.event_type.clone(),
+            workspace_id: event.workspace_id.clone(),
+            turn_id: event.turn_id.clone(),
+            correlation_id: event.correlation_id.clone(),
+            parent_event_id: event.parent_event_id.clone(),
+            actor,
+            visibility: event.visibility.clone(),
+            payload,
+            timestamp: event.timestamp.clone(),
+        })
+    }
+
+    /// Read canonical events after an optional per-session sequence cursor.
+    pub fn list_ledger_events(
+        &self,
+        session_id: &str,
+        after_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<LedgerEventRecord>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT event_id, session_id, seq, event_type, workspace_id, turn_id,
+                   correlation_id, parent_event_id, actor_json, visibility,
+                   payload_json, timestamp
+            FROM ledger_events
+            WHERE session_id = ?1 AND seq > ?2
+            ORDER BY seq ASC
+            LIMIT ?3
+            "#,
+        )?;
+        let rows = stmt.query_map(params![session_id, after_seq as i64, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+            ))
+        })?;
+        let mut events = Vec::new();
+        for row in rows {
+            let raw = row?;
+            events.push(decode_ledger_event(raw)?);
+        }
+        Ok(events)
+    }
+
+    /// Verify sequence continuity and JSON integrity without mutating state.
+    pub fn verify_ledger(&self, session_id: &str) -> Result<LedgerVerification> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, event_type, actor_json, payload_json FROM ledger_events WHERE session_id = ?1 ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut expected = 1_u64;
+        let mut count = 0_u64;
+        for row in rows {
+            let (seq, event_type, actor_json, payload_json) = row?;
+            let seq = u64::try_from(seq).context("ledger sequence is negative")?;
+            if seq != expected {
+                anyhow::bail!(
+                    "ledger sequence gap for session {}: expected {}, found {}",
+                    session_id,
+                    expected,
+                    seq
+                );
+            }
+            serde_json::from_str::<Value>(&actor_json)
+                .context("ledger actor_json is not valid JSON")?;
+            let payload = serde_json::from_str::<Value>(&payload_json)
+                .context("ledger payload_json is not valid JSON")?;
+            validate_ledger_payload(&event_type, &payload)?;
+            expected = expected.saturating_add(1);
+            count = count.saturating_add(1);
+        }
+        Ok(LedgerVerification {
+            session_id: session_id.to_string(),
+            event_count: count,
+            last_seq: count,
+            contiguous: true,
+        })
+    }
+
+    /// Return aggregate ledger counters for diagnostics and migration rollout.
+    pub fn ledger_stats(&self) -> Result<LedgerStats> {
+        let conn = self.conn()?;
+        let (event_count, session_count): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT session_id) FROM ledger_events",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(LedgerStats {
+            event_count: u64::try_from(event_count).context("ledger event count is negative")?,
+            session_count: u64::try_from(session_count)
+                .context("ledger session count is negative")?,
+        })
+    }
+
+    /// Verify every session's ledger and summarize the result.
+    ///
+    /// Diagnostics need to answer "is the canonical log trustworthy right now"
+    /// without reading the whole log back: this verifies each session and
+    /// reports only the ones that fail, plus the totals. A healthy store is
+    /// therefore a small response, and a damaged one names exactly which
+    /// sessions to look at.
+    pub fn verify_all_ledgers(&self) -> Result<LedgerIntegrityReport> {
+        // `conn()` returns a mutex guard, and `verify_ledger` takes the same
+        // mutex. The session list must therefore be collected and the guard
+        // released *before* the per-session verification runs, or the second
+        // lock is a self-deadlock.
+        let session_ids = {
+            let conn = self.conn()?;
+            let mut statement = conn.prepare(
+                "SELECT DISTINCT session_id FROM ledger_events ORDER BY session_id ASC",
+            )?;
+            let session_ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            session_ids
+        };
+
+        let mut sessions_verified = 0_u64;
+        let mut events_verified = 0_u64;
+        let mut non_contiguous = Vec::new();
+        for session_id in session_ids {
+            // `verify_ledger` *fails* on a gap rather than returning
+            // `contiguous: false`, and a gap is precisely what this report
+            // exists to describe. A broken session is therefore recorded as a
+            // finding, not propagated: one damaged session must not hide the
+            // state of every other one.
+            match self.verify_ledger(&session_id) {
+                Ok(verification) => {
+                    sessions_verified = sessions_verified.saturating_add(1);
+                    events_verified = events_verified.saturating_add(verification.event_count);
+                    if !verification.contiguous {
+                        non_contiguous.push(LedgerIntegrityFailure {
+                            session_id,
+                            event_count: verification.event_count,
+                            last_seq: verification.last_seq,
+                        });
+                    }
+                }
+                Err(error) => {
+                    let (event_count, last_seq) = self
+                        .ledger_bounds(&session_id)
+                        .unwrap_or((0, 0));
+                    sessions_verified = sessions_verified.saturating_add(1);
+                    events_verified = events_verified.saturating_add(event_count);
+                    non_contiguous.push(LedgerIntegrityFailure {
+                        session_id: session_id.clone(),
+                        event_count,
+                        last_seq,
+                    });
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %error,
+                        "canonical ledger session failed verification"
+                    );
+                }
+            }
+        }
+        Ok(LedgerIntegrityReport {
+            sessions_verified,
+            events_verified,
+            non_contiguous,
+        })
+    }
+
+    /// Event count and highest sequence for one session, for reporting a
+    /// session whose verification failed.
+    fn ledger_bounds(&self, session_id: &str) -> Result<(u64, u64)> {
+        let conn = self.conn()?;
+        let (count, last): (i64, Option<i64>) = conn.query_row(
+            "SELECT COUNT(*), MAX(seq) FROM ledger_events WHERE session_id = ?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((
+            u64::try_from(count).unwrap_or(0),
+            u64::try_from(last.unwrap_or(0)).unwrap_or(0),
+        ))
+    }
+
+    /// Import a legacy Python session JSONL file exactly once per event.
+    ///
+    /// Event ids include the source checksum and line number, making retries
+    /// idempotent while preserving a source fingerprint for migration audit.
+    /// The legacy file is never modified and remains available for rollback.
+    pub fn import_legacy_jsonl(
+        &self,
+        session_id: &str,
+        source_path: &Path,
+    ) -> Result<LedgerImportSummary> {
+        let bytes = fs::read(source_path).with_context(|| {
+            format!("failed to read legacy event log {}", source_path.display())
+        })?;
+        let source_sha256 = format!("sha256:{}", hex_digest(&bytes));
+        let text = String::from_utf8(bytes).context("legacy event log is not UTF-8")?;
+        let mut imported = 0_u64;
+        let mut skipped = 0_u64;
+        for (line_index, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let payload: Value = match serde_json::from_str::<Value>(line) {
+                Ok(value) if value.is_object() => value,
+                Ok(_) | Err(_) => {
+                    skipped = skipped.saturating_add(1);
+                    continue;
+                }
+            };
+            let event_type = legacy_event_type(payload.get("type").and_then(Value::as_str));
+            let payload = redact_legacy_value(payload);
+            let event_id = format!(
+                "legacy_{}_{}",
+                source_sha256.trim_start_matches("sha256:"),
+                line_index
+            );
+            if self.ledger_event_exists(&event_id)? {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
+            let turn_id = payload
+                .get("turn")
+                .and_then(Value::as_i64)
+                .map(|turn| format!("legacy-turn-{turn}"));
+            let workspace_id = payload
+                .get("working_dir")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let timestamp = legacy_timestamp(payload.get("ts").and_then(Value::as_f64));
+            self.append_ledger_event(&LedgerEventAppend {
+                event_id,
+                session_id: session_id.to_string(),
+                event_type: event_type.to_string(),
+                workspace_id,
+                turn_id,
+                correlation_id: Some(source_sha256.clone()),
+                parent_event_id: None,
+                actor: serde_json::json!({
+                    "kind": "legacy_python",
+                    "id": "session_log"
+                }),
+                visibility: "model_and_ui".to_string(),
+                payload,
+                timestamp,
+            })?;
+            imported = imported.saturating_add(1);
+        }
+        self.record_compat_imported_events(imported)?;
+        Ok(LedgerImportSummary {
+            session_id: session_id.to_string(),
+            source_path: source_path.to_path_buf(),
+            source_sha256,
+            imported,
+            skipped,
+        })
+    }
+
+    /// Increment the persisted counter of canonical events imported from
+    /// Python compatibility sources (Phase 0 migration metric). The count
+    /// survives restarts because it lives in the state database, not in
+    /// process memory.
+    pub fn record_compat_imported_events(&self, count: u64) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE migration_metrics SET value = value + ?1 WHERE key = 'compat_imported_events'",
+            params![i64::try_from(count).unwrap_or(i64::MAX)],
+        )
+        .context("failed to record compat imported events")?;
+        Ok(())
+    }
+
+    /// Persisted count of canonical events imported from Python
+    /// compatibility sources. Zero until an import has happened; never
+    /// decremented — it is a migration-progress metric, not a live count.
+    pub fn compat_imported_event_count(&self) -> Result<u64> {
+        let conn = self.conn()?;
+        let value: i64 = conn
+            .query_row(
+                "SELECT value FROM migration_metrics WHERE key = 'compat_imported_events'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to read compat imported event count")?
+            .unwrap_or(0);
+        Ok(u64::try_from(value).unwrap_or(0))
+    }
+
+    /// Discover the legacy Python session stores a migration could import.
+    ///
+    /// Discovery is deliberately read-only and bounded: each candidate root is
+    /// inspected for a `sessions.db`, its schema is checked before any row is
+    /// read, and every session is reported with the counts a person needs to
+    /// decide what to import. Nothing is written and no source is modified, so a
+    /// caller can show this summary and only then choose to import.
+    ///
+    /// A file that is not a legacy session store — missing tables, unreadable,
+    /// or not SQLite at all — is reported as a rejected candidate rather than
+    /// failing the whole scan, because a stale or unrelated `sessions.db` on the
+    /// search path must not hide the real one.
+    pub fn discover_legacy_session_stores(&self, roots: &[PathBuf]) -> LegacyDiscovery {
+        let mut stores = Vec::new();
+        let mut rejected = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for root in roots {
+            let candidate = if root.file_name().is_some_and(|name| name == "sessions.db") {
+                root.clone()
+            } else {
+                root.join("sessions.db")
+            };
+            // Canonicalize so the same store reached through two roots (for
+            // example `~/.hakus` and a symlink to it) is reported once.
+            let key = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+            if !seen.insert(key) {
+                continue;
+            }
+            if !candidate.is_file() {
+                continue;
+            }
+            match read_legacy_session_store(&candidate) {
+                Ok(store) => stores.push(store),
+                Err(error) => rejected.push(LegacyRejectedStore {
+                    path: candidate,
+                    reason: format!("{error:#}"),
+                }),
+            }
+        }
+        stores.sort_by(|left, right| left.path.cmp(&right.path));
+        rejected.sort_by(|left, right| left.path.cmp(&right.path));
+        LegacyDiscovery { stores, rejected }
+    }
+
+    /// Import one Python sessions.db session and its optional checkpoint
+    /// bundle. The source connection is read-only and every row is guarded by
+    /// a checksum/source-id marker in the target database, so retries after a
+    /// crash are safe and deterministic.
+    pub fn import_legacy_session_db(
+        &self,
+        target_session_id: &str,
+        source_path: &Path,
+        source_session_id: &str,
+        checkpoint_path: Option<&Path>,
+    ) -> Result<LegacySessionImportSummary> {
+        if target_session_id.trim().is_empty() || source_session_id.trim().is_empty() {
+            anyhow::bail!("target_session_id and source_session_id cannot be empty");
+        }
+        let source_bytes = fs::read(source_path).with_context(|| {
+            format!("failed to read legacy session database {}", source_path.display())
+        })?;
+        let source_sha256 = format!("sha256:{}", hex_digest(&source_bytes));
+        let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| {
+                format!("failed to open legacy session database {}", source_path.display())
+            })?;
+
+        let session = source
+            .query_row(
+                "SELECT title, provider, created_at, updated_at FROM sessions WHERE id = ?1",
+                params![source_session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .with_context(|| format!("failed to read legacy session {source_session_id}"))?
+            .ok_or_else(|| anyhow::anyhow!("legacy session {source_session_id} was not found"))?;
+
+        if self.get_thread(target_session_id)?.is_none() {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            self.upsert_thread(&ThreadMetadata {
+                id: target_session_id.to_string(),
+                rollout_path: None,
+                preview: session.0.clone(),
+                ephemeral: false,
+                model_provider: session.1.clone().unwrap_or_else(|| "unknown".to_string()),
+                created_at: normalize_legacy_timestamp(session.2),
+                updated_at: normalize_legacy_timestamp(session.3),
+                status: ThreadStatus::Idle,
+                path: None,
+                cwd,
+                cli_version: env!("CARGO_PKG_VERSION").to_string(),
+                source: SessionSource::Api,
+                name: Some(session.0.clone()),
+                sandbox_policy: None,
+                approval_mode: None,
+                archived: false,
+                archived_at: None,
+                git_sha: None,
+                git_branch: None,
+                git_origin_url: None,
+                memory_mode: None,
+                current_leaf_id: None,
+            })?;
+        }
+
+        let mut message_stmt = source
+            .prepare(
+                "SELECT id, role, content, reasoning, tool_calls_json, input_tokens, output_tokens, error, created_at, updated_at FROM messages WHERE session_id = ?1 ORDER BY created_at ASC, id ASC",
+            )
+            .context("failed to prepare legacy message import query")?;
+        let messages = message_stmt
+            .query_map(params![source_session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(message_stmt);
+
+        let mut imported_messages = 0_u64;
+        let mut skipped_messages = 0_u64;
+        for (
+            source_id,
+            role,
+            content,
+            reasoning,
+            tool_calls_json,
+            input_tokens,
+            output_tokens,
+            error,
+            created_at,
+            updated_at,
+        ) in messages
+        {
+            let mut item = serde_json::Map::new();
+            item.insert("legacy_source_id".to_string(), Value::String(source_id.clone()));
+            if let Some(value) = reasoning {
+                item.insert("reasoning".to_string(), Value::String(value));
+            }
+            if let Some(value) = tool_calls_json {
+                if let Ok(value) = serde_json::from_str::<Value>(&value) {
+                    item.insert("tool_calls".to_string(), redact_legacy_value(value));
+                }
+            }
+            if let Some(value) = input_tokens {
+                item.insert("input_tokens".to_string(), Value::from(value));
+            }
+            if let Some(value) = output_tokens {
+                item.insert("output_tokens".to_string(), Value::from(value));
+            }
+            if let Some(value) = error {
+                item.insert("error".to_string(), Value::String(value));
+            }
+            let imported = self.import_legacy_message_once(
+                &source_sha256,
+                target_session_id,
+                &source_id,
+                &role,
+                &content,
+                Value::Object(item),
+                normalize_legacy_timestamp(updated_at.max(created_at)),
+            )?;
+            if imported {
+                imported_messages = imported_messages.saturating_add(1);
+            } else {
+                skipped_messages = skipped_messages.saturating_add(1);
+            }
+        }
+
+        let mut imported_checkpoints = 0_u64;
+        let mut skipped_checkpoints = 0_u64;
+        if let Some(checkpoint_path) = checkpoint_path {
+            let checkpoint_bytes = fs::read(checkpoint_path).with_context(|| {
+                format!("failed to read legacy checkpoint {}", checkpoint_path.display())
+            })?;
+            let checkpoint_source = format!(
+                "{}|sha256:{}",
+                source_sha256,
+                hex_digest(&checkpoint_bytes)
+            );
+            let raw: Value = serde_json::from_slice(&checkpoint_bytes).with_context(|| {
+                format!("failed to parse legacy checkpoint {}", checkpoint_path.display())
+            })?;
+            let checkpoints = raw
+                .get("checkpoints")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            for (checkpoint_id, checkpoint) in checkpoints {
+                let created_at = checkpoint
+                    .get("timestamp")
+                    .and_then(Value::as_f64)
+                    .map(|value| value as i64)
+                    .unwrap_or_else(|| Utc::now().timestamp());
+                let state = redact_legacy_value(checkpoint);
+                if self.import_legacy_checkpoint_once(
+                    &checkpoint_source,
+                    target_session_id,
+                    &checkpoint_id,
+                    &state,
+                    created_at,
+                )? {
+                    imported_checkpoints = imported_checkpoints.saturating_add(1);
+                } else {
+                    skipped_checkpoints = skipped_checkpoints.saturating_add(1);
+                }
+            }
+        }
+
+        self.record_compat_imported_events(
+            imported_messages.saturating_add(imported_checkpoints),
+        )?;
+        Ok(LegacySessionImportSummary {
+            target_session_id: target_session_id.to_string(),
+            source_session_id: source_session_id.to_string(),
+            source_sha256,
+            imported_messages,
+            skipped_messages,
+            imported_checkpoints,
+            skipped_checkpoints,
+        })
+    }
+
+    fn import_legacy_message_once(
+        &self,
+        source_sha256: &str,
+        session_id: &str,
+        source_id: &str,
+        role: &str,
+        content: &str,
+        item: Value,
+        created_at: i64,
+    ) -> Result<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin legacy message import")?;
+        if tx
+            .query_row(
+                "SELECT 1 FROM legacy_imports WHERE source_sha256 = ?1 AND source_kind = 'message' AND source_id = ?2",
+                params![source_sha256, source_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some()
+        {
+            tx.commit()?;
+            return Ok(false);
+        }
+        let current_leaf_id: Option<i64> = tx.query_row(
+            "SELECT current_leaf_id FROM threads WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        let item_json = serde_json::to_string(&redact_legacy_value(item))?;
+        let message_id: i64 = tx.query_row(
+            "INSERT INTO messages(thread_id, role, content, item_json, created_at, parent_entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
+            params![session_id, role, content, item_json, created_at, current_leaf_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "UPDATE threads SET current_leaf_id = ?1, updated_at = MAX(updated_at, ?2) WHERE id = ?3",
+            params![message_id, created_at, session_id],
+        )?;
+        let next_seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM ledger_events WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        let event_id = format!(
+            "legacy_{}_message_{}",
+            source_sha256.trim_start_matches("sha256:"),
+            hex_digest(source_id.as_bytes())
+        );
+        let payload_json = serde_json::to_string(&redact_legacy_value(json!({
+            "source_kind": "message",
+            "source_id": source_id,
+            "message_id": message_id,
+            "role": role,
+            "content": content,
+        })))?;
+        tx.execute(
+            "INSERT INTO ledger_events(event_id, session_id, seq, event_type, workspace_id, turn_id, correlation_id, parent_event_id, actor_json, visibility, payload_json, timestamp) VALUES (?1, ?2, ?3, 'extension_event', NULL, NULL, ?4, NULL, ?5, 'model_and_ui', ?6, ?7)",
+            params![
+                event_id,
+                session_id,
+                next_seq,
+                source_sha256,
+                r#"{"kind":"legacy_python","id":"session_store"}"#,
+                payload_json,
+                legacy_timestamp(Some(created_at as f64)),
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO legacy_imports(source_sha256, source_kind, source_id, session_id, target_id, created_at) VALUES (?1, 'message', ?2, ?3, ?4, ?5)",
+            params![source_sha256, source_id, session_id, message_id.to_string(), Utc::now().timestamp()],
+        )?;
+        tx.commit()
+            .context("failed to commit legacy message import")?;
+        Ok(true)
+    }
+
+    fn import_legacy_checkpoint_once(
+        &self,
+        source_sha256: &str,
+        session_id: &str,
+        checkpoint_id: &str,
+        state: &Value,
+        created_at: i64,
+    ) -> Result<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin legacy checkpoint import")?;
+        if tx
+            .query_row(
+                "SELECT 1 FROM legacy_imports WHERE source_sha256 = ?1 AND source_kind = 'checkpoint' AND source_id = ?2",
+                params![source_sha256, checkpoint_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some()
+        {
+            tx.commit()?;
+            return Ok(false);
+        }
+        let state_json = serde_json::to_string(state)?;
+        tx.execute(
+            "INSERT INTO checkpoints(thread_id, checkpoint_id, state_json, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(thread_id, checkpoint_id) DO UPDATE SET state_json = excluded.state_json, created_at = excluded.created_at",
+            params![session_id, checkpoint_id, state_json, created_at],
+        )?;
+        let next_seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM ledger_events WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        let event_id = format!(
+            "legacy_{}_checkpoint_{}",
+            source_sha256.trim_start_matches("sha256:"),
+            hex_digest(checkpoint_id.as_bytes())
+        );
+        let payload_json = serde_json::to_string(&redact_legacy_value(json!({
+            "source_kind": "checkpoint",
+            "checkpoint_id": checkpoint_id,
+            "base_seq": next_seq.saturating_sub(1),
+        })))?;
+        tx.execute(
+            "INSERT INTO ledger_events(event_id, session_id, seq, event_type, workspace_id, turn_id, correlation_id, parent_event_id, actor_json, visibility, payload_json, timestamp) VALUES (?1, ?2, ?3, 'checkpoint_created', NULL, NULL, ?4, NULL, ?5, 'model_and_ui', ?6, ?7)",
+            params![
+                event_id,
+                session_id,
+                next_seq,
+                source_sha256,
+                r#"{"kind":"legacy_python","id":"checkpoint"}"#,
+                payload_json,
+                legacy_timestamp(Some(created_at as f64)),
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO legacy_imports(source_sha256, source_kind, source_id, session_id, target_id, created_at) VALUES (?1, 'checkpoint', ?2, ?3, ?4, ?5)",
+            params![source_sha256, checkpoint_id, session_id, checkpoint_id, Utc::now().timestamp()],
+        )?;
+        tx.commit()
+            .context("failed to commit legacy checkpoint import")?;
+        Ok(true)
+    }
+
+    fn ledger_event_exists(&self, event_id: &str) -> Result<bool> {
+        let conn = self.conn()?;
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM ledger_events WHERE event_id = ?1 LIMIT 1",
+                params![event_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(exists.is_some())
     }
 
     fn conn(&self) -> Result<MutexGuard<'_, Connection>> {
@@ -642,6 +1742,72 @@ impl StateStore {
                 "#
             ))
             .context("failed to initialize thread goal continuation schema")?;
+        }
+        if user_version < 5 {
+            conn.execute_batch(
+                r#"
+                BEGIN;
+                CREATE TABLE IF NOT EXISTS ledger_events (
+                    event_id TEXT PRIMARY KEY NOT NULL,
+                    session_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL CHECK(seq > 0),
+                    event_type TEXT NOT NULL,
+                    workspace_id TEXT,
+                    turn_id TEXT,
+                    correlation_id TEXT,
+                    parent_event_id TEXT,
+                    actor_json TEXT NOT NULL,
+                    visibility TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    UNIQUE(session_id, seq)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ledger_events_session_seq
+                    ON ledger_events(session_id, seq ASC);
+                CREATE INDEX IF NOT EXISTS idx_ledger_events_turn
+                    ON ledger_events(turn_id, seq ASC);
+                PRAGMA user_version = 5;
+                COMMIT;
+                "#,
+            )
+            .context("failed to initialize runtime ledger schema")?;
+        }
+        if user_version < 6 {
+            conn.execute_batch(
+                r#"
+                BEGIN;
+                CREATE TABLE IF NOT EXISTS legacy_imports (
+                    source_sha256 TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(source_sha256, source_kind, source_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_legacy_imports_session
+                    ON legacy_imports(session_id, source_kind);
+                PRAGMA user_version = 6;
+                COMMIT;
+                "#,
+            )
+            .context("failed to initialize legacy import schema")?;
+        }
+        if user_version < 7 {
+            conn.execute_batch(
+                r#"
+                BEGIN;
+                CREATE TABLE IF NOT EXISTS migration_metrics (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL
+                );
+                INSERT OR IGNORE INTO migration_metrics(key, value)
+                    VALUES ('compat_imported_events', 0);
+                PRAGMA user_version = 7;
+                COMMIT;
+                "#,
+            )
+            .context("failed to initialize migration metrics schema")?;
         }
         Ok(())
     }
@@ -1935,6 +3101,81 @@ fn path_to_opt_string(path: Option<&Path>) -> Option<String> {
     path.map(|p| p.display().to_string())
 }
 
+fn hex_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn legacy_event_type(value: Option<&str>) -> &'static str {
+    match value.unwrap_or("extension_event") {
+        "turn_start" => "turn_started",
+        "text_delta" | "reasoning" => "model_delta",
+        "tool_call_started" => "tool_call_started",
+        "tool_call_finished" => "tool_call_finished",
+        "turn_completed" => "turn_completed",
+        "turn_failed" => "turn_failed",
+        "cancelled" => "turn_cancelled",
+        "token_usage" => "model_request_settled",
+        "extension_event" => "extension_event",
+        _ => "extension_event",
+    }
+}
+
+fn redact_legacy_value(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            for (key, value) in object.iter_mut() {
+                let normalized = key.to_ascii_lowercase();
+                if [
+                    "api_key",
+                    "apikey",
+                    "authorization",
+                    "password",
+                    "private_key",
+                    "secret",
+                    "token",
+                ]
+                .iter()
+                .any(|needle| normalized.contains(needle))
+                {
+                    *value = Value::String("[REDACTED]".to_string());
+                } else {
+                    *value = redact_legacy_value(value.take());
+                }
+            }
+            Value::Object(object)
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(redact_legacy_value).collect()),
+        other => other,
+    }
+}
+
+fn legacy_timestamp(ts: Option<f64>) -> String {
+    ts.and_then(|value| {
+        if !value.is_finite() || value < 0.0 {
+            return None;
+        }
+        let seconds = value.trunc() as i64;
+        let nanos = ((value.fract() * 1_000_000_000.0).round() as u32).min(999_999_999);
+        Utc.timestamp_opt(seconds, nanos)
+            .single()
+            .map(|timestamp| timestamp.to_rfc3339())
+    })
+    .unwrap_or_else(|| Utc::now().to_rfc3339())
+}
+
+fn normalize_legacy_timestamp(ts: i64) -> i64 {
+    // Python session_store stores milliseconds while the Rust state schema
+    // stores Unix seconds. Keep already-second values unchanged for fixtures
+    // and older exports.
+    let ts = if ts > 10_000_000_000 {
+        ts / 1_000
+    } else {
+        ts
+    };
+    ts.max(0)
+}
+
 fn parse_checkpoint_state(state_json: &str) -> Result<Value> {
     serde_json::from_str(state_json).context("failed to parse checkpoint state json")
 }
@@ -2381,6 +3622,535 @@ mod tests {
             .get_thread("thread-migrated")
             .expect("read after reopen");
         assert!(persisted.is_some());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ledger_allocates_sequences_and_verifies_replay() {
+        let store = temp_state_store("ledger-sequences");
+        let event = |id: &str, payload: Value| LedgerEventAppend {
+            event_id: id.to_string(),
+            session_id: "session-ledger".to_string(),
+            event_type: "user_input_submitted".to_string(),
+            workspace_id: None,
+            turn_id: None,
+            correlation_id: Some("corr-1".to_string()),
+            parent_event_id: None,
+            actor: json!({"kind": "user", "id": "desktop"}),
+            visibility: "model_and_ui".to_string(),
+            payload,
+            timestamp: "2026-10-03T00:00:00Z".to_string(),
+        };
+
+        let first = store
+            .append_ledger_event(&event("evt-1", json!({"content": "one"})))
+            .expect("append first ledger event");
+        let second = store
+            .append_ledger_event(&event("evt-2", json!({"content": "two"})))
+            .expect("append second ledger event");
+        assert_eq!(first.seq, 1);
+        assert_eq!(second.seq, 2);
+
+        let replay = store
+            .list_ledger_events("session-ledger", 1, 50)
+            .expect("read ledger tail");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0], second);
+
+        let verification = store
+            .verify_ledger("session-ledger")
+            .expect("verify ledger");
+        assert_eq!(verification.event_count, 2);
+        assert_eq!(verification.last_seq, 2);
+        assert!(verification.contiguous);
+    }
+
+    /// Append a minimal legal ledger event to `session`.
+    fn append_test_ledger_event(store: &StateStore, session: &str, id: &str) {
+        store
+            .append_ledger_event(&LedgerEventAppend {
+                event_id: id.to_string(),
+                session_id: session.to_string(),
+                event_type: "user_input_submitted".to_string(),
+                workspace_id: None,
+                turn_id: None,
+                correlation_id: None,
+                parent_event_id: None,
+                actor: json!({"kind": "user", "id": "desktop"}),
+                visibility: "model_and_ui".to_string(),
+                payload: json!({"content": "hi"}),
+                timestamp: "2026-10-03T00:00:00Z".to_string(),
+            })
+            .expect("append ledger event");
+    }
+
+    /// A healthy store verifies every session and reports no failures.
+    #[test]
+    fn ledger_integrity_report_summarizes_healthy_sessions() {
+        let store = temp_state_store("ledger-integrity-healthy");
+        append_test_ledger_event(&store, "session-a", "evt-a1");
+        append_test_ledger_event(&store, "session-a", "evt-a2");
+        append_test_ledger_event(&store, "session-b", "evt-b1");
+
+        let report = store.verify_all_ledgers().expect("verify all ledgers");
+        assert_eq!(report.sessions_verified, 2);
+        assert_eq!(report.events_verified, 3);
+        assert!(report.non_contiguous.is_empty(), "{report:#?}");
+        assert!(report.is_healthy());
+
+        // A store with no events is healthy and empty, not an error.
+        let empty = temp_state_store("ledger-integrity-empty");
+        let empty_report = empty.verify_all_ledgers().expect("verify empty store");
+        assert_eq!(empty_report.sessions_verified, 0);
+        assert!(empty_report.is_healthy());
+    }
+
+    /// A session with a sequence gap is named in the report, and the healthy
+    /// sessions around it are still counted.
+    #[test]
+    fn ledger_integrity_report_names_a_non_contiguous_session() {
+        let store = temp_state_store("ledger-integrity-gap");
+        append_test_ledger_event(&store, "session-good", "evt-good");
+        append_test_ledger_event(&store, "session-gap", "evt-gap-1");
+        append_test_ledger_event(&store, "session-gap", "evt-gap-2");
+
+        // Delete a middle event's row to create a real sequence gap, the way a
+        // torn write or an out-of-band edit would.
+        {
+            let conn = store.conn().expect("open store connection");
+            conn.execute(
+                "DELETE FROM ledger_events WHERE session_id = 'session-gap' AND seq = 1",
+                [],
+            )
+            .expect("remove the gap event");
+        }
+
+        // The single-session verify fails outright on a gap; the report has to
+        // turn that into a finding rather than failing the whole scan.
+        assert!(
+            store.verify_ledger("session-gap").is_err(),
+            "a gap is a verification error at the single-session level"
+        );
+
+        let report = store.verify_all_ledgers().expect("verify all ledgers");
+        assert_eq!(report.sessions_verified, 2, "both sessions are still read");
+        assert_eq!(
+            report.events_verified, 2,
+            "the surviving events are still counted"
+        );
+        assert!(!report.is_healthy());
+        assert_eq!(report.non_contiguous.len(), 1, "{report:#?}");
+        assert_eq!(report.non_contiguous[0].session_id, "session-gap");
+        assert_eq!(report.non_contiguous[0].event_count, 1);
+        assert_eq!(report.non_contiguous[0].last_seq, 2);
+    }
+
+    #[test]
+    fn ledger_rejects_empty_identity_before_mutation() {
+        let store = temp_state_store("ledger-validation");
+        let invalid = LedgerEventAppend {
+            event_id: String::new(),
+            session_id: "session-ledger".to_string(),
+            event_type: "test".to_string(),
+            workspace_id: None,
+            turn_id: None,
+            correlation_id: None,
+            parent_event_id: None,
+            actor: json!({}),
+            visibility: "model_and_ui".to_string(),
+            payload: json!({}),
+            timestamp: "2026-10-03T00:00:00Z".to_string(),
+        };
+        let error = store
+            .append_ledger_event(&invalid)
+            .expect_err("empty event id must be rejected");
+        assert!(error.to_string().contains("event_id"));
+        assert_eq!(
+            store
+                .verify_ledger("session-ledger")
+                .expect("verify empty ledger")
+                .event_count,
+            0
+        );
+    }
+
+    #[test]
+    fn ledger_registry_rejects_incomplete_core_payloads() {
+        let store = temp_state_store("ledger-payload-registry");
+        let invalid = LedgerEventAppend {
+            event_id: "evt-invalid-payload".to_string(),
+            session_id: "session-ledger".to_string(),
+            event_type: "item.delta".to_string(),
+            workspace_id: None,
+            turn_id: Some("turn-1".to_string()),
+            correlation_id: None,
+            parent_event_id: None,
+            actor: json!({"kind": "runtime", "id": "rust"}),
+            visibility: "model_and_ui".to_string(),
+            payload: json!({"delta": "partial"}),
+            timestamp: "2026-10-03T00:00:00Z".to_string(),
+        };
+        let error = store
+            .append_ledger_event(&invalid)
+            .expect_err("item.delta without kind must be rejected");
+        assert!(error.to_string().contains("missing 'kind'"));
+        assert_eq!(
+            store
+                .verify_ledger("session-ledger")
+                .expect("verify empty payload-registry ledger")
+                .event_count,
+            0
+        );
+    }
+
+    #[test]
+    fn ledger_retry_is_idempotent_and_conflicting_reuse_is_rejected() {
+        let store = temp_state_store("ledger-idempotency");
+        let event = LedgerEventAppend {
+            event_id: "evt-retry".to_string(),
+            session_id: "session-retry".to_string(),
+            event_type: "turn_started".to_string(),
+            workspace_id: None,
+            turn_id: Some("turn-1".to_string()),
+            correlation_id: Some("corr-1".to_string()),
+            parent_event_id: None,
+            actor: json!({"kind": "runtime", "id": "rust"}),
+            visibility: "model_and_ui".to_string(),
+            payload: json!({"prompt": "hello"}),
+            timestamp: "2026-10-03T00:00:00Z".to_string(),
+        };
+
+        let first = store
+            .append_ledger_event(&event)
+            .expect("append initial event");
+        let retry = store
+            .append_ledger_event(&event)
+            .expect("retry should return the original event");
+        assert_eq!(retry, first);
+        assert_eq!(
+            store
+                .verify_ledger("session-retry")
+                .expect("verify idempotent ledger")
+                .event_count,
+            1
+        );
+
+        let mut conflicting = event;
+        conflicting.payload = json!({"prompt": "different"});
+        let error = store
+            .append_ledger_event(&conflicting)
+            .expect_err("reusing an event id with different content must fail");
+        assert!(error.to_string().contains("already exists with different content"));
+    }
+
+    #[test]
+    fn legacy_jsonl_import_is_checksum_bound_and_idempotent() {
+        let dir = temp_state_dir("ledger-import");
+        let store = StateStore::open(Some(dir.join("state.db"))).expect("open store");
+        let source = dir.join("session_log.jsonl");
+        fs::write(
+            &source,
+            concat!(
+                "{\"type\":\"turn_start\",\"ts\":1735689600.5,\"turn\":1,\"working_dir\":\"C:/workspace\",\"api_key\":\"legacy-secret\"}\n",
+                "{\"type\":\"text_delta\",\"ts\":1735689601,\"turn\":1,\"text\":\"hello\"}\n",
+                "not-json\n"
+            ),
+        )
+        .expect("write legacy log");
+
+        let first = store
+            .import_legacy_jsonl("session-import", &source)
+            .expect("import legacy log");
+        assert_eq!(first.imported, 2);
+        assert_eq!(first.skipped, 1);
+        assert!(first.source_sha256.starts_with("sha256:"));
+        assert_eq!(
+            store
+                .verify_ledger("session-import")
+                .expect("verify imported ledger")
+                .event_count,
+            2
+        );
+
+        let second = store
+            .import_legacy_jsonl("session-import", &source)
+            .expect("retry import legacy log");
+        assert_eq!(second.imported, 0);
+        assert_eq!(second.skipped, 3);
+        // The persisted compat-import metric counts only newly imported
+        // events; the idempotent retry adds nothing.
+        assert_eq!(
+            store
+                .compat_imported_event_count()
+                .expect("compat imported event count"),
+            2
+        );
+        let events = store
+            .list_ledger_events("session-import", 0, 50)
+            .expect("read imported events");
+        assert_eq!(events[0].event_type, "turn_started");
+        assert_eq!(events[0].payload["api_key"], "[REDACTED]");
+        assert_eq!(events[1].event_type, "model_delta");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The compat-import metric is persisted: it survives a store reopen and
+    /// counts only newly imported canonical events (Phase 0 metric).
+    #[test]
+    fn compat_imported_event_count_is_persisted_across_reopen() {
+        let dir = temp_state_dir("compat-import-metric");
+        let db = dir.join("state.db");
+        {
+            let store = StateStore::open(Some(db.clone())).expect("open store");
+            let source = dir.join("session_log.jsonl");
+            fs::write(
+                &source,
+                "{\"type\":\"turn_start\",\"ts\":1,\"turn\":1}\n{\"type\":\"text_delta\",\"ts\":2,\"turn\":1,\"text\":\"x\"}\n",
+            )
+            .expect("write legacy log");
+            let summary = store
+                .import_legacy_jsonl("session-metric", &source)
+                .expect("import legacy log");
+            assert_eq!(summary.imported, 2);
+            assert_eq!(
+                store.compat_imported_event_count().expect("count"),
+                2,
+                "the counter must reflect the import before any reopen"
+            );
+        }
+        {
+            let store = StateStore::open(Some(db)).expect("reopen store");
+            assert_eq!(
+                store.compat_imported_event_count().expect("count"),
+                2,
+                "the counter must survive a restart"
+            );
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Write a minimal legacy Python session store at `path`.
+    fn write_legacy_store(path: &Path, sessions: &[(&str, &str, i64)]) {
+        let conn = Connection::open(path).expect("open legacy fixture");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                provider TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                reasoning TEXT,
+                tool_calls_json TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .expect("create legacy schema");
+        for (index, (id, title, updated_at)) in sessions.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO sessions VALUES (?1, ?2, 'openai', ?3, ?4)",
+                params![id, title, updated_at, updated_at],
+            )
+            .expect("insert legacy session");
+            // Two messages each, so the count a caller sees is not a constant.
+            for offset in 0..2 {
+                conn.execute(
+                    "INSERT INTO messages VALUES (?1, ?2, 'user', 'hi', NULL, NULL, NULL, NULL, NULL, ?3, ?3)",
+                    params![
+                        format!("{id}-m{offset}"),
+                        id,
+                        updated_at + i64::try_from(index).unwrap_or(0)
+                    ],
+                )
+                .expect("insert legacy message");
+            }
+        }
+    }
+
+    /// Discovery reports what a migration could import without importing it.
+    #[test]
+    fn legacy_discovery_reports_sessions_without_importing() {
+        let dir = temp_state_dir("legacy-discovery");
+        let store_dir = dir.join("previous-install");
+        fs::create_dir_all(&store_dir).expect("create previous install dir");
+        let source_path = store_dir.join("sessions.db");
+        write_legacy_store(
+            &source_path,
+            &[("python-a", "Older chat", 1_735_689_600_000), ("python-b", "Newer chat", 1_735_689_900_000)],
+        );
+        // A sibling checkpoint bundle is reported, not parsed.
+        let checkpoint = store_dir.join("checkpoints.json");
+        fs::write(&checkpoint, "{}").expect("write checkpoint sibling");
+
+        let target = StateStore::open(Some(dir.join("state.db"))).expect("open target state");
+        let discovery = target.discover_legacy_session_stores(&[store_dir.clone()]);
+
+        assert_eq!(discovery.stores.len(), 1, "one store: {discovery:#?}");
+        assert!(discovery.rejected.is_empty(), "{discovery:#?}");
+        let store = &discovery.stores[0];
+        assert_eq!(store.path, source_path);
+        assert!(store.size_bytes > 0);
+        assert_eq!(store.checkpoint_path.as_deref(), Some(checkpoint.as_path()));
+        // Newest first, so a migration surface can lead with the current chat.
+        let ids = store
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["python-b", "python-a"]);
+        assert_eq!(store.sessions[0].message_count, 2);
+        assert_eq!(discovery.total_sessions(), 2);
+        assert_eq!(discovery.total_messages(), 4);
+
+        // Nothing was imported: discovery is a summary, not a migration.
+        assert!(
+            target.list_messages("python-a", None).unwrap().is_empty(),
+            "discovery must not import"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A `sessions.db` that is not a legacy store is reported as rejected, and
+    /// does not hide a real store found through another root.
+    #[test]
+    fn legacy_discovery_rejects_a_foreign_database_and_keeps_scanning() {
+        let dir = temp_state_dir("legacy-discovery-reject");
+        let decoy = dir.join("decoy");
+        let real = dir.join("real");
+        fs::create_dir_all(&decoy).expect("create decoy dir");
+        fs::create_dir_all(&real).expect("create real dir");
+
+        // A SQLite file with unrelated tables.
+        let decoy_path = decoy.join("sessions.db");
+        Connection::open(&decoy_path)
+            .expect("open decoy")
+            .execute_batch("CREATE TABLE unrelated (id TEXT PRIMARY KEY);")
+            .expect("create decoy schema");
+        let real_path = real.join("sessions.db");
+        write_legacy_store(&real_path, &[("python-real", "Real", 1_735_689_600_000)]);
+
+        let target = StateStore::open(Some(dir.join("state.db"))).expect("open target state");
+        let discovery = target.discover_legacy_session_stores(&[decoy.clone(), real.clone()]);
+
+        assert_eq!(discovery.stores.len(), 1, "{discovery:#?}");
+        assert_eq!(discovery.stores[0].path, real_path);
+        assert_eq!(discovery.rejected.len(), 1, "{discovery:#?}");
+        assert_eq!(discovery.rejected[0].path, decoy_path);
+        assert!(
+            discovery.rejected[0].reason.contains("not a legacy session store"),
+            "unexpected reason: {}",
+            discovery.rejected[0].reason
+        );
+
+        // The same store reached twice is reported once.
+        let deduped = target.discover_legacy_session_stores(&[real.clone(), real.clone()]);
+        assert_eq!(deduped.stores.len(), 1, "{deduped:#?}");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A missing root is not an error: an install that never had Python data
+    /// must produce an empty summary, not a failure.
+    #[test]
+    fn legacy_discovery_treats_a_missing_root_as_empty() {
+        let dir = temp_state_dir("legacy-discovery-missing");
+        let target = StateStore::open(Some(dir.join("state.db"))).expect("open target state");
+        let discovery =
+            target.discover_legacy_session_stores(&[dir.join("no-such-install")]);
+        assert!(discovery.stores.is_empty());
+        assert!(discovery.rejected.is_empty());
+        assert_eq!(discovery.total_sessions(), 0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_session_state_imports_messages_and_checkpoints_once() {
+        let dir = temp_state_dir("session-state-import");
+        let source_path = dir.join("sessions.db");
+        let source = Connection::open(&source_path).expect("open source session db");
+        source
+            .execute_batch(
+                r#"
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    provider TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    reasoning TEXT,
+                    tool_calls_json TEXT,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('python-1', 'Imported chat', 'openai', 1735689600000, 1735689602000);
+                INSERT INTO messages VALUES ('m-1', 'python-1', 'user', 'hello', NULL, NULL, 3, NULL, NULL, 1735689600000, 1735689600000);
+                INSERT INTO messages VALUES ('m-2', 'python-1', 'assistant', 'world', 'reasoning', '[{"name":"tool"}]', NULL, 5, NULL, 1735689601000, 1735689601000);
+                "#,
+            )
+            .expect("create source session fixture");
+        drop(source);
+
+        let checkpoint_path = dir.join("python-1.json");
+        fs::write(
+            &checkpoint_path,
+            r#"{"session_id":"python-1","checkpoints":{"cp-1":{"messages":[{"role":"user","content":"hello"}],"dynamic_context":{"cwd":"C:/workspace"},"timestamp":1735689602.0,"metadata":{"trigger":"after_turn","api_key":"secret"}}},"order":["cp-1"]}"#,
+        )
+        .expect("write checkpoint fixture");
+
+        let store = StateStore::open(Some(dir.join("state.db"))).expect("open target state");
+        let first = store
+            .import_legacy_session_db(
+                "rust-target",
+                &source_path,
+                "python-1",
+                Some(&checkpoint_path),
+            )
+            .expect("import legacy session state");
+        assert_eq!(first.imported_messages, 2);
+        assert_eq!(first.imported_checkpoints, 1);
+        assert_eq!(store.list_messages("rust-target", None).unwrap().len(), 2);
+        let checkpoint = store
+            .load_checkpoint("rust-target", Some("cp-1"))
+            .expect("load imported checkpoint")
+            .expect("checkpoint exists");
+        assert_eq!(checkpoint.state["metadata"]["api_key"], "[REDACTED]");
+
+        let second = store
+            .import_legacy_session_db(
+                "rust-target",
+                &source_path,
+                "python-1",
+                Some(&checkpoint_path),
+            )
+            .expect("retry legacy session state import");
+        assert_eq!(second.imported_messages, 0);
+        assert_eq!(second.skipped_messages, 2);
+        assert_eq!(second.imported_checkpoints, 0);
+        assert_eq!(second.skipped_checkpoints, 1);
+        assert_eq!(store.list_messages("rust-target", None).unwrap().len(), 2);
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -79,6 +79,7 @@ mod native_memory;
 mod network_policy;
 mod palette;
 mod plugins;
+pub use plugins::extension_host;
 mod prefix_cache;
 mod pricing;
 mod project_context;
@@ -1594,6 +1595,17 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
 /// args instead of reading `std::env::args()`. Used by `run()` and tested
 /// directly.
 fn run_with_args(args: Vec<String>) -> Result<()> {
+    // ssh launches SSH_ASKPASS with no arguments, so the askpass helper mode
+    // cannot be an argument — it is selected by the marker environment the
+    // worker-start path sets. It must be checked before any startup machinery
+    // runs: the helper is a short-lived secret pipe, not a bootstrapping
+    // process. It only ever reads the broker capability, prints the password
+    // to stdout for ssh, and exits.
+    if std::env::var(fleet::ssh_secret::ASKPASS_MARKER_ENV).as_deref() == Ok("1") {
+        let code = fleet::ssh_secret::run_askpass();
+        std::process::exit(code);
+    }
+
     // Match the dispatcher entrypoint: Unix shells and supervisors may inherit
     // SIGPIPE ignored, which turns short pipelines such as `hakus doctor |
     // head` into BrokenPipe panics once this delegated TUI binary prints.

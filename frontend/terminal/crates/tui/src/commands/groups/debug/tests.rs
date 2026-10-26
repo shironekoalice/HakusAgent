@@ -80,7 +80,6 @@ fn test_tokens_shows_usage_info() {
     assert!(msg.contains("Model:"));
 }
 
-
 #[test]
 fn test_cost_shows_spending_info() {
     let mut app = create_test_app();
@@ -116,7 +115,6 @@ fn cost_report_will_not_promote_an_unqualified_accumulator_to_a_total() {
     assert!(msg.contains("Estimated total: unknown"), "{msg}");
     assert!(!msg.contains("$0.1234"), "{msg}");
 }
-
 
 #[test]
 fn cost_coverage_is_currency_specific_for_mixed_deepseek_openai() {
@@ -474,7 +472,6 @@ fn cache_inspect_json_reports_tool_catalog_hash_and_layer_sizes() {
     assert!(tool_layer["byte_len"].as_u64().unwrap() > 0);
     assert!(tool_layer["token_estimate"].as_u64().unwrap() > 0);
 }
-
 
 fn warmup_key(model: &str, static_hash: &str) -> CacheWarmupKey {
     CacheWarmupKey {

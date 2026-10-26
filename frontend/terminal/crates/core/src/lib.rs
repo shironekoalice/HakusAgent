@@ -20,9 +20,7 @@ use hakus_execpolicy::{
     ExecPolicyEngine,
 };
 use hakus_hooks::{HookDispatcher, HookEvent};
-use hakus_mcp::{
-    McpManager, McpStartupCompleteEvent, McpStartupStatus as McpManagerStartupStatus,
-};
+use hakus_mcp::{McpManager, McpStartupCompleteEvent, McpStartupStatus as McpManagerStartupStatus};
 use hakus_protocol::{
     AppResponse, EventFrame, ExecApprovalRequestEvent, PromptRequest, PromptResponse,
     ResponseChannel, ReviewDecision, Status, Thread, ThreadForkParams, ThreadGoal,
@@ -199,9 +197,7 @@ pub struct JobRecord {
 /// free-form job detail is intentionally omitted because this owner does not
 /// classify it as safe for a cross-surface read model.
 #[must_use]
-pub fn job_record_to_agent_run(
-    record: &JobRecord,
-) -> hakus_protocol::agent_run::AgentRunSnapshot {
+pub fn job_record_to_agent_run(record: &JobRecord) -> hakus_protocol::agent_run::AgentRunSnapshot {
     use hakus_protocol::agent_run::{
         AgentRunSnapshot, BudgetSummary, RunSource, RunState, TerminalOutcome, TerminalSummary,
     };
@@ -1725,9 +1721,7 @@ impl Runtime {
                 McpManagerStartupStatus::Failed { error } => {
                     hakus_protocol::McpStartupStatus::Failed { error }
                 }
-                McpManagerStartupStatus::Cancelled => {
-                    hakus_protocol::McpStartupStatus::Cancelled
-                }
+                McpManagerStartupStatus::Cancelled => hakus_protocol::McpStartupStatus::Cancelled,
             };
             self.hooks
                 .emit(HookEvent::GenericEventFrame {

@@ -10,6 +10,8 @@ use sha2::Digest;
 
 /// Capability-hash domain for the current activation-policy binding.
 pub const CAPABILITY_HASH_DOMAIN_V3: &[u8] = b"hakus-plugin-capabilities-v3\0";
+/// Policy domain for the reviewed extension host adapter.
+pub const CAPABILITY_HASH_DOMAIN_V4: &[u8] = b"hakus-plugin-capabilities-v4\0";
 
 /// Historical policy domain kept so persisted v2 receipts are intentionally
 /// invalidated when the declarative Commands, Agents, and Hooks adapters ship.
@@ -19,7 +21,7 @@ pub const CAPABILITY_HASH_DOMAIN_V2: &[u8] = b"hakus-plugin-capabilities-v2\0";
 /// receipt. Kept so discovery can prove a v1 receipt no longer matches.
 pub const CAPABILITY_HASH_DOMAIN_V1: &[u8] = b"hakus-plugin-capabilities-v1\0";
 
-pub const ACTIVATION_POLICY_VERSION: u32 = 3;
+pub const ACTIVATION_POLICY_VERSION: u32 = 4;
 
 /// A runtime adapter or inventoried capability that a bundle may declare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -34,6 +36,7 @@ pub enum PluginActivationCapability {
     Native,
     FilesystemRoots,
     LifecycleMutation,
+    Extension,
 }
 
 impl PluginActivationCapability {
@@ -48,6 +51,7 @@ impl PluginActivationCapability {
         Self::Native,
         Self::FilesystemRoots,
         Self::LifecycleMutation,
+        Self::Extension,
     ];
 
     #[must_use]
@@ -63,6 +67,7 @@ impl PluginActivationCapability {
             Self::Native => "native",
             Self::FilesystemRoots => "filesystem-roots",
             Self::LifecycleMutation => "lifecycle-mutation",
+            Self::Extension => "extension",
         }
     }
 }
@@ -89,6 +94,7 @@ impl PluginActivationPolicy {
                 PluginActivationCapability::Commands,
                 PluginActivationCapability::Agents,
                 PluginActivationCapability::Hooks,
+                PluginActivationCapability::Extension,
             ],
             inactive: &[
                 PluginActivationCapability::Lsp,
@@ -105,7 +111,7 @@ impl PluginActivationPolicy {
     }
 
     pub fn write_hash_material(self, hasher: &mut impl Digest) {
-        hasher.update(CAPABILITY_HASH_DOMAIN_V3);
+        hasher.update(CAPABILITY_HASH_DOMAIN_V4);
         hasher.update(b"policy-version\0");
         hasher.update(self.version.to_string().as_bytes());
         hasher.update(b"\0");

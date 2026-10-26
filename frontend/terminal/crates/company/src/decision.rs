@@ -158,23 +158,43 @@ pub fn apply(
 ) -> Result<Applied> {
     let mut applied = Applied::default();
 
-    if let Some(note) = decision.commentary.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(note) = decision
+        .commentary
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         store.add_comment(&issue.id, Some(&actor.id), note.trim())?;
     }
 
     for action in &decision.actions {
         match action {
-            Action::CreateIssue { title, body, assignee_role, assignee_agent_id, goal_id } => {
+            Action::CreateIssue {
+                title,
+                body,
+                assignee_role,
+                assignee_agent_id,
+                goal_id,
+            } => {
                 let child_depth = issue.depth + 1;
                 if child_depth > max_depth {
                     // Refused: depth is exhausted, so this belongs to the manager.
                     applied.notes.push(format!("委托深度超限，已升级：{title}"));
-                    escalate(store, actor, issue, &format!("委托深度已达上限（{max_depth}）：{title}"))?;
+                    escalate(
+                        store,
+                        actor,
+                        issue,
+                        &format!("委托深度已达上限（{max_depth}）：{title}"),
+                    )?;
                     applied.escalated.push(issue.id.clone());
                     continue;
                 }
 
-                let assignee = resolve_assignee(store, actor, assignee_agent_id.as_deref(), assignee_role.as_deref())?;
+                let assignee = resolve_assignee(
+                    store,
+                    actor,
+                    assignee_agent_id.as_deref(),
+                    assignee_role.as_deref(),
+                )?;
                 let billing = if issue.billing_code.trim().is_empty() {
                     actor.id.clone()
                 } else {
@@ -252,7 +272,11 @@ fn escalate(store: &CompanyStore, actor: &AgentRow, issue: &IssueRow, reason: &s
 
 /// Hand a ticket to the actor's manager. With no manager, park it for humans.
 fn escalate_on(store: &CompanyStore, actor: &AgentRow, issue_id: &str, reason: &str) -> Result<()> {
-    match actor.parent_agent_id.as_deref().and_then(|p| store.get_agent(p).ok().flatten()) {
+    match actor
+        .parent_agent_id
+        .as_deref()
+        .and_then(|p| store.get_agent(p).ok().flatten())
+    {
         Some(manager) => {
             store.reassign_issue(issue_id, Some(&manager.id))?;
             store.set_issue_state(issue_id, IssueState::Blocked)?;
@@ -282,8 +306,12 @@ mod tests {
     fn company() -> (CompanyStore, AgentRow, AgentRow, IssueRow) {
         let store = CompanyStore::open_in_memory().unwrap();
         let c = store.create_company("Acme", "ship it").unwrap();
-        let ceo = store.create_agent(&c.id, "Alice", "ceo", None, "llm", "{}", 0).unwrap();
-        let eng = store.create_agent(&c.id, "Bob", "engineer", Some(&ceo.id), "llm", "{}", 0).unwrap();
+        let ceo = store
+            .create_agent(&c.id, "Alice", "ceo", None, "llm", "{}", 0)
+            .unwrap();
+        let eng = store
+            .create_agent(&c.id, "Bob", "engineer", Some(&ceo.id), "llm", "{}", 0)
+            .unwrap();
         let issue = store
             .create_issue(NewIssue {
                 assignee_agent_id: Some(&ceo.id),
@@ -361,7 +389,10 @@ mod tests {
         assert!(applied.created.is_empty());
         assert_eq!(applied.escalated.len(), 1);
         // CEO has no manager → ticket parks for a human.
-        assert_eq!(store.get_issue(&deep.id).unwrap().unwrap().state, "in_review");
+        assert_eq!(
+            store.get_issue(&deep.id).unwrap().unwrap().state,
+            "in_review"
+        );
         let _ = issue;
     }
 

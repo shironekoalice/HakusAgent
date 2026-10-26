@@ -2118,6 +2118,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tracing",
 ]
 
@@ -2189,6 +2190,7 @@ dependencies = [
  "hakus-protocol",
  "hakus-release",
  "hakus-secrets",
+ "hakus-state",
  "hakus-telemetry",
  "hakus-tools",
  "hakus-wechat",

@@ -48,10 +48,7 @@ fn build_relay_instruction(app: &App, focus: Option<&str>) -> String {
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "Write or update `.hakus/handoff.md`.");
-    let _ = writeln!(
-        out,
-        "Title the artifact `# Session relay`."
-    );
+    let _ = writeln!(out, "Title the artifact `# Session relay`.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Use this relay structure:");
     let _ = writeln!(out);

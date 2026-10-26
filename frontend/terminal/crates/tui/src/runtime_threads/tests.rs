@@ -254,6 +254,242 @@ fn test_manager(data_dir: PathBuf) -> Result<RuntimeThreadManager> {
     )
 }
 
+#[tokio::test]
+async fn extension_events_are_broadcast_and_mirrored_to_canonical_ledger() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let thread_id = "thread_extension_event";
+    let event = crate::plugins::extension_host::ExtensionEventPayload::new(
+        "voice.celia",
+        "voice.start",
+        crate::plugins::extension_host::ExtensionHostState::Crashed,
+        json!({
+            "message": "extension crashed",
+            "token": "must not persist",
+            "path": "C:\\Users\\operator\\celia.yaml",
+        }),
+    );
+
+    let record = manager.record_extension_event(thread_id, event).await?;
+    assert_eq!(record.event, "extension_event");
+    let runtime_events = manager.events_since(thread_id, None)?;
+    assert_eq!(runtime_events.len(), 1);
+    assert_eq!(runtime_events[0].payload["extension_id"], "voice.celia");
+    assert_eq!(runtime_events[0].payload["payload"]["token"], "<redacted>");
+    assert_eq!(runtime_events[0].payload["payload"]["path"], "<redacted-path>");
+
+    let ledger = manager.canonical_ledger_events(thread_id, 0, 10).await?;
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0].event_type, "extension_event");
+    assert_eq!(ledger[0].payload["extension_id"], "voice.celia");
+    assert_eq!(ledger[0].payload["payload"]["token"], "[REDACTED]");
+    manager.verify_canonical_ledger(thread_id).await?;
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_extension_is_non_fatal_and_records_a_safe_event() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let status = manager
+        .start_managed_extension(
+            "voice.celia",
+            Some("thread_extension_unavailable"),
+            "voice.start",
+            json!({"password": "must not persist", "config": "C:\\private\\celia.yaml"}),
+        )
+        .await?;
+    assert!(!status.running);
+    assert_eq!(status.state, crate::plugins::extension_host::ExtensionHostState::Unavailable);
+    assert!(status.error.is_some());
+
+    let events = manager
+        .canonical_ledger_events("thread_extension_unavailable", 0, 10)
+        .await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "extension_event");
+    assert_eq!(events[0].payload["extension_id"], "voice.celia");
+    assert!(events[0].payload["payload"].get("password").is_none());
+    assert!(events[0].payload["payload"]["message"].is_string());
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_extension_consumes_response_and_redacts_ledger_payload() -> Result<()> {
+    let fixture = crate::plugins::test_fixture::ExtensionPluginFixture::new();
+    let data_dir = test_runtime_dir();
+    let registry = fixture.discovery.registry_for_workspace(&fixture.workspace);
+    let manager = RuntimeThreadManager::open_with_plugin_registry(
+        Config::default(),
+        fixture.workspace.clone(),
+        test_manager_config(data_dir.clone()),
+        registry,
+    )?;
+
+    let thread_id = "thread_extension_success";
+    let started = manager
+        .start_managed_extension(
+            "fake-extension",
+            Some(thread_id),
+            "voice.start",
+            json!({"mode": "success", "password": "never-persist"}),
+        )
+        .await?;
+    assert!(
+        started.running,
+        "state={:?} error={:?}",
+        started.state,
+        started.error
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let finished = manager.managed_extension_status("fake-extension").await?;
+    assert!(!finished.running);
+    assert_eq!(
+        finished.state,
+        crate::plugins::extension_host::ExtensionHostState::Started
+    );
+    assert!(finished.error.is_none());
+
+    let events = manager
+        .canonical_ledger_events(thread_id, 0, 10)
+        .await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].event_type, "extension_event");
+    assert_eq!(events[1].payload["state"], "started");
+    assert_eq!(events[1].payload["payload"]["token"], "[REDACTED]");
+    assert_eq!(
+        events[1].payload["payload"]["config_path"],
+        "<redacted-path>"
+    );
+    let serialized = serde_json::to_string(&events)?;
+    assert!(!serialized.contains("extension-secret"));
+    assert!(!serialized.contains("extension.yaml"));
+
+    let _ = std::fs::remove_dir_all(data_dir);
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_extension_reports_malformed_response_and_crash() -> Result<()> {
+    let fixture = crate::plugins::test_fixture::ExtensionPluginFixture::new();
+    let data_dir = test_runtime_dir();
+    let registry = fixture.discovery.registry_for_workspace(&fixture.workspace);
+    let manager = RuntimeThreadManager::open_with_plugin_registry(
+        Config::default(),
+        fixture.workspace.clone(),
+        test_manager_config(data_dir.clone()),
+        registry,
+    )?;
+
+    for (mode, expected_state) in [
+        (
+            "malformed",
+            crate::plugins::extension_host::ExtensionHostState::Rejected,
+        ),
+        (
+            "crash",
+            crate::plugins::extension_host::ExtensionHostState::Crashed,
+        ),
+    ] {
+        let thread_id = format!("thread_extension_{mode}");
+        let started = manager
+            .start_managed_extension(
+                "fake-extension",
+                Some(&thread_id),
+                "voice.start",
+                json!({"mode": mode}),
+            )
+            .await?;
+        assert!(
+            started.running,
+            "fixture should remain alive until polled: state={:?} error={:?}",
+            started.state,
+            started.error
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let finished = manager.managed_extension_status("fake-extension").await?;
+        assert!(!finished.running);
+        assert_eq!(finished.state, expected_state);
+        assert!(finished.error.is_some());
+
+        // The child has been reaped, but the last redacted crash/rejection
+        // remains observable for subsequent Runtime API polling.
+        let observed_again = manager.managed_extension_status("fake-extension").await?;
+        assert!(!observed_again.running);
+        assert_eq!(observed_again.state, expected_state);
+        assert!(observed_again.error.is_some());
+
+        let events = manager.canonical_ledger_events(&thread_id, 0, 10).await?;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].payload["state"], serde_json::to_value(expected_state)?);
+        assert!(events[1].payload["payload"]["message"].is_string());
+    }
+
+    let stopped = manager.stop_managed_extension("fake-extension").await?;
+    assert!(!stopped.running);
+    assert_eq!(
+        stopped.state,
+        crate::plugins::extension_host::ExtensionHostState::Unavailable
+    );
+    assert_eq!(
+        manager
+            .managed_extension_status("fake-extension")
+            .await?
+            .state,
+        crate::plugins::extension_host::ExtensionHostState::Unavailable
+    );
+
+    let _ = std::fs::remove_dir_all(data_dir);
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_extension_stop_reaps_child_and_records_lifecycle() -> Result<()> {
+    let fixture = crate::plugins::test_fixture::ExtensionPluginFixture::new();
+    let data_dir = test_runtime_dir();
+    let registry = fixture.discovery.registry_for_workspace(&fixture.workspace);
+    let manager = RuntimeThreadManager::open_with_plugin_registry(
+        Config::default(),
+        fixture.workspace.clone(),
+        test_manager_config(data_dir.clone()),
+        registry,
+    )?;
+
+    let thread_id = "thread_extension_stop";
+    let started = manager
+        .start_managed_extension(
+            "fake-extension",
+            Some(thread_id),
+            "voice.start",
+            json!({"mode": "hold"}),
+        )
+        .await?;
+    assert!(
+        started.running,
+        "state={:?} error={:?}",
+        started.state,
+        started.error
+    );
+    let stopped = manager.stop_managed_extension("fake-extension").await?;
+    assert!(!stopped.running);
+    assert_eq!(
+        stopped.state,
+        crate::plugins::extension_host::ExtensionHostState::Unavailable
+    );
+    assert!(stopped.pid.is_some());
+
+    let events = manager.canonical_ledger_events(thread_id, 0, 10).await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].payload["type"], "extension.stop");
+    assert_eq!(events[1].payload["state"], "unavailable");
+
+    let _ = std::fs::remove_dir_all(data_dir);
+    Ok(())
+}
+
 struct ApprovalTimeoutGuard {
     previous_ms: u64,
 }
@@ -367,6 +603,72 @@ fn sample_turn(thread_id: &str, turn_id: &str, status: RuntimeTurnStatus) -> Tur
         steer_count: 0,
         agent_mail_message_id: None,
     }
+}
+
+/// Seed one completed turn whose single user item carries the exact blocks a
+/// turn would compose, and return `(item, composed_blocks)`.
+///
+/// The composed blocks mirror the production shape: the prompt text first, then
+/// the `<turn_meta>` block that cannot be recomposed after the turn.
+fn seed_user_turn_with_composed_blocks(
+    manager: &RuntimeThreadManager,
+    turn: TurnRecord,
+) -> Result<(TurnItemRecord, Vec<ContentBlock>)> {
+    let composed = vec![
+        ContentBlock::Text {
+            text: "add the receipt".to_string(),
+            cache_control: None,
+        },
+        ContentBlock::Text {
+            text: "<turn_meta>\nCurrent local date: 2026-10-04\nCurrent workspace: D:\\project\nCurrent permission posture: Ask\nCurrent sandbox posture: workspace-write (enforced)\nGit workspace: main | 1 modified\n</turn_meta>"
+                .to_string(),
+            cache_control: None,
+        },
+    ];
+    let message = Message {
+        role: "user".to_string(),
+        content: composed.clone(),
+    };
+    let item = seed_user_item(manager, turn, "composed", &message)?;
+    Ok((item, composed))
+}
+
+/// Persist one user turn item (detail = its first text block) and, when the
+/// block list carries more than that text, the engine's composition receipt.
+fn seed_user_item(
+    manager: &RuntimeThreadManager,
+    mut turn: TurnRecord,
+    label: &str,
+    message: &Message,
+) -> Result<TurnItemRecord> {
+    let text = message
+        .content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let item = TurnItemRecord {
+        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+        id: format!("item_{label}"),
+        turn_id: turn.id.clone(),
+        kind: TurnItemKind::UserMessage,
+        status: TurnItemLifecycleStatus::Completed,
+        summary: text.clone(),
+        detail: Some(text),
+        metadata: None,
+        artifact_refs: Vec::new(),
+        started_at: Some(Utc::now()),
+        ended_at: Some(Utc::now()),
+    };
+    manager.store.save_item(&item)?;
+    turn.item_ids.push(item.id.clone());
+    manager.store.save_turn(&turn)?;
+    if message.content.len() > 1 {
+        return manager.record_composed_user_blocks(&turn.id, &item.id, message.content.clone());
+    }
+    Ok(item)
 }
 
 fn agent_mail_request(
@@ -542,8 +844,6 @@ fn set_test_turn_route(
     });
 }
 
-
-
 #[test]
 fn legacy_turn_record_has_no_invented_route_provenance() {
     let turn = sample_turn("thr_legacy", "turn_legacy", RuntimeTurnStatus::Completed);
@@ -568,7 +868,8 @@ fn legacy_turn_record_has_no_invented_route_provenance() {
 }
 
 #[tokio::test]
-async fn create_thread_falls_back_to_default_route_when_live_provider_pointer_is_unresolvable() -> Result<()> {
+async fn create_thread_falls_back_to_default_route_when_live_provider_pointer_is_unresolvable()
+-> Result<()> {
     // A stale `provider = "deleted-prov"` pointer (e.g. a custom route left
     // behind by an interrupted settings edit) must not hard-fail every GUI
     // new-session tap. The manager falls back to the catalog default route;
@@ -2004,8 +2305,6 @@ fn serialized_turn_record_redacts_all_route_and_source_fields() {
     }
 }
 
-
-
 /// An aggregate in which nothing could be priced is unavailable, not zero.
 ///
 /// `cost_usd` is a `f64` and an all-unknown run leaves it at `0.0`, so the
@@ -2248,8 +2547,6 @@ async fn aggregate_usage_prices_only_stepfun_payg_surface() -> Result<()> {
     assert!((report.totals.cost_usd - 0.735).abs() < 1e-12);
     Ok(())
 }
-
-
 
 #[tokio::test]
 async fn aggregate_usage_filters_each_call_by_its_dispatch_timestamp() -> Result<()> {
@@ -2643,7 +2940,9 @@ fn tombstone_blocks_late_engine_writes() {
     std::fs::remove_file(store.turns_dir.join("turn_tombstone.json")).expect("remove turn");
 
     // Late writes from the wedged engine must not resurrect the records.
-    store.save_thread(&thread).expect("save succeeds as a no-op");
+    store
+        .save_thread(&thread)
+        .expect("save succeeds as a no-op");
     store.save_turn(&turn).expect("save succeeds as a no-op");
     assert!(
         store.load_thread(&thread.id).is_err(),
@@ -3784,8 +4083,6 @@ async fn thread_lifecycle_persists_across_restart() -> Result<()> {
     );
     Ok(())
 }
-
-
 
 #[tokio::test]
 async fn completed_turn_without_engine_output_fails() -> Result<()> {
@@ -9663,4 +9960,670 @@ fn mail_event_count(manager: &RuntimeThreadManager, thread_id: &str, event_name:
         .into_iter()
         .filter(|event| event.event == event_name)
         .count()
+}
+
+/// Build a minimal canonical ledger record for cursor-window tests. Only `seq`
+/// participates in the window arithmetic under test.
+fn ledger_record(seq: u64) -> hakus_state::LedgerEventRecord {
+    hakus_state::LedgerEventRecord {
+        event_id: format!("evt_{seq}"),
+        session_id: "thr_window".to_string(),
+        seq,
+        event_type: "item.delta".to_string(),
+        workspace_id: None,
+        turn_id: None,
+        correlation_id: None,
+        parent_event_id: None,
+        actor: serde_json::json!({ "kind": "runtime", "id": "rust" }),
+        visibility: "model_and_ui".to_string(),
+        // The append-time payload registry requires both keys for `item.delta`,
+        // so a seeded record has to satisfy it to be a legal ledger event.
+        payload: serde_json::json!({ "delta": "x", "kind": "agent_message" }),
+        timestamp: "2026-10-04T00:00:00Z".to_string(),
+    }
+}
+
+/// A read that already starts at the requested cursor is complete, so the client
+/// keeps the cursor it asked for and nothing is skipped.
+#[test]
+fn canonical_replay_window_keeps_cursor_when_no_history_is_omitted() {
+    let events = vec![ledger_record(1), ledger_record(2), ledger_record(3)];
+    let (base_seq, window) = canonical_replay_window(0, events);
+    assert_eq!(base_seq, 0);
+    assert_eq!(
+        window.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+}
+
+/// The boundary case: a first event of `requested + 1` is contiguous with the
+/// cursor and must not be reported as a gap.
+#[test]
+fn canonical_replay_window_does_not_report_a_gap_at_the_contiguous_boundary() {
+    let events = vec![ledger_record(11), ledger_record(12)];
+    let (base_seq, _window) = canonical_replay_window(10, events);
+    assert_eq!(base_seq, 10, "requested+1 is contiguous, not a gap");
+}
+
+/// When the bounded store read skipped older history, the cursor must advance to
+/// just before the window actually returned. Leaving it at the request cursor
+/// would tell the client it holds history it never received.
+#[test]
+fn canonical_replay_window_advances_cursor_past_omitted_history() {
+    let events = vec![ledger_record(40), ledger_record(41), ledger_record(42)];
+    let (base_seq, window) = canonical_replay_window(0, events);
+    assert_eq!(base_seq, 39, "cursor must sit immediately before the window");
+    assert_eq!(
+        window.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![40, 41, 42]
+    );
+}
+
+/// An empty read is not a gap: the cursor is returned unchanged so a live client
+/// still resumes from where it was.
+#[test]
+fn canonical_replay_window_leaves_cursor_untouched_for_an_empty_read() {
+    let (base_seq, window) = canonical_replay_window(7, Vec::new());
+    assert_eq!(base_seq, 7);
+    assert!(window.is_empty());
+}
+
+/// A single-event read that is already contiguous keeps the cursor.
+#[test]
+fn canonical_replay_window_handles_a_single_contiguous_event() {
+    let (base_seq, window) = canonical_replay_window(0, vec![ledger_record(1)]);
+    assert_eq!(base_seq, 0);
+    assert_eq!(window.len(), 1);
+}
+
+/// Reading the first page of a long session reports the gap so a caller can tell
+/// a prefix from the whole transcript.
+#[test]
+fn canonical_replay_window_reports_a_gap_for_a_long_session_prefix() {
+    let events = (1..=CANONICAL_REPLAY_LIMIT as u64)
+        .map(ledger_record)
+        .collect::<Vec<_>>();
+    let (base_seq, window) = canonical_replay_window(0, events);
+    assert_eq!(base_seq, 0, "a prefix starting at the cursor is not a gap");
+    assert_eq!(window.len(), CANONICAL_REPLAY_LIMIT);
+    let later = (6000..=7000).map(ledger_record).collect::<Vec<_>>();
+    let (later_base, later_window) = canonical_replay_window(0, later);
+    assert_eq!(later_base, 5999);
+    assert_eq!(later_window.first().map(|event| event.seq), Some(6000));
+}
+
+/// The Phase-1 golden-replay gate: a reloaded thread must rebuild the very
+/// bytes the provider received for a user turn.
+///
+/// `<turn_meta>` is not reproducible — it embeds the local date, the workspace,
+/// the observed working set, and a git snapshot the engine emits only when it
+/// changes — so the durable record has to carry it. This asserts the carrier
+/// end to end: the receipt the engine publishes, the item it is stored on, and
+/// the rebuild that reads it back.
+#[tokio::test]
+async fn reloaded_thread_replays_the_composed_user_blocks_byte_for_byte() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let thread = sample_thread("thr_composed_blocks");
+    manager.store.save_thread(&thread)?;
+
+    let turn = sample_turn(&thread.id, "turn_composed_blocks", RuntimeTurnStatus::Completed);
+    let (item, composed) = seed_user_turn_with_composed_blocks(&manager, turn)?;
+
+    let expected = composed[1].clone();
+    let stored = manager.store.load_item(&item.id)?;
+    assert_eq!(
+        recorded_provider_blocks(stored.metadata.as_ref()),
+        Some(composed.clone()),
+        "the receipt must be stored verbatim with the user item"
+    );
+
+    // A fresh manager over the same data dir is the restart: nothing is carried
+    // in memory between the two.
+    let reloaded = test_manager(dir.clone())?;
+    let turns = reloaded.store.list_turns_for_thread(&thread.id)?;
+    let messages = reloaded.reconstruct_messages_from_turns(&turns)?;
+
+    assert_eq!(messages.len(), 1, "one user message: {messages:#?}");
+    assert_eq!(messages[0].role, "user");
+    assert_eq!(
+        messages[0].content, composed,
+        "the rebuilt model input must equal the composed blocks"
+    );
+    let replayed = messages[0]
+        .content
+        .last()
+        .expect("turn_meta block must be replayed");
+    assert_eq!(replayed, &expected);
+    match replayed {
+        ContentBlock::Text { text, .. } => {
+            assert!(text.starts_with("<turn_meta>\n"), "{text}");
+            assert!(text.ends_with("\n</turn_meta>"), "{text}");
+            assert!(text.contains("Current local date: "), "{text}");
+            assert!(text.contains("Git workspace: main | 1 modified"), "{text}");
+        }
+        other => panic!("expected the turn_meta text block, got {other:?}"),
+    }
+
+    // The same records feed the thread-detail projection used by export and
+    // save-as-session, so it must agree with the durable rebuild.
+    let detail = reloaded.get_thread_detail(&thread.id).await?;
+    let projected = crate::runtime_api::thread_detail_messages(&detail);
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].content, composed);
+
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+/// Items written before the composition receipt existed still rebuild their
+/// user text, and a corrupt receipt falls back instead of failing the reload.
+#[tokio::test]
+async fn user_items_without_recorded_blocks_fall_back_to_their_text() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let thread = sample_thread("thr_legacy_user_item");
+    manager.store.save_thread(&thread)?;
+    let turn = sample_turn(&thread.id, "turn_legacy_user_item", RuntimeTurnStatus::Completed);
+    let message = Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "typed before the receipt existed".to_string(),
+            cache_control: None,
+        }],
+    };
+    let legacy = seed_user_item(&manager, turn, "legacy", &message)?;
+    assert_eq!(recorded_provider_blocks(legacy.metadata.as_ref()), None);
+
+    let turns = manager.store.list_turns_for_thread(&thread.id)?;
+    assert_eq!(
+        manager.reconstruct_messages_from_turns(&turns)?,
+        vec![message.clone()],
+        "a legacy user item still rebuilds from its text"
+    );
+
+    // A null or unreadable receipt is the same fallback, never a failure.
+    assert_eq!(
+        recorded_provider_blocks(Some(&json!({ USER_ITEM_PROVIDER_BLOCKS_KEY: null }))),
+        None
+    );
+    assert_eq!(
+        recorded_provider_blocks(Some(&json!({ USER_ITEM_PROVIDER_BLOCKS_KEY: "not blocks" }))),
+        None
+    );
+    assert_eq!(recorded_provider_blocks(None), None);
+
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+/// Append `count` canonical events for `session` and return their sequences.
+fn seed_ledger_session(
+    manager: &RuntimeThreadManager,
+    session: &str,
+    count: u64,
+) -> Result<Vec<u64>> {
+    let mut sequences = Vec::new();
+    for seq in 1..=count {
+        let record = ledger_record(seq);
+        manager.state_store.append_ledger_event(&hakus_state::LedgerEventAppend {
+            event_id: record.event_id,
+            session_id: session.to_string(),
+            event_type: record.event_type,
+            workspace_id: None,
+            turn_id: None,
+            correlation_id: None,
+            parent_event_id: None,
+            actor: record.actor,
+            visibility: record.visibility,
+            payload: record.payload,
+            timestamp: record.timestamp,
+        })?;
+        sequences.push(seq);
+    }
+    Ok(sequences)
+}
+
+/// A bounded tail replay keeps the newest events and advances the cursor past
+/// everything it dropped, which is the same contract the JSONL tail replay
+/// serves. Without it a client reconnecting from the window start would silently
+/// lose the events in between.
+#[test]
+fn canonical_tail_replay_keeps_the_newest_events_and_advances_the_cursor() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let session = "thr_tail_window";
+    seed_ledger_session(&manager, session, 10)?;
+
+    // A limit larger than the session returns everything from the cursor.
+    let (base_seq, window) =
+        canonical_replay_read(&manager.state_store, session, 0, Some(20))?;
+    assert_eq!(base_seq, 0, "the whole session after the cursor fits");
+    assert_eq!(
+        window.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        (1..=10).collect::<Vec<_>>()
+    );
+
+    // A limit smaller than the session keeps the newest events and resumes from
+    // the newest omitted one, so a reconnect repeats none and skips none.
+    let (base_seq, window) =
+        canonical_replay_read(&manager.state_store, session, 0, Some(3))?;
+    assert_eq!(base_seq, 7, "resume from the newest omitted event");
+    assert_eq!(
+        window.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![8, 9, 10]
+    );
+
+    // The boundary: a window that starts exactly at the cursor's next event has
+    // omitted nothing relative to that cursor.
+    let (base_seq, window) =
+        canonical_replay_read(&manager.state_store, session, 7, Some(3))?;
+    assert_eq!(base_seq, 7, "requested+1 is contiguous, not a gap");
+    assert_eq!(
+        window.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![8, 9, 10]
+    );
+
+    // A cursor at the newest event is already caught up.
+    let (base_seq, window) =
+        canonical_replay_read(&manager.state_store, session, 10, Some(3))?;
+    assert_eq!(base_seq, 10);
+    assert!(window.is_empty(), "nothing follows the newest event");
+
+    // A limit of zero asks for the cursor alone.
+    let (base_seq, window) =
+        canonical_replay_read(&manager.state_store, session, 0, Some(0))?;
+    assert_eq!(base_seq, 10, "the newest event is where the client resumes");
+    assert!(window.is_empty());
+
+    // No limit keeps the oldest window and reports the store bound, not a gap.
+    let (base_seq, window) = canonical_replay_read(&manager.state_store, session, 0, None)?;
+    assert_eq!(base_seq, 0);
+    assert_eq!(window.len(), 10);
+
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+/// A session with nothing after the cursor must not move the client's cursor,
+/// because no event was omitted.
+#[test]
+fn canonical_tail_replay_leaves_an_empty_session_cursor_alone() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let session = "thr_tail_empty";
+    let (base_seq, window) = canonical_replay_read(&manager.state_store, session, 4, Some(5))?;
+    assert_eq!(base_seq, 4);
+    assert!(window.is_empty());
+
+    seed_ledger_session(&manager, session, 2)?;
+    let (base_seq, window) = canonical_replay_read(&manager.state_store, session, 4, Some(5))?;
+    assert_eq!(base_seq, 4, "the session is behind the cursor");
+    assert!(window.is_empty());
+
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+/// Phase 2: a tool call's start and finish must be durable as turn items
+/// *before* the turn reports completion.
+///
+/// The engine sends `ToolCallStarted` / `ToolCallFinished` on a bounded channel
+/// and does not wait for the runtime to persist them, so the durable record and
+/// the live turn are written by different tasks. The contract that makes the
+/// transcript trustworthy is ordering, not simultaneity: by the time the turn
+/// is terminal, every capability the turn ran is on disk with a terminal
+/// status. This pins that.
+#[tokio::test]
+async fn tool_call_receipts_are_durable_by_the_time_the_turn_is_terminal() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            model: None,
+            workspace: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            archived: false,
+            system_prompt: None,
+            task_id: None,
+            ..Default::default()
+        })
+        .await?;
+
+    let harness = crate::core::engine::mock_engine_handle();
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+    tokio::spawn(async move {
+        while let Some(op) = rx_op.recv().await {
+            if !matches!(op, Op::SendMessage { .. }) {
+                continue;
+            }
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "engine_turn_tool".to_string(),
+                    created_at: chrono::Utc::now(),
+                    route: None,
+                })
+                .await;
+            // A capability starts, runs, and finishes.
+            let _ = tx_event
+                .send(EngineEvent::ToolCallStarted {
+                    id: "call_phase2".to_string(),
+                    name: "run".to_string(),
+                    input: json!({ "command": "echo phase2" }),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::ToolCallFinished {
+                    id: "call_phase2".to_string(),
+                    name: "run".to_string(),
+                    result: Ok(crate::tools::spec::ToolResult::success("phase2 output")),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::TurnCompleted {
+                    usage: Usage {
+                        input_tokens: 2,
+                        output_tokens: 2,
+                        ..Usage::default()
+                    },
+                    status: TurnOutcomeStatus::Completed,
+                    error: None,
+                    tool_catalog: None,
+                    base_url: None,
+                })
+                .await;
+            break;
+        }
+    });
+
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "run a command".to_string(),
+                input_summary: None,
+                model: None,
+                model_provider: None,
+                model_provider_id: None,
+                mode: None,
+                permission_posture: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                dynamic_tools: Vec::new(),
+                environment_id: None,
+                reasoning_effort: None,
+            },
+        )
+        .await?;
+    // Wait for the turn to reach a terminal state, the way a client would.
+    let deadline = Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
+    let mut settled = None;
+    while Instant::now() < deadline {
+        let loaded = manager.store.load_turn(&turn.id)?;
+        if matches!(
+            loaded.status,
+            RuntimeTurnStatus::Completed
+                | RuntimeTurnStatus::Failed
+                | RuntimeTurnStatus::Interrupted
+                | RuntimeTurnStatus::Canceled
+        ) {
+            settled = Some(loaded);
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    let settled = settled.context("turn never reached a terminal status")?;
+
+    // The capability is on disk, with a terminal status, and attached to the
+    // turn — not merely announced on the wire.
+    let items = manager.store.list_items_for_turn(&settled.id)?;
+    let tool_items = items
+        .iter()
+        .filter(|item| item.kind != TurnItemKind::UserMessage && item.kind != TurnItemKind::AgentMessage)
+        .collect::<Vec<_>>();
+    assert!(
+        !tool_items.is_empty(),
+        "the capability must be a durable turn item: {items:#?}"
+    );
+    let finished = tool_items
+        .iter()
+        .find(|item| {
+            matches!(
+                item.status,
+                TurnItemLifecycleStatus::Completed | TurnItemLifecycleStatus::Failed
+            )
+        })
+        .context("no tool item reached a terminal status")?;
+    assert!(
+        settled.item_ids.iter().any(|id| id == &finished.id),
+        "the terminal tool item must be attached to the turn: {settled:#?}"
+    );
+
+    // And it is in the canonical ledger, so a reload rebuilds it. The ledger
+    // holds an `item.completed` for every item of the turn — including the user
+    // message — so this looks for the entry that names the terminal tool item
+    // rather than the first one of that event type.
+    let ledger = manager
+        .canonical_ledger_events(&thread.id, 0, 500)
+        .await?;
+    let tool_event = ledger
+        .iter()
+        .find(|event| {
+            matches!(event.event_type.as_str(), "item.completed" | "item.failed")
+                && event
+                    .payload
+                    .get("item")
+                    .and_then(|item| item.get("id"))
+                    .and_then(Value::as_str)
+                    == Some(finished.id.as_str())
+        })
+        .with_context(|| {
+            format!(
+                "the terminal tool item {} must be in the canonical ledger",
+                finished.id
+            )
+        })?;
+    let item_id = tool_event
+        .payload
+        .get("item")
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        item_id,
+        Some(finished.id.as_str()),
+        "the ledger entry must name the same item the transcript holds"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+/// Phase 2, item 3: measure the *within-turn* durability window.
+///
+/// The turn-boundary contract above is proven: when a turn is terminal, every
+/// capability it ran is durable. This test pins the thing that contract does
+/// **not** cover, so the gap is a recorded measurement rather than an assumption.
+///
+/// The engine sends `ToolCallStarted` on a bounded `mpsc` channel and continues
+/// immediately; persistence happens in `monitor_turn`, a separately spawned
+/// task. A send succeeds once there is buffer space, so the engine can be
+/// arbitrarily far ahead of the store. This test holds the two facts that follow,
+/// both of which must stay true unless the architecture changes:
+///
+/// 1. the send is not an ack — after `ToolCallStarted` is accepted, the store may
+///    legitimately not hold the item yet;
+/// 2. the end state is still correct — the item arrives, exactly once, so the gap
+///    is a delay and not a loss.
+///
+/// If someone later makes the engine await persistence, (1) starts failing and
+/// this test becomes the signal that the documented gap has closed. That is
+/// deliberate: the assertion describes the current architecture and is meant to
+/// be updated, not deleted, when the architecture changes.
+#[tokio::test]
+async fn tool_call_start_is_durable_within_the_turn_but_not_acknowledged() -> Result<()> {
+    let dir = test_runtime_dir();
+    let manager = test_manager(dir.clone())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            model: None,
+            workspace: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            archived: false,
+            system_prompt: None,
+            task_id: None,
+            ..Default::default()
+        })
+        .await?;
+
+    let harness = crate::core::engine::mock_engine_handle();
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+
+    // The producer signals the instant the send returns, so the store is read
+    // against a known event rather than against a sleep.
+    let (sent_tx, sent_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        while let Some(op) = rx_op.recv().await {
+            if !matches!(op, Op::SendMessage { .. }) {
+                continue;
+            }
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "engine_turn_window".to_string(),
+                    created_at: chrono::Utc::now(),
+                    route: None,
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::ToolCallStarted {
+                    id: "call_window".to_string(),
+                    name: "run".to_string(),
+                    input: json!({ "command": "echo window" }),
+                })
+                .await;
+            // The send returned. What the store holds *now* is the whole
+            // question this test exists to answer.
+            let _ = sent_tx.send(());
+            let _ = tx_event
+                .send(EngineEvent::ToolCallFinished {
+                    id: "call_window".to_string(),
+                    name: "run".to_string(),
+                    result: Ok(crate::tools::spec::ToolResult::success("window output")),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::TurnCompleted {
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        ..Usage::default()
+                    },
+                    status: TurnOutcomeStatus::Completed,
+                    error: None,
+                    tool_catalog: None,
+                    base_url: None,
+                })
+                .await;
+            break;
+        }
+    });
+
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "run a windowed command".to_string(),
+                input_summary: None,
+                model: None,
+                model_provider: None,
+                model_provider_id: None,
+                mode: None,
+                permission_posture: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                dynamic_tools: Vec::new(),
+                environment_id: None,
+                reasoning_effort: None,
+            },
+        )
+        .await?;
+
+    // (1) The gap: read the store the instant the producer's send returned.
+    sent_rx.await.context("producer never signalled the send")?;
+    let at_send: Vec<_> = manager
+        .store
+        .list_items_for_turn(&turn.id)?
+        .into_iter()
+        .filter(|item| {
+            item.kind != TurnItemKind::UserMessage && item.kind != TurnItemKind::AgentMessage
+        })
+        .collect();
+    println!(
+        "within-turn window: {} tool item(s) durable at send-return",
+        at_send.len()
+    );
+
+    // (2) The end state: whatever that instant looked like, the item must land.
+    // A gap that lost the receipt would be a different, much worse bug.
+    let deadline = Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
+    let mut settled = None;
+    while Instant::now() < deadline {
+        let loaded = manager.store.load_turn(&turn.id)?;
+        if matches!(
+            loaded.status,
+            RuntimeTurnStatus::Completed
+                | RuntimeTurnStatus::Failed
+                | RuntimeTurnStatus::Interrupted
+                | RuntimeTurnStatus::Canceled
+        ) {
+            settled = Some(loaded);
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    let settled = settled.context("turn never reached a terminal status")?;
+
+    let final_items: Vec<_> = manager
+        .store
+        .list_items_for_turn(&settled.id)?
+        .into_iter()
+        .filter(|item| {
+            item.kind != TurnItemKind::UserMessage && item.kind != TurnItemKind::AgentMessage
+        })
+        .collect();
+    assert_eq!(
+        final_items.len(),
+        1,
+        "the capability must be persisted exactly once, not duplicated: {final_items:#?}"
+    );
+    assert!(
+        matches!(
+            final_items[0].status,
+            TurnItemLifecycleStatus::Completed | TurnItemLifecycleStatus::Failed
+        ),
+        "the item must reach a terminal status: {:#?}",
+        final_items[0]
+    );
+    assert!(
+        settled.item_ids.iter().any(|id| id == &final_items[0].id),
+        "the item must be attached to the turn: {settled:#?}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
 }

@@ -16,7 +16,10 @@ pub struct Price {
 
 impl Default for Price {
     fn default() -> Self {
-        Self { input_per_mtok: 0.0, output_per_mtok: 0.0 }
+        Self {
+            input_per_mtok: 0.0,
+            output_per_mtok: 0.0,
+        }
     }
 }
 
@@ -25,25 +28,46 @@ impl Price {
     pub fn for_model(model: &str) -> Self {
         let m = model.to_ascii_lowercase();
         if m.contains("deepseek-reasoner") || m.contains("r1") {
-            return Self { input_per_mtok: 0.55, output_per_mtok: 2.19 };
+            return Self {
+                input_per_mtok: 0.55,
+                output_per_mtok: 2.19,
+            };
         }
         if m.contains("deepseek") {
-            return Self { input_per_mtok: 0.27, output_per_mtok: 1.10 };
+            return Self {
+                input_per_mtok: 0.27,
+                output_per_mtok: 1.10,
+            };
         }
         if m.contains("gpt-4o-mini") {
-            return Self { input_per_mtok: 0.15, output_per_mtok: 0.60 };
+            return Self {
+                input_per_mtok: 0.15,
+                output_per_mtok: 0.60,
+            };
         }
         if m.contains("gpt-4o") {
-            return Self { input_per_mtok: 2.50, output_per_mtok: 10.00 };
+            return Self {
+                input_per_mtok: 2.50,
+                output_per_mtok: 10.00,
+            };
         }
         if m.contains("haiku") {
-            return Self { input_per_mtok: 0.80, output_per_mtok: 4.00 };
+            return Self {
+                input_per_mtok: 0.80,
+                output_per_mtok: 4.00,
+            };
         }
         if m.contains("sonnet") {
-            return Self { input_per_mtok: 3.00, output_per_mtok: 15.00 };
+            return Self {
+                input_per_mtok: 3.00,
+                output_per_mtok: 15.00,
+            };
         }
         if m.contains("opus") {
-            return Self { input_per_mtok: 15.00, output_per_mtok: 75.00 };
+            return Self {
+                input_per_mtok: 15.00,
+                output_per_mtok: 75.00,
+            };
         }
         // Operator override wins for anything we don't recognise.
         Self::from_env().unwrap_or_default()
@@ -51,9 +75,18 @@ impl Price {
 
     /// `HAKUS_PRICE_IN_PER_MTOK` / `HAKUS_PRICE_OUT_PER_MTOK`.
     pub fn from_env() -> Option<Self> {
-        let in_p = std::env::var("HAKUS_PRICE_IN_PER_MTOK").ok()?.parse::<f64>().ok()?;
-        let out_p = std::env::var("HAKUS_PRICE_OUT_PER_MTOK").ok()?.parse::<f64>().ok()?;
-        Some(Self { input_per_mtok: in_p, output_per_mtok: out_p })
+        let in_p = std::env::var("HAKUS_PRICE_IN_PER_MTOK")
+            .ok()?
+            .parse::<f64>()
+            .ok()?;
+        let out_p = std::env::var("HAKUS_PRICE_OUT_PER_MTOK")
+            .ok()?
+            .parse::<f64>()
+            .ok()?;
+        Some(Self {
+            input_per_mtok: in_p,
+            output_per_mtok: out_p,
+        })
     }
 
     /// Cost of a usage record, in cents.
@@ -71,7 +104,10 @@ mod tests {
     #[test]
     fn deepseek_pricing_rounds_to_cents() {
         let p = Price::for_model("deepseek-chat");
-        let usage = Usage { input_tokens: 1_000_000, output_tokens: 1_000_000 };
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+        };
         // 0.27 + 1.10 = 1.37 USD
         assert_eq!(p.cost_cents(usage), 137);
     }
@@ -79,7 +115,10 @@ mod tests {
     #[test]
     fn unknown_model_is_free_until_configured() {
         let p = Price::for_model("some-local-model");
-        let usage = Usage { input_tokens: 10_000, output_tokens: 10_000 };
+        let usage = Usage {
+            input_tokens: 10_000,
+            output_tokens: 10_000,
+        };
         assert_eq!(p.cost_cents(usage), 0);
     }
 }

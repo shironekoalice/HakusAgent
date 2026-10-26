@@ -60,7 +60,10 @@ impl HttpPythonRuntime {
         // reqwest panics without a crypto provider; see hakus_llm::ensure_tls_provider.
         hakus_llm::ensure_tls_provider();
         Self {
-            base_url: base_url.unwrap_or_else(default_base_url).trim_end_matches('/').to_string(),
+            base_url: base_url
+                .unwrap_or_else(default_base_url)
+                .trim_end_matches('/')
+                .to_string(),
             client: reqwest::Client::new(),
         }
     }
@@ -106,7 +109,10 @@ impl AgentRuntime for HttpPythonRuntime {
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
-            anyhow::bail!("python backend returned {status}: {}", text.chars().take(300).collect::<String>());
+            anyhow::bail!(
+                "python backend returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
         }
 
         use futures_util::StreamExt as _;
@@ -131,21 +137,36 @@ impl AgentRuntime for HttpPythonRuntime {
 /// Route one SSE `data:` frame into the accumulator.
 fn apply_frame(out: &mut RunTurnOut, frame: &str) {
     for line in frame.lines() {
-        let Some(payload) = line.strip_prefix("data:") else { continue };
+        let Some(payload) = line.strip_prefix("data:") else {
+            continue;
+        };
         let Ok(value) = serde_json::from_str::<Value>(payload.trim()) else {
             warn!("ignoring malformed SSE payload");
             continue;
         };
-        let etype = value.get("event_type").and_then(|v| v.as_str()).unwrap_or_default();
+        let etype = value
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         match etype {
             "text_delta" => {
-                if let Some(t) = value.get("content").or_else(|| value.get("text")).and_then(|v| v.as_str()) {
+                if let Some(t) = value
+                    .get("content")
+                    .or_else(|| value.get("text"))
+                    .and_then(|v| v.as_str())
+                {
                     out.text.push_str(t);
                 }
             }
             "token_usage" => {
-                out.input_tokens += value.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                out.output_tokens += value.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                out.input_tokens += value
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                out.output_tokens += value
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
             }
             "turn_completed" => {
                 if out.text.is_empty() {
@@ -158,7 +179,10 @@ fn apply_frame(out: &mut RunTurnOut, frame: &str) {
                 }
             }
             "turn_failed" => {
-                let msg = value.get("error").and_then(|v| v.as_str()).unwrap_or("turn failed");
+                let msg = value
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("turn failed");
                 out.text.push_str(&format!("\n[turn_failed] {msg}"));
             }
             "approval_required" => out.approval_required = true,
@@ -182,11 +206,17 @@ pub struct NativeLlmRuntime {
 impl NativeLlmRuntime {
     pub fn from_env(system_prompt: impl Into<String>) -> anyhow::Result<Self> {
         let route = hakus_llm::LlmRoute::from_env()?;
-        Ok(Self { client: hakus_llm::LlmClient::new(route), system_prompt: system_prompt.into() })
+        Ok(Self {
+            client: hakus_llm::LlmClient::new(route),
+            system_prompt: system_prompt.into(),
+        })
     }
 
     pub fn new(client: hakus_llm::LlmClient, system_prompt: impl Into<String>) -> Self {
-        Self { client, system_prompt: system_prompt.into() }
+        Self {
+            client,
+            system_prompt: system_prompt.into(),
+        }
     }
 }
 
@@ -228,7 +258,10 @@ pub struct RuntimeRegistry {
 
 impl RuntimeRegistry {
     pub fn new(default: Arc<dyn AgentRuntime>) -> Self {
-        Self { by_adapter: HashMap::new(), default }
+        Self {
+            by_adapter: HashMap::new(),
+            default,
+        }
     }
 
     /// Register a runtime for an `agent.adapter` value.

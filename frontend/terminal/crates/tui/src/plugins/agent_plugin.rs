@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use super::manifest::{
     CURRENT_SCHEMA_VERSION, MAX_PLUGIN_NAME_CHARS, PluginCapabilities, PluginManifest, PluginMeta,
-    PluginPathSpec, PluginWhen,
+    PluginExtensionManifest, PluginPathSpec, PluginWhen,
 };
 use crate::mcp::{McpServerConfig, McpServerOAuthConfig};
 
@@ -427,6 +427,7 @@ pub fn parse_kimi_plugin_json(text: &str, root: &Path) -> Result<PluginManifest,
             ..PluginCapabilities::default()
         },
         when,
+        extension: None,
     })
 }
 
@@ -510,6 +511,8 @@ pub struct HakusPluginExtension {
     pub capabilities: Option<PluginCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<PluginWhen>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<PluginExtensionManifest>,
 }
 
 impl HakusPluginExtension {
@@ -524,6 +527,7 @@ impl HakusPluginExtension {
             && self.native.is_none()
             && self.capabilities.is_none()
             && self.when.is_none()
+            && self.extension.is_none()
     }
 }
 
@@ -801,6 +805,7 @@ pub fn standard_to_manifest(
         mcp_servers,
         capabilities: extension.capabilities.unwrap_or_default(),
         when: extension.when,
+        extension: extension.extension,
     })
 }
 
@@ -888,6 +893,7 @@ pub fn manifest_to_standard(
         capabilities: (!capabilities_are_default(&manifest.capabilities))
             .then(|| manifest.capabilities.clone()),
         when: manifest.when.clone(),
+        extension: manifest.extension.clone(),
     };
 
     let plugin_json = StandardPluginManifest {
@@ -1313,6 +1319,16 @@ network_hosts = ["example.com"]
 
 [when]
 os = ["macos", "linux"]
+
+[extension]
+id = "round-trip"
+version = "1.2.3"
+protocol = "hakus.extension.v1"
+entrypoint = "python -m round_trip_extension"
+capabilities = ["audio.capture"]
+permissions = ["microphone"]
+supported_platforms = ["windows", "linux"]
+checksum = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [mcp_servers.local]
 command = "run.sh"

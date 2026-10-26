@@ -90,9 +90,7 @@ pub(crate) fn diagnostic_stash_report() -> DiagnosticStashReport {
                 path: None,
                 present: false,
                 count: 0,
-                error: Some(format!(
-                    "could not resolve the Hakus stash path: {error}"
-                )),
+                error: Some(format!("could not resolve the Hakus stash path: {error}")),
             };
         }
     };

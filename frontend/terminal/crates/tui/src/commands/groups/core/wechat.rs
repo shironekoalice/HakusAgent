@@ -43,7 +43,9 @@ impl RegisterCommand for WeChatCmd {
 
 pub fn wechat(app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.unwrap_or("").trim();
-    let (sub, rest) = raw.split_once(' ').map_or((raw, ""), |(head, tail)| (head, tail.trim()));
+    let (sub, rest) = raw
+        .split_once(' ')
+        .map_or((raw, ""), |(head, tail)| (head, tail.trim()));
 
     match sub {
         "" | "help" => {
@@ -60,40 +62,26 @@ pub fn wechat(app: &mut App, arg: Option<&str>) -> CommandResult {
             let msg = help.join("\n");
             CommandResult::message(msg)
         }
-        "login" => {
-            CommandResult::action(AppAction::WeChat(WeChatAction::StartLogin))
-        }
-        "status" => {
-            CommandResult::action(AppAction::WeChat(WeChatAction::ShowStatus))
-        }
-        "logout" => {
-            CommandResult::action(AppAction::WeChat(WeChatAction::Logout))
-        }
+        "login" => CommandResult::action(AppAction::WeChat(WeChatAction::StartLogin)),
+        "status" => CommandResult::action(AppAction::WeChat(WeChatAction::ShowStatus)),
+        "logout" => CommandResult::action(AppAction::WeChat(WeChatAction::Logout)),
         "send" => {
             let Some((to_user, text)) = rest.split_once(' ') else {
-                return CommandResult::error(
-                    "Usage: /wechat send <user_id> <text>".to_string(),
-                );
+                return CommandResult::error("Usage: /wechat send <user_id> <text>".to_string());
             };
             let to_user = to_user.trim();
             let text = text.trim();
             if to_user.is_empty() || text.is_empty() {
-                return CommandResult::error(
-                    "Usage: /wechat send <user_id> <text>".to_string(),
-                );
+                return CommandResult::error("Usage: /wechat send <user_id> <text>".to_string());
             }
             CommandResult::action(AppAction::WeChat(WeChatAction::Send {
                 to_user: to_user.to_string(),
                 text: text.to_string(),
             }))
         }
-        "poll" => {
-            CommandResult::action(AppAction::WeChat(WeChatAction::Poll))
-        }
-        _ => {
-            CommandResult::error(format!(
-                "Unknown subcommand: /wechat {sub}. Use /wechat help for usage."
-            ))
-        }
+        "poll" => CommandResult::action(AppAction::WeChat(WeChatAction::Poll)),
+        _ => CommandResult::error(format!(
+            "Unknown subcommand: /wechat {sub}. Use /wechat help for usage."
+        )),
     }
 }

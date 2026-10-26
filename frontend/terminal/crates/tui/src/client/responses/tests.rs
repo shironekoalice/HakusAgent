@@ -70,11 +70,6 @@ fn minimal_responses_request() -> MessageRequest {
     }
 }
 
-
-
-
-
-
 #[test]
 fn responses_body_serializes_the_child_catalog_without_duplication() {
     // Mirror of the Anthropic contract: the real child catalog fixture
@@ -107,8 +102,6 @@ fn responses_body_serializes_the_child_catalog_without_duplication() {
         "load_skill must not appear on the child Responses wire"
     );
 }
-
-
 
 #[test]
 fn codex_reasoning_effort_uses_responses_labels() {
@@ -166,8 +159,6 @@ fn deepseek_flash_responses_body_uses_stateless_0731_contract() {
         Some(&json!("preserve this tool-loop reasoning"))
     );
 }
-
-
 
 #[test]
 fn deepseek_responses_reasoning_effort_uses_documented_labels() {
@@ -423,8 +414,6 @@ fn responses_usage_reaches_pricing_conversion_without_double_billing_reasoning()
     let double_billed = expected + 0.0035 * 30.00;
     assert!((cost.usd - double_billed).abs() > 1e-6);
 }
-
-
 
 #[test]
 fn responses_function_tool_sanitizes_root_composition_schema() {

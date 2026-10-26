@@ -1,5 +1,7 @@
 use super::*;
+use std::time::Duration;
 use tempfile::tempdir;
+use tokio_util::sync::CancellationToken;
 
 async fn read_before_edit(ctx: &ToolContext, path: &str) {
     ReadFileTool
@@ -68,7 +70,7 @@ async fn read_file_denies_hakus_config_backups_and_secret_store() {
             .await
             .expect_err("credential-bearing CodeWhale file must be denied");
         let message = err.to_string();
-        assert!(message.contains("cannot expose CodeWhale"), "{message}");
+        assert!(message.contains("cannot expose Hakus"), "{message}");
         assert!(message.contains("hakus config list"), "{message}");
     }
 
@@ -2420,4 +2422,424 @@ async fn expected_hash_is_advertised_on_every_mutating_action() {
             .expect("expected_hash must be advertised");
         assert!(description.contains("content_hash"), "{description}");
     }
+}
+
+// === File mutation guards (Phase 2) ===
+//
+// `acquire_file_mutation` only earns its `tokio::select!` if a cancel really
+// does abandon the lock wait, and it only earns its existence if it really
+// stops a cancelled writer. Both halves are asserted here, because a guard that
+// quietly blocks instead of aborting would make cancellation look like a hang
+// and a guard that never blocks would lose concurrent updates silently.
+
+/// How long a test waits before declaring that something is still blocked.
+///
+/// The assertion is "not yet done", never "done within X", so a slow CI machine
+/// can only ever make this MORE certain. The `select!` in `acquire_file_mutation`
+/// hands control back as soon as the token fires, so waiting this long is not on
+/// the critical path of any passing case.
+const GUARD_OBSERVATION_WINDOW: Duration = Duration::from_millis(300);
+
+/// Poll a future without driving the clock forward, so "still pending" is a
+/// statement about task progress rather than about elapsed wall time.
+///
+/// `now_or_never` on a pinned future is the std-only equivalent of polling
+/// once; the crate has no `futures` dependency in its test target.
+macro_rules! poll_once {
+    ($future:expr) => {{
+        use std::future::Future as _;
+        let mut future = std::pin::pin!($future);
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        future.as_mut().poll(&mut cx).is_ready()
+    }};
+}
+
+#[tokio::test]
+async fn cancelled_wait_abandons_the_file_mutation_lock_instead_of_blocking() {
+    let tmp = tempdir().expect("tempdir");
+    let holder_ctx = ToolContext::new(tmp.path().to_path_buf());
+    // Same canonicalizing resolution the tool uses, so both sides contend on one
+    // `PathBuf` key. See the note in `cancel_after_acquiring_...`.
+    let lock_key = holder_ctx
+        .resolve_path("shared.txt")
+        .expect("resolve path for the lock key");
+
+    // Occupy the path's guard for the whole test, exactly as an in-flight write
+    // would. Held through an owned guard rather than by a spawned writer so the
+    // test owns *when* the lock is released — the wait below has to be provably
+    // still blocked at the moment it is cancelled.
+    let held = super::acquire_file_mutation(&lock_key, &holder_ctx)
+        .await
+        .expect("first acquisition is uncontended");
+
+    // Not cancelled: the wait must genuinely be blocked, or the cancelled case
+    // below would prove nothing.
+    let patient = ToolContext::new(tmp.path().to_path_buf());
+    assert!(
+        !poll_once!(super::acquire_file_mutation(&lock_key, &patient)),
+        "a second acquisition must wait while the path is locked"
+    );
+    tokio::time::sleep(GUARD_OBSERVATION_WINDOW).await;
+    assert!(
+        !poll_once!(super::acquire_file_mutation(&lock_key, &patient)),
+        "the wait must still be pending after {GUARD_OBSERVATION_WINDOW:?}, \
+         so the cancelled case is a real abort and not a race that was going to finish anyway"
+    );
+
+    // Cancelled while still waiting: abandon the wait and report cancellation.
+    // If `acquire_file_mutation` awaited `lock_owned()` directly this would
+    // block forever, because the holder is still alive.
+    let cancel = CancellationToken::new();
+    let cancelled_ctx = ToolContext::new(tmp.path().to_path_buf()).with_cancel_token(cancel.clone());
+    cancel.cancel();
+    let abandoned = super::acquire_file_mutation(&lock_key, &cancelled_ctx).await;
+    match abandoned {
+        Err(ToolError::Cancelled { .. }) => {}
+        Err(error) => panic!("a cancelled wait must report cancellation, got {error:?}"),
+        Ok(_) => panic!("a cancelled wait must not acquire the lock"),
+    }
+
+    drop(held);
+}
+
+#[tokio::test]
+async fn cancel_after_acquiring_the_guard_produces_no_write() {
+    let tmp = tempdir().expect("tempdir");
+    let existing = tmp.path().join("keep.txt");
+    fs::write(&existing, "original\n").expect("seed");
+
+    // The lock is pre-held and the token is cancelled *while the writer waits*,
+    // which is the only arrangement that exercises the post-acquire check: a
+    // free lock plus a pre-cancelled token lets `select!` take the cancel
+    // branch, so the write would be refused by the guard rather than by the
+    // check under test, and the test would pass even if the check were deleted.
+    let holder_ctx = ToolContext::new(tmp.path().to_path_buf());
+    // The lock map is keyed by the *resolved* path, and `resolve_path`
+    // canonicalizes. On Windows `tempdir()` hands back a path that canonicalizes
+    // to a different string, so a test that locked `tmp.path().join(..)` would
+    // take a different entry than the tool and never contend at all — the writer
+    // would just succeed, and the assertions below would pass for the wrong
+    // reason. Resolve the key exactly the way the tool does.
+    let lock_key = holder_ctx
+        .resolve_path("keep.txt")
+        .expect("resolve path for the lock key");
+    let held = super::acquire_file_mutation(&lock_key, &holder_ctx)
+        .await
+        .expect("uncontended acquisition");
+
+    let cancel = CancellationToken::new();
+    let ctx = ToolContext::new(tmp.path().to_path_buf()).with_cancel_token(cancel.clone());
+    let writer = tokio::spawn({
+        let ctx = ctx.clone();
+        async move {
+            WriteFileTool::execute_contract_write(
+                json!({ "path": "keep.txt", "content": "clobbered\n" }),
+                &ctx,
+            )
+            .await
+        }
+    });
+
+    // Let the writer reach the lock wait, then cancel and release the lock. The
+    // writer must abort rather than proceed now that it can acquire it.
+    tokio::time::sleep(GUARD_OBSERVATION_WINDOW).await;
+    assert!(
+        !writer.is_finished(),
+        "the writer must still be waiting on the held lock, otherwise the \
+         cancellation below races an already-completed write"
+    );
+    cancel.cancel();
+    drop(held);
+
+    let err = writer
+        .await
+        .expect("writer task must not panic")
+        .expect_err("a cancelled write must not succeed");
+    assert!(
+        matches!(err, ToolError::Cancelled { .. }),
+        "expected a cancellation error, got {err:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&existing).expect("read back"),
+        "original\n",
+        "a cancelled write must leave the file byte-for-byte unchanged"
+    );
+
+    // Same arrangement on the edit path: `edit` reads, transforms, and writes,
+    // so a cancelled run must leave the pre-edit bytes intact.
+    let holder_ctx = ToolContext::new(tmp.path().to_path_buf());
+    let lock_key = holder_ctx
+        .resolve_path("keep.txt")
+        .expect("resolve path for the lock key");
+    let held = super::acquire_file_mutation(&lock_key, &holder_ctx)
+        .await
+        .expect("uncontended acquisition");
+    let cancel = CancellationToken::new();
+    let ctx = ToolContext::new(tmp.path().to_path_buf()).with_cancel_token(cancel.clone());
+    let editor = tokio::spawn({
+        let ctx = ctx.clone();
+        async move {
+            EditFileTool::execute_contract_edits(
+                json!({
+                    "path": "keep.txt",
+                    "edits": [{ "oldText": "original", "newText": "edited" }]
+                }),
+                &ctx,
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(GUARD_OBSERVATION_WINDOW).await;
+    assert!(
+        !editor.is_finished(),
+        "the editor must still be waiting on the held lock"
+    );
+    cancel.cancel();
+    drop(held);
+
+    let err = editor
+        .await
+        .expect("editor task must not panic")
+        .expect_err("a cancelled edit must not succeed");
+    assert!(
+        matches!(err, ToolError::Cancelled { .. }),
+        "expected a cancellation error, got {err:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&existing).expect("read back"),
+        "original\n",
+        "a cancelled edit must leave the file byte-for-byte unchanged"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_writers_to_one_file_are_serialized_and_none_are_lost() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let target = workspace.join("counter.txt");
+    fs::write(&target, "seed\n").expect("seed");
+
+    // Every writer must observe the file as the previous writer left it. Each
+    // task appends its own marker to whatever it reads, so the concatenation of
+    // all markers in completion order is the only possible correct outcome —
+    // any interleaving loses a marker or duplicates one.
+    const WRITERS: usize = 8;
+    let mut tasks = Vec::new();
+    for index in 0..WRITERS {
+        let ctx = ToolContext::new(workspace.clone());
+        // Resolve once per task the way the tool does, so every task contends
+        // on the same canonical key.
+        let path = ctx
+            .resolve_path("counter.txt")
+            .expect("resolve path for the lock key");
+        tasks.push(tokio::spawn(async move {
+            // Read-modify-write entirely inside the guard is not expressible
+            // through the tool API, so the writer takes the same guard the tool
+            // takes and performs the whole cycle under it.
+            let guard = super::acquire_file_mutation(&path, &ctx)
+                .await
+                .expect("uncontended acquisition");
+            let current = fs::read_to_string(&path).expect("read under guard");
+            tokio::task::yield_now().await;
+            let mut next = current;
+            next.push_str(&format!("writer-{index}\n"));
+            fs::write(&path, next).expect("write under guard");
+            drop(guard);
+        }));
+    }
+    for task in tasks {
+        task.await.expect("writer task must not panic");
+    }
+
+    let final_contents = fs::read_to_string(&target).expect("read back");
+    let lines: Vec<&str> = final_contents.lines().collect();
+    assert_eq!(
+        lines.len(),
+        WRITERS + 1,
+        "every writer must contribute exactly one line, got {final_contents:?}"
+    );
+    assert_eq!(lines[0], "seed", "{final_contents:?}");
+    let mut seen: Vec<&str> = lines[1..].to_vec();
+    seen.sort_unstable();
+    let mut expected: Vec<String> = (0..WRITERS).map(|index| format!("writer-{index}")).collect();
+    expected.sort();
+    let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+    assert_eq!(seen, expected, "no write may be lost or duplicated: {final_contents:?}");
+
+    // Two writers racing through the real tool must serialize too, and must not
+    // hand back an error merely because the other one was mid-write.
+    let write_a = tokio::spawn({
+        let ctx = ToolContext::new(workspace.clone());
+        async move {
+            WriteFileTool::execute_contract_write(
+                json!({ "path": "racing.txt", "content": "from-a\n" }),
+                &ctx,
+            )
+            .await
+        }
+    });
+    let write_b = tokio::spawn({
+        let ctx = ToolContext::new(workspace.clone());
+        async move {
+            WriteFileTool::execute_contract_write(
+                json!({ "path": "racing.txt", "content": "from-b\n" }),
+                &ctx,
+            )
+            .await
+        }
+    });
+    write_a.await.expect("writer a task").expect("writer a");
+    write_b.await.expect("writer b task").expect("writer b");
+    let raced = fs::read_to_string(workspace.join("racing.txt")).expect("read back");
+    assert!(
+        raced == "from-a\n" || raced == "from-b\n",
+        "one whole write must win, never a blend of both: {raced:?}"
+    );
+}
+
+#[tokio::test]
+async fn mutation_guard_is_released_when_the_critical_section_returns_early() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let target = workspace.join("early-return.txt");
+    fs::write(&target, "alpha\n").expect("seed");
+
+    // An edit whose search does not match returns `Err` from inside the guard's
+    // scope. A guard that leaked on that path would wedge the file for the rest
+    // of the process, every later write hanging with no error to explain it.
+    let ctx = ToolContext::new(workspace.clone());
+    let err = EditFileTool::execute_contract_edits(
+        json!({
+            "path": "early-return.txt",
+            "edits": [{ "oldText": "text that is not present", "newText": "x" }]
+        }),
+        &ctx,
+    )
+    .await
+    .expect_err("a non-matching edit must fail");
+    assert!(
+        !format!("{err:?}").contains("cancel"),
+        "this must be a match failure, not a cancellation: {err:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).expect("read back"),
+        "alpha\n",
+        "a failed edit must not modify the file"
+    );
+
+    // The file must still be usable by any later writer.
+    let reacquired = super::acquire_file_mutation(&target, &ctx).await;
+    assert!(
+        reacquired.is_ok(),
+        "the guard must have been released by the early return: {:?}",
+        reacquired.err()
+    );
+    drop(reacquired);
+
+    // A real subsequent write proves the path is not wedged end-to-end.
+    WriteFileTool::execute_contract_write(
+        json!({ "path": "early-return.txt", "content": "beta\n" }),
+        &ctx,
+    )
+    .await
+    .expect("a later write must still succeed");
+    assert_eq!(
+        fs::read_to_string(&target).expect("read back"),
+        "beta\n"
+    );
+}
+
+#[tokio::test]
+async fn mutation_guard_is_released_when_the_critical_section_panics() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let target = workspace.join("panic.txt");
+    fs::write(&target, "alpha\n").expect("seed");
+
+    let panicking = tokio::spawn({
+        let ctx = ToolContext::new(workspace.clone());
+        let target = target.clone();
+        async move {
+            let _guard = super::acquire_file_mutation(&target, &ctx)
+                .await
+                .expect("uncontended acquisition");
+            panic!("simulated tool panic while holding the file mutation guard");
+        }
+    });
+    let join_error = panicking.await.expect_err("the task must panic");
+    assert!(join_error.is_panic(), "expected a panic: {join_error:?}");
+
+    // Async mutexes release on drop, including during unwinding. If that ever
+    // stops being true the file would be permanently unwritable, which is a
+    // much worse failure than the panic that caused it.
+    let ctx = ToolContext::new(workspace.clone());
+    let reacquired = super::acquire_file_mutation(&target, &ctx).await;
+    assert!(
+        reacquired.is_ok(),
+        "the guard must survive a panic unwind: {:?}",
+        reacquired.err()
+    );
+    drop(reacquired);
+
+    WriteFileTool::execute_contract_write(
+        json!({ "path": "panic.txt", "content": "beta\n" }),
+        &ctx,
+    )
+    .await
+    .expect("writes must still work after a panic released the guard");
+    assert_eq!(
+        fs::read_to_string(&target).expect("read back"),
+        "beta\n"
+    );
+}
+
+#[tokio::test]
+async fn mutation_lock_is_per_path_not_global() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path().to_path_buf());
+    fs::write(tmp.path().join("one.txt"), "a\n").expect("seed one");
+    fs::write(tmp.path().join("two.txt"), "b\n").expect("seed two");
+    let first = ctx.resolve_path("one.txt").expect("resolve one");
+    let second = ctx.resolve_path("two.txt").expect("resolve two");
+
+    // Holding one path must not stall an unrelated path, or every parallel
+    // write in a turn would collapse to serial execution.
+    let held = super::acquire_file_mutation(&first, &ctx)
+        .await
+        .expect("first path");
+    let other = super::acquire_file_mutation(&second, &ctx).await;
+    assert!(
+        other.is_ok(),
+        "locking one path must not lock every path: {:?}",
+        other.err()
+    );
+    drop(other);
+    drop(held);
+}
+
+#[test]
+fn the_compatibility_writers_are_the_ones_holding_the_mutation_guard() {
+    // The guard is only meaningful if the model-reachable write surface runs
+    // through it. `File action="write"` dispatches to `WriteFileTool`, and the
+    // lowercase `write` tool delegates to `execute_contract_write`; if either
+    // dispatch moved, these tests would still pass while the real path lost its
+    // guard. Reading the source is crude, but it fails loudly at the one place
+    // a future refactor would silently detach the guard.
+    let source = include_str!("../../file.rs");
+    assert_eq!(
+        source
+            .matches("let mutation_guard = acquire_file_mutation(&file_path, context).await?;")
+            .count(),
+        2,
+        "both write and edit must acquire the mutation guard"
+    );
+    let wrapper = include_str!("../../file_tool.rs");
+    assert!(
+        wrapper.contains("WriteFileTool::execute_contract_write")
+            && wrapper.contains("EditFileTool::execute_contract_edits")
+            && wrapper.contains("WriteFileTool.execute(input, context)")
+            && wrapper.contains("EditFileTool.execute(input, context)"),
+        "every write/edit dispatch must reach the guarded implementations"
+    );
 }

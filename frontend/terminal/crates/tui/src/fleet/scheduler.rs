@@ -651,6 +651,10 @@ fn task_spec_for(state: &FleetLedgerState, task: &FleetTaskState) -> Option<Flee
 fn host_key(worker: &FleetWorkerSpec) -> String {
     match &worker.host {
         FleetHostSpec::Local => "local".to_string(),
+        FleetHostSpec::Wsl { distro, .. } => distro
+            .as_deref()
+            .map(|distro| format!("wsl:{distro}"))
+            .unwrap_or_else(|| "wsl:default".to_string()),
         FleetHostSpec::Ssh { host, .. } => format!("ssh:{host}"),
         FleetHostSpec::Docker { image, .. } => format!("docker:{image}"),
     }

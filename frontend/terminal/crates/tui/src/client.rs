@@ -492,8 +492,7 @@ fn push_file_backed_model_bound_secrets(values: &mut Vec<String>) {
     // The isolated regression below opts in with a temporary HAKUS_HOME,
     // matching Config's existing secret-store test discipline.
     #[cfg(test)]
-    if !hakus_paths::hakus_home_is_explicit()
-        || std::env::var_os("HAKUS_SECRET_BACKEND").is_none()
+    if !hakus_paths::hakus_home_is_explicit() || std::env::var_os("HAKUS_SECRET_BACKEND").is_none()
     {
         return;
     }
@@ -1607,7 +1606,10 @@ fn wire_config_prefers_responses(wire: Option<&str>) -> bool {
         return false;
     };
     let normalized = raw.to_ascii_lowercase().replace(['_', ' '], "-");
-    matches!(normalized.as_str(), "responses" | "openai-responses" | "responses-api")
+    matches!(
+        normalized.as_str(),
+        "responses" | "openai-responses" | "responses-api"
+    )
 }
 
 fn wire_config_prefers_anthropic(wire: Option<&str>) -> bool {
@@ -2743,8 +2745,7 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
     // provider HTTP body verbatim, and a 400 from a content filter routinely
     // echoes the prompt.
     if matches!(err, LlmError::NetworkError(_) | LlmError::Timeout(_)) {
-        hakus_telemetry::session_counters()
-            .bump_error(hakus_telemetry::ErrorCounter::NetworkError);
+        hakus_telemetry::session_counters().bump_error(hakus_telemetry::ErrorCounter::NetworkError);
     }
     match err {
         LlmError::RateLimited { retry_after, .. } => {
@@ -3962,9 +3963,8 @@ mod tests {
             unwritten.cost.as_ref().and_then(|cost| cost.cache_write),
             None
         );
-        let unwritten =
-            hakus_config::pricing::OfferingPricing::from_catalog_offering(&unwritten)
-                .expect("priced offering");
+        let unwritten = hakus_config::pricing::OfferingPricing::from_catalog_offering(&unwritten)
+            .expect("priced offering");
         assert_eq!(unwritten.estimate_cost(&write), None);
         assert_eq!(
             unwritten.unpriced_used_classes(&write),
@@ -5810,7 +5810,6 @@ mod tests {
         "sakana-config-secret-008",
     ];
 
-
     fn client_with_config_secret_sentinels() -> DeepSeekClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
         DeepSeekClient::new(&Config {
@@ -5972,10 +5971,8 @@ mod tests {
         let hakus_home = tmp.path().join("hakus-home");
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).expect("create isolated home");
-        let _hakus_home =
-            crate::test_support::EnvVarGuard::set("HAKUS_HOME", &hakus_home);
-        let _secret_backend =
-            crate::test_support::EnvVarGuard::set("HAKUS_SECRET_BACKEND", "file");
+        let _hakus_home = crate::test_support::EnvVarGuard::set("HAKUS_HOME", &hakus_home);
+        let _secret_backend = crate::test_support::EnvVarGuard::set("HAKUS_SECRET_BACKEND", "file");
         let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
         let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &home);
         let builtin_env_name = ApiProvider::Arcee
@@ -6036,8 +6033,7 @@ mod tests {
         let _home = crate::test_support::EnvVarGuard::set("HOME", &ambient_home);
         let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &ambient_home);
         let _hakus_home_unset = crate::test_support::EnvVarGuard::remove("HAKUS_HOME");
-        let _secret_backend =
-            crate::test_support::EnvVarGuard::set("HAKUS_SECRET_BACKEND", "file");
+        let _secret_backend = crate::test_support::EnvVarGuard::set("HAKUS_SECRET_BACKEND", "file");
         hakus_secrets::Secrets::file_backed()
             .set("arcee", "ambient-redaction-secret-sentinel")
             .expect("seed ambient file secret store");
@@ -10415,8 +10411,7 @@ mod tests {
     #[test]
     fn outbound_seam_clamps_every_dialect_to_the_exact_route_envelope() {
         let _lock = crate::test_support::lock_test_env();
-        let _canonical =
-            crate::test_support::EnvVarGuard::set("HAKUS_MAX_OUTPUT_TOKENS", "384000");
+        let _canonical = crate::test_support::EnvVarGuard::set("HAKUS_MAX_OUTPUT_TOKENS", "384000");
         let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_MAX_OUTPUT_TOKENS");
 
         for (limits, expected) in [
@@ -10487,8 +10482,7 @@ mod tests {
     #[test]
     fn same_protocol_model_switch_rebinds_exact_candidate_identity_and_limits() {
         let _lock = crate::test_support::lock_test_env();
-        let _canonical =
-            crate::test_support::EnvVarGuard::set("HAKUS_MAX_OUTPUT_TOKENS", "384000");
+        let _canonical = crate::test_support::EnvVarGuard::set("HAKUS_MAX_OUTPUT_TOKENS", "384000");
         let config = Config {
             provider: Some("openrouter".to_string()),
             providers: Some(ProvidersConfig {
@@ -10557,8 +10551,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn fim_non_message_request_is_clamped_to_bound_route() {
         let _lock = crate::test_support::lock_test_env();
-        let _canonical =
-            crate::test_support::EnvVarGuard::set("HAKUS_MAX_OUTPUT_TOKENS", "384000");
+        let _canonical = crate::test_support::EnvVarGuard::set("HAKUS_MAX_OUTPUT_TOKENS", "384000");
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/beta/completions"))

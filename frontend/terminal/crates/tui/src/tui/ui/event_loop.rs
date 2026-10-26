@@ -2025,6 +2025,14 @@ pub(crate) async fn run_event_loop(
                             }
                         }
                     }
+                    EngineEvent::TodoUpdated { .. } => {
+                        // The list is published for consumers that render it as
+                        // their own surface — the Runtime forwards it to the
+                        // desktop execution-plan card. The TUI renders progress
+                        // from the tool card and the per-agent work cards, which
+                        // read the list directly, so there is nothing to redraw
+                        // here and no second copy of the list is kept.
+                    }
                     EngineEvent::GoalContinuationWaiting { delay_seconds } => {
                         app.goal_continuation_waiting = true;
                         let delay = crate::elapsed::format_elapsed_secs(delay_seconds);
@@ -2041,6 +2049,15 @@ pub(crate) async fn run_event_loop(
                             MessageId::GoalContinuationReady
                         };
                         app.status_message = Some(app.tr(message_id).to_string());
+                    }
+                    EngineEvent::UserMessageComposed { .. } => {
+                        // The receipt exists for the durable host that stores
+                        // the model input per turn. The TUI renders the
+                        // transcript from `SessionUpdated` and the stream
+                        // events, which carry the same bytes, so there is
+                        // nothing user-visible to do here — and consuming it
+                        // silently is what keeps a host-only event from
+                        // redrawing the screen.
                     }
                     EngineEvent::SessionUpdated {
                         session_id,

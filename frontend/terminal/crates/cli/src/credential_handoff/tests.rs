@@ -32,14 +32,8 @@ fn expect_credential_error(result: anyhow::Result<String>, context: &'static str
 
 #[test]
 fn command_parses_and_documents_the_pipe_only_boundary() {
-    let cli = Cli::try_parse_from([
-        "hakus",
-        "auth",
-        "print-api-key",
-        "--provider",
-        "openrouter",
-    ])
-    .expect("parse command");
+    let cli = Cli::try_parse_from(["hakus", "auth", "print-api-key", "--provider", "openrouter"])
+        .expect("parse command");
     assert!(matches!(
         cli.command,
         Some(Commands::Auth(AuthArgs {
@@ -221,7 +215,6 @@ fn api_key_uses_shared_secret_store_precedence() {
         "resolved an unexpected credential source"
     );
 }
-
 
 #[test]
 fn missing_key_test_is_hermetic_against_ambient_openrouter_credentials() {

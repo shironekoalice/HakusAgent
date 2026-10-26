@@ -616,8 +616,7 @@ call_reasoning = "low"
         assert_eq!(workspace_profile.model, "gpt-5.6-luna");
 
         let (home_profile, home_id) =
-            ReasoningRouterProfile::load_by_name("hakus_home/luna-low", &roots)
-                .expect("qualified");
+            ReasoningRouterProfile::load_by_name("hakus_home/luna-low", &roots).expect("qualified");
         assert_eq!(home_id.qualified(), "hakus_home/luna-low");
         assert_eq!(home_profile.model, "gpt-5.6-luna-mini");
     }

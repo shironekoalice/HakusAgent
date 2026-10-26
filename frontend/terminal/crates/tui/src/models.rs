@@ -333,7 +333,11 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
         || is_openai_gpt_56_api_model(&lower)
         || is_openai_coding_model(&lower)
     {
-        return Some(if lower.contains("deepseek") { 384_000 } else { 128_000 });
+        return Some(if lower.contains("deepseek") {
+            384_000
+        } else {
+            128_000
+        });
     }
     match lower.as_str() {
         "claude-opus-4-8" | "claude-opus-5" | "claude-sonnet-4-6" | "claude-sonnet-5"
@@ -343,20 +347,31 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
         "moonshotai/kimi-k3" | "kimi-k3" | "k3" | "opencode-go/kimi-k3" => {
             Some(KIMI_K3_DEFAULT_MAX_COMPLETION_TOKENS)
         }
-        "moonshotai/kimi-k2.7-code" | "moonshotai/kimi-k2.7-code-highspeed"
-        | "moonshotai/kimi-k2.6" | "kimi-k2.7-code" | "kimi-k2.7-code-highspeed"
+        "moonshotai/kimi-k2.7-code"
+        | "moonshotai/kimi-k2.7-code-highspeed"
+        | "moonshotai/kimi-k2.6"
+        | "kimi-k2.7-code"
+        | "kimi-k2.7-code-highspeed"
         | "kimi-k2.6" => Some(32_768),
         "minimax/minimax-m3" | "minimax-m3" => Some(524_288),
-        "qwen/qwen3.6-35b-a3b" | "qwen/qwen3.6-27b" | "qwen/qwen3.6-flash"
-        | "qwen/qwen3.6-max-preview" | "qwen/qwen3.6-plus" => Some(65_536),
+        "qwen/qwen3.6-35b-a3b"
+        | "qwen/qwen3.6-27b"
+        | "qwen/qwen3.6-flash"
+        | "qwen/qwen3.6-max-preview"
+        | "qwen/qwen3.6-plus" => Some(65_536),
         "qwen3.8-max" | "qwen3.8-max-preview" => Some(131_072),
         "qwen3.7-plus" | "qwen3.7-max" | "qwen3.6-flash" => Some(65_536),
-        "z-ai/glm-5.1" | "z-ai/glm-5.2" | "z-ai/glm-5.3" | "z-ai/glm-5-turbo"
-        | "glm-5.1" | "glm-5.2" | "glm-5.3" | "glm-5-turbo" => Some(131_072),
-        "xiaomi/mimo-v2.5-pro" | "xiaomi/mimo-v2.5" | "mimo-v2.5-pro"
-        | "mimo-v2.5-pro-ultraspeed" | "mimo-v2.5" => Some(131_072),
+        "z-ai/glm-5.1" | "z-ai/glm-5.2" | "z-ai/glm-5.3" | "z-ai/glm-5-turbo" | "glm-5.1"
+        | "glm-5.2" | "glm-5.3" | "glm-5-turbo" => Some(131_072),
+        "xiaomi/mimo-v2.5-pro"
+        | "xiaomi/mimo-v2.5"
+        | "mimo-v2.5-pro"
+        | "mimo-v2.5-pro-ultraspeed"
+        | "mimo-v2.5" => Some(131_072),
         "mimo-v2.5-asr" => Some(2_048),
-        "mimo-v2.5-tts" | "mimo-v2.5-tts-voicedesign" | "mimo-v2.5-tts-voiceclone"
+        "mimo-v2.5-tts"
+        | "mimo-v2.5-tts-voicedesign"
+        | "mimo-v2.5-tts-voiceclone"
         | "mimo-v2-tts" => Some(8_192),
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" => Some(65_536),
         "nvidia/nemotron-3-ultra-550b-a55b" => Some(16_384),
@@ -364,9 +379,14 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
         "google/gemma-4-31b-it" => Some(16_384),
         "google/gemma-4-31b-it:free" | "google/gemma-4-26b-a4b-it:free" => Some(32_768),
         "muse-spark-1.1" | "muse-spark-1.2" | "muse-spark-1.2-contributor" => Some(32_000),
-        "gemini-3.7-flash" | "gemini-3.6-flash" | "gemini-3.5-flash"
-        | "gemini-3.5-flash-lite" | "gemini-3.1-pro-preview" | "gemini-3-pro-preview"
-        | "gemini-2.5-pro" | "gemini-2.5-flash" => Some(65_536),
+        "gemini-3.7-flash"
+        | "gemini-3.6-flash"
+        | "gemini-3.5-flash"
+        | "gemini-3.5-flash-lite"
+        | "gemini-3.1-pro-preview"
+        | "gemini-3-pro-preview"
+        | "gemini-2.5-pro"
+        | "gemini-2.5-flash" => Some(65_536),
         "dots-studio/dots-3-note-preview:free" => Some(512_000),
         _ => None,
     }
@@ -388,33 +408,80 @@ pub fn model_supports_reasoning(model: &str) -> bool {
     }
     matches!(
         lower.as_str(),
-        "claude-opus-4-8" | "claude-opus-5" | "claude-sonnet-4-6" | "claude-sonnet-5"
-        | "claude-fable-5" | "gpt-5-codex" | "gpt-5.3-codex" | "trinity-mini"
-        | "arcee-ai/trinity-large-thinking" | "trinity-large-thinking" | "thinkingmachines/inkling"
-        | "google/gemma-4-31b-it" | "google/gemma-4-31b-it:free"
-        | "google/gemma-4-26b-a4b-it" | "google/gemma-4-26b-a4b-it:free"
-        | "moonshotai/kimi-k2.7-code" | "moonshotai/kimi-k2.7-code-highspeed"
-        | "moonshotai/kimi-k2.6" | "moonshotai/kimi-k2.6:free" | "kimi-k2.7-code"
-        | "kimi-k2.6" | "kimi-for-coding" | "minimax/minimax-m3" | "minimax/minimax-m2.7"
-        | "minimax-m3" | "minimax-m2.7" | "minimax-m2.7-highspeed" | "minimax-m2.5"
-        | "minimax-m2.5-highspeed" | "minimax-m2.1" | "minimax-m2.1-highspeed"
-        | "minimax-m2" | "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
-        | "nvidia/nemotron-3-ultra-550b-a55b" | "nvidia/nemotron-3-ultra-550b-a55b:free"
-        | "qwen/qwen3.6-flash" | "qwen/qwen3.6-35b-a3b" | "qwen/qwen3.6-max-preview"
-        | "qwen/qwen3.6-27b" | "qwen/qwen3.6-plus" | "qwen3.8-max" | "qwen3.8-max-preview"
-        | "qwen3.7-max" | "qwen3.7-plus" | "qwen3.6-plus" | "qwen3.6-flash"
-        | "qwen3.5-plus" | "qwen3.5-flash" | "tencent/hy3-preview"
-        | "xiaomi/mimo-v2.5-pro" | "xiaomi/mimo-v2.5" | "mimo-v2.5-pro"
-        | "mimo-v2.5-pro-ultraspeed" | "mimo-v2.5" | "z-ai/glm-5.1" | "z-ai/glm-5.2"
-        | "z-ai/glm-5.3" | "z-ai/glm-5-turbo" | "glm-5.1" | "glm-5.2" | "glm-5.3"
-        | "glm-5-turbo" | "grok-4.6" | "grok-4.5" | "grok-4.3" | "grok-build"
-        | "grok-4.20-0309-reasoning" | "muse-spark-1.1" | "muse-spark-1.2"
-        | "muse-spark-1.2-contributor"
+        "claude-opus-4-8"
+            | "claude-opus-5"
+            | "claude-sonnet-4-6"
+            | "claude-sonnet-5"
+            | "claude-fable-5"
+            | "gpt-5-codex"
+            | "gpt-5.3-codex"
+            | "trinity-mini"
+            | "arcee-ai/trinity-large-thinking"
+            | "trinity-large-thinking"
+            | "thinkingmachines/inkling"
+            | "google/gemma-4-31b-it"
+            | "google/gemma-4-31b-it:free"
+            | "google/gemma-4-26b-a4b-it"
+            | "google/gemma-4-26b-a4b-it:free"
+            | "moonshotai/kimi-k2.7-code"
+            | "moonshotai/kimi-k2.7-code-highspeed"
+            | "moonshotai/kimi-k2.6"
+            | "moonshotai/kimi-k2.6:free"
+            | "kimi-k2.7-code"
+            | "kimi-k2.6"
+            | "kimi-for-coding"
+            | "minimax/minimax-m3"
+            | "minimax/minimax-m2.7"
+            | "minimax-m3"
+            | "minimax-m2.7"
+            | "minimax-m2.7-highspeed"
+            | "minimax-m2.5"
+            | "minimax-m2.5-highspeed"
+            | "minimax-m2.1"
+            | "minimax-m2.1-highspeed"
+            | "minimax-m2"
+            | "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+            | "nvidia/nemotron-3-ultra-550b-a55b"
+            | "nvidia/nemotron-3-ultra-550b-a55b:free"
+            | "qwen/qwen3.6-flash"
+            | "qwen/qwen3.6-35b-a3b"
+            | "qwen/qwen3.6-max-preview"
+            | "qwen/qwen3.6-27b"
+            | "qwen/qwen3.6-plus"
+            | "qwen3.8-max"
+            | "qwen3.8-max-preview"
+            | "qwen3.7-max"
+            | "qwen3.7-plus"
+            | "qwen3.6-plus"
+            | "qwen3.6-flash"
+            | "qwen3.5-plus"
+            | "qwen3.5-flash"
+            | "tencent/hy3-preview"
+            | "xiaomi/mimo-v2.5-pro"
+            | "xiaomi/mimo-v2.5"
+            | "mimo-v2.5-pro"
+            | "mimo-v2.5-pro-ultraspeed"
+            | "mimo-v2.5"
+            | "z-ai/glm-5.1"
+            | "z-ai/glm-5.2"
+            | "z-ai/glm-5.3"
+            | "z-ai/glm-5-turbo"
+            | "glm-5.1"
+            | "glm-5.2"
+            | "glm-5.3"
+            | "glm-5-turbo"
+            | "grok-4.6"
+            | "grok-4.5"
+            | "grok-4.3"
+            | "grok-build"
+            | "grok-4.20-0309-reasoning"
+            | "muse-spark-1.1"
+            | "muse-spark-1.2"
+            | "muse-spark-1.2-contributor"
     ) || is_openai_gpt_55_api_model(&lower)
         || is_openai_gpt_56_api_model(&lower)
         || is_openai_coding_model(&lower)
 }
-
 
 /// Contributor tier of Muse Spark 1.2 is a distinct selectable id with
 /// its own wire model (`muse-spark-1.2-contributor`) and cheaper billing in
@@ -423,7 +490,6 @@ pub fn model_supports_reasoning(model: &str) -> bool {
 pub fn effective_muse_wire_id(model: &str) -> &str {
     model
 }
-
 
 fn is_openai_gpt_55_api_model(model_lower: &str) -> bool {
     matches!(model_lower, "gpt-5.5" | "gpt-5.5-pro")
@@ -449,9 +515,17 @@ pub(crate) fn model_is_openai_reasoning_family(model: &str) -> bool {
 fn is_openai_coding_model(model_lower: &str) -> bool {
     matches!(
         model_lower,
-        "gpt-5-codex" | "gpt-5.1-codex" | "gpt-5.1-codex-mini" | "gpt-5.1-codex-max"
-            | "gpt-5.2-codex" | "gpt-5.3-codex" | "codex-gpt-5.5" | "chatgpt-gpt-5.5"
-            | "gpt-5.5-codex" | "gpt-5.5-codex-preview" | "codex-gpt-5.5-preview"
+        "gpt-5-codex"
+            | "gpt-5.1-codex"
+            | "gpt-5.1-codex-mini"
+            | "gpt-5.1-codex-max"
+            | "gpt-5.2-codex"
+            | "gpt-5.3-codex"
+            | "codex-gpt-5.5"
+            | "chatgpt-gpt-5.5"
+            | "gpt-5.5-codex"
+            | "gpt-5.5-codex-preview"
+            | "codex-gpt-5.5-preview"
             | "chatgpt-gpt-5.5-preview"
     )
 }

@@ -34,7 +34,11 @@ pub struct NewIssue<'a> {
 
 impl<'a> NewIssue<'a> {
     pub fn new(company_id: &'a str, title: &'a str) -> Self {
-        Self { company_id, title, ..Default::default() }
+        Self {
+            company_id,
+            title,
+            ..Default::default()
+        }
     }
 }
 
@@ -57,18 +61,23 @@ impl CompanyStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let mut conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut conn =
+            Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 5000i64)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         schema::migrate(&mut conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn open_in_memory() -> StoreResult<Self> {
         let mut conn = Connection::open_in_memory()?;
         schema::migrate(&mut conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -103,14 +112,20 @@ impl CompanyStore {
 
     pub fn get_company(&self, id: &str) -> StoreResult<Option<CompanyRow>> {
         self.conn()
-            .query_row("SELECT * FROM company WHERE id=?1", params![id], CompanyRow::from_row)
+            .query_row(
+                "SELECT * FROM company WHERE id=?1",
+                params![id],
+                CompanyRow::from_row,
+            )
             .optional()
     }
 
     pub fn list_companies(&self) -> StoreResult<Vec<CompanyRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT * FROM company ORDER BY created_at DESC")?;
-        let rows = stmt.query_map([], CompanyRow::from_row)?.collect::<Result<Vec<_>, _>>()?;
+        let rows = stmt
+            .query_map([], CompanyRow::from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
@@ -165,13 +180,18 @@ impl CompanyStore {
 
     pub fn get_agent(&self, id: &str) -> StoreResult<Option<AgentRow>> {
         self.conn()
-            .query_row("SELECT * FROM agent WHERE id=?1", params![id], AgentRow::from_row)
+            .query_row(
+                "SELECT * FROM agent WHERE id=?1",
+                params![id],
+                AgentRow::from_row,
+            )
             .optional()
     }
 
     pub fn list_agents(&self, company_id: &str) -> StoreResult<Vec<AgentRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT * FROM agent WHERE company_id=?1 ORDER BY created_at")?;
+        let mut stmt =
+            conn.prepare("SELECT * FROM agent WHERE company_id=?1 ORDER BY created_at")?;
         let rows = stmt
             .query_map(params![company_id], AgentRow::from_row)?
             .collect::<Result<Vec<_>, _>>()?;
@@ -180,14 +200,18 @@ impl CompanyStore {
 
     /// Persist the runtime session id so subsequent heartbeats keep context.
     pub fn set_agent_session(&self, id: &str, session: &str) -> StoreResult<()> {
-        self.conn()
-            .execute("UPDATE agent SET runtime_session_id=?2 WHERE id=?1", params![id, session])?;
+        self.conn().execute(
+            "UPDATE agent SET runtime_session_id=?2 WHERE id=?1",
+            params![id, session],
+        )?;
         Ok(())
     }
 
     pub fn set_agent_status(&self, id: &str, status: AgentStatus) -> StoreResult<()> {
-        self.conn()
-            .execute("UPDATE agent SET status=?2 WHERE id=?1", params![id, status.as_str()])?;
+        self.conn().execute(
+            "UPDATE agent SET status=?2 WHERE id=?1",
+            params![id, status.as_str()],
+        )?;
         Ok(())
     }
 
@@ -212,7 +236,14 @@ impl CompanyStore {
         self.conn().execute(
             "INSERT INTO goal (id, company_id, parent_id, kind, title, description)
              VALUES (?1,?2,?3,?4,?5,?6)",
-            params![row.id, row.company_id, row.parent_id, row.kind, row.title, row.description],
+            params![
+                row.id,
+                row.company_id,
+                row.parent_id,
+                row.kind,
+                row.title,
+                row.description
+            ],
         )?;
         Ok(row)
     }
@@ -224,7 +255,11 @@ impl CompanyStore {
         let conn = self.conn();
         while let Some(id) = cursor {
             let row: Option<GoalRow> = conn
-                .query_row("SELECT * FROM goal WHERE id=?1", params![id], GoalRow::from_row)
+                .query_row(
+                    "SELECT * FROM goal WHERE id=?1",
+                    params![id],
+                    GoalRow::from_row,
+                )
                 .optional()?;
             match row {
                 Some(g) => {
@@ -288,16 +323,19 @@ impl CompanyStore {
     /// Tickets delegated out of `issue_id`, oldest first.
     pub fn list_children(&self, issue_id: &str) -> StoreResult<Vec<IssueRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT * FROM issue WHERE parent_issue_id=?1 ORDER BY created_at",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT * FROM issue WHERE parent_issue_id=?1 ORDER BY created_at")?;
         stmt.query_map(params![issue_id], IssueRow::from_row)?
             .collect::<Result<Vec<_>, _>>()
     }
 
     /// First agent in the company holding this role — how a delegation by role
     /// finds a body.
-    pub fn find_agent_by_role(&self, company_id: &str, role: &str) -> StoreResult<Option<AgentRow>> {
+    pub fn find_agent_by_role(
+        &self,
+        company_id: &str,
+        role: &str,
+    ) -> StoreResult<Option<AgentRow>> {
         self.conn()
             .query_row(
                 "SELECT * FROM agent WHERE company_id=?1 AND role=?2 AND status='active'
@@ -360,7 +398,11 @@ impl CompanyStore {
         Ok(row)
     }
 
-    pub fn list_approvals(&self, company_id: &str, status: Option<&str>) -> StoreResult<Vec<ApprovalRow>> {
+    pub fn list_approvals(
+        &self,
+        company_id: &str,
+        status: Option<&str>,
+    ) -> StoreResult<Vec<ApprovalRow>> {
         let conn = self.conn();
         match status {
             Some(s) => {
@@ -386,7 +428,11 @@ impl CompanyStore {
         approved: bool,
         reason: Option<&str>,
     ) -> StoreResult<Option<ApprovalRow>> {
-        let status = if approved { ApprovalStatus::Approved } else { ApprovalStatus::Rejected };
+        let status = if approved {
+            ApprovalStatus::Approved
+        } else {
+            ApprovalStatus::Rejected
+        };
         let changed = self.conn().execute(
             "UPDATE approval SET status=?2, reason=?3, decided_at=?4
              WHERE id=?1 AND status='pending'",
@@ -400,13 +446,21 @@ impl CompanyStore {
 
     pub fn approval(&self, approval_id: &str) -> StoreResult<Option<ApprovalRow>> {
         self.conn()
-            .query_row("SELECT * FROM approval WHERE id=?1", params![approval_id], ApprovalRow::from_row)
+            .query_row(
+                "SELECT * FROM approval WHERE id=?1",
+                params![approval_id],
+                ApprovalRow::from_row,
+            )
             .optional()
     }
 
     pub fn get_issue(&self, id: &str) -> StoreResult<Option<IssueRow>> {
         self.conn()
-            .query_row("SELECT * FROM issue WHERE id=?1", params![id], IssueRow::from_row)
+            .query_row(
+                "SELECT * FROM issue WHERE id=?1",
+                params![id],
+                IssueRow::from_row,
+            )
             .optional()
     }
 
@@ -421,8 +475,8 @@ impl CompanyStore {
                     .collect::<Result<Vec<_>, _>>()
             }
             None => {
-                let mut stmt =
-                    conn.prepare("SELECT * FROM issue WHERE company_id=?1 ORDER BY updated_at DESC")?;
+                let mut stmt = conn
+                    .prepare("SELECT * FROM issue WHERE company_id=?1 ORDER BY updated_at DESC")?;
                 stmt.query_map(params![company_id], IssueRow::from_row)?
                     .collect::<Result<Vec<_>, _>>()
             }
@@ -485,7 +539,13 @@ impl CompanyStore {
         self.conn().execute(
             "INSERT INTO issue_comment (id, issue_id, author_agent_id, body, created_at)
              VALUES (?1,?2,?3,?4,?5)",
-            params![Self::new_id("cmt"), issue_id, author_agent_id, body, Self::now_secs()],
+            params![
+                Self::new_id("cmt"),
+                issue_id,
+                author_agent_id,
+                body,
+                Self::now_secs()
+            ],
         )?;
         Ok(())
     }
@@ -515,7 +575,14 @@ impl CompanyStore {
         self.conn().execute(
             "INSERT INTO heartbeat (id, agent_id, cron, enabled, last_run_at, next_run_at)
              VALUES (?1,?2,?3,?4,?5,?6)",
-            params![row.id, row.agent_id, row.cron, 1i64, row.last_run_at, row.next_run_at],
+            params![
+                row.id,
+                row.agent_id,
+                row.cron,
+                1i64,
+                row.last_run_at,
+                row.next_run_at
+            ],
         )?;
         Ok(row)
     }
@@ -546,7 +613,11 @@ impl CompanyStore {
 
     // ── runs & costs ────────────────────────────────────────────────────────
 
-    pub fn insert_run(&self, heartbeat_id: Option<&str>, agent_id: &str) -> StoreResult<HeartbeatRunRow> {
+    pub fn insert_run(
+        &self,
+        heartbeat_id: Option<&str>,
+        agent_id: &str,
+    ) -> StoreResult<HeartbeatRunRow> {
         let row = HeartbeatRunRow {
             id: Self::new_id("run"),
             heartbeat_id: heartbeat_id.map(str::to_string),
@@ -614,12 +685,18 @@ impl CompanyStore {
     }
 
     pub fn attach_run_issue(&self, run_id: &str, issue_id: &str) -> StoreResult<()> {
-        self.conn()
-            .execute("UPDATE heartbeat_run SET issue_id=?2 WHERE id=?1", params![run_id, issue_id])?;
+        self.conn().execute(
+            "UPDATE heartbeat_run SET issue_id=?2 WHERE id=?1",
+            params![run_id, issue_id],
+        )?;
         Ok(())
     }
 
-    pub fn list_runs(&self, agent_id: Option<&str>, limit: i64) -> StoreResult<Vec<HeartbeatRunRow>> {
+    pub fn list_runs(
+        &self,
+        agent_id: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<Vec<HeartbeatRunRow>> {
         let conn = self.conn();
         match agent_id {
             Some(a) => {
@@ -630,8 +707,8 @@ impl CompanyStore {
                     .collect::<Result<Vec<_>, _>>()
             }
             None => {
-                let mut stmt = conn
-                    .prepare("SELECT * FROM heartbeat_run ORDER BY started_at DESC LIMIT ?1")?;
+                let mut stmt =
+                    conn.prepare("SELECT * FROM heartbeat_run ORDER BY started_at DESC LIMIT ?1")?;
                 stmt.query_map(params![limit], HeartbeatRunRow::from_row)?
                     .collect::<Result<Vec<_>, _>>()
             }
@@ -714,7 +791,9 @@ impl CompanyStore {
             "SELECT id FROM issue WHERE state='in_progress' AND checkout_at IS NOT NULL
              AND checkout_at < ?1",
         )?;
-        let ids: Vec<String> = stmt.query_map(params![cutoff], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+        let ids: Vec<String> = stmt
+            .query_map(params![cutoff], |r| r.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
         drop(conn);
 
@@ -789,7 +868,10 @@ mod tests {
         assert!(store.checkout_issue(&issue.id, "run_a").unwrap());
         // Second claimant loses even though it targets the same row.
         assert!(!store.checkout_issue(&issue.id, "run_b").unwrap());
-        assert_eq!(store.get_issue(&issue.id).unwrap().unwrap().state, "in_progress");
+        assert_eq!(
+            store.get_issue(&issue.id).unwrap().unwrap().state,
+            "in_progress"
+        );
     }
 
     #[test]

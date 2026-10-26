@@ -939,6 +939,45 @@ async fn update_is_a_digest_noop_until_the_upstream_changes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_remote_upgrade_preserves_the_previous_reviewed_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let v1 = remote_bundle_bytes("demo", b"stable-v1");
+    // A remote response without a plugin manifest must fail while staging,
+    // before the existing destination is moved to the backup path.
+    let invalid = tarball(&[("repo-main/readme.txt", b"not a plugin")]);
+    let url = serve_bodies(vec![v1, invalid]);
+
+    install(
+        PluginInstallSource::parse(&url).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &loopback_policy(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+
+    let error = update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+        .await
+        .expect_err("invalid upgrade must be rejected");
+    assert!(format!("{error:#}").contains("exactly one plugin bundle"));
+    assert_eq!(fs::read(plugins.join("demo/data.txt")).unwrap(), b"stable-v1");
+    assert!(!plugins.join("demo.bak").exists());
+    assert!(
+        !fs::read_dir(&plugins)
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".staging-")),
+        "failed upgrade must clean its private staging directory"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_install_surfaces_policy_gates_without_touching_disk() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins = tmp.path().join("plugins");

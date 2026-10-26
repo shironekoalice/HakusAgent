@@ -7,6 +7,29 @@ use serde_json::Value;
 pub const RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION: u32 = 1;
 pub const RUNTIME_API_VERSION: &str = "1.0";
 
+/// The execution plane that owns a Runtime API process.
+///
+/// The Rust plane is the default path for the desktop workbench. Python is
+/// retained as a compatibility plane while legacy sessions and extensions are
+/// migrated; it must not be mistaken for the canonical Rust ledger.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeExecutionPlane {
+    Rust,
+    PythonCompat,
+}
+
+/// Phase-0 migration switches advertised by the runtime.
+///
+/// These are intentionally explicit in the wire contract so the desktop can
+/// report which path handled a turn instead of inferring it from a URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeFeatureGates {
+    pub rust_default_path: bool,
+    pub python_compat_path: bool,
+    pub legacy_agentcore: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEventEnvelope {
     #[serde(default = "default_runtime_event_envelope_schema_version")]
@@ -407,5 +430,20 @@ mod tests {
             envelope.schema_version,
             RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn execution_plane_and_feature_gates_use_stable_wire_names() {
+        let plane = serde_json::to_value(RuntimeExecutionPlane::PythonCompat).unwrap();
+        assert_eq!(plane, json!("python_compat"));
+        let gates = RuntimeFeatureGates {
+            rust_default_path: true,
+            python_compat_path: true,
+            legacy_agentcore: false,
+        };
+        let value = serde_json::to_value(gates).unwrap();
+        assert_eq!(value["rust_default_path"], json!(true));
+        assert_eq!(value["python_compat_path"], json!(true));
+        assert_eq!(value["legacy_agentcore"], json!(false));
     }
 }

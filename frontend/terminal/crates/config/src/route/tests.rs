@@ -206,7 +206,6 @@ fn resolver_applies_repeated_limit_overrides_in_request_order() {
     assert_eq!(candidate.limits().context_tokens, Some(333));
 }
 
-
 #[test]
 fn resolved_auth_source_existing_variants_keep_wire_compatibility() {
     let cases = [
@@ -248,7 +247,6 @@ fn descriptor_for_every_kind_has_nonempty_transport_facts() {
         }
     }
 }
-
 
 #[test]
 fn resolver_explicit_provider_scoped_model_maps_to_wire_id() {

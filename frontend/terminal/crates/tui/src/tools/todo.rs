@@ -224,7 +224,10 @@ pub fn new_shared_todo_list() -> SharedTodoList {
 }
 
 const CANONICAL_WORK_SURFACE: &str = "work";
-const CANONICAL_PROGRESS_TOOL: &str = "todo_write";
+/// Name of the canonical model-facing progress tool. Public because the result
+/// metadata that identifies a progress write is keyed on it, and the engine
+/// reads that metadata to decide whether the list changed.
+pub const CANONICAL_PROGRESS_TOOL: &str = "todo_write";
 const DURABLE_WORK_OWNER: &str = "fleet_workflow_ledger";
 
 /// Tool for writing and updating the todo list

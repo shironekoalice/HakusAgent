@@ -40,6 +40,28 @@ fn bearer_secret_pattern() -> &'static regex::Regex {
     })
 }
 
+/// Password passed as a command-line flag to an SSH password helper.
+///
+/// `sshpass -p hunter2 ssh host` is the canonical shape of "an SSH password
+/// reached a command line", and it is how the password would actually arrive in
+/// a worker failure reason — an SSH wrapper echoing the command it ran. The
+/// assignment patterns cannot see it: there is no `password=` or `passwd:` token
+/// for them to anchor on, only a bare flag followed by the value. Found by the
+/// Phase 3 no-password test, which is the reason that test asserts on realistic
+/// tool output rather than on `password=...` alone.
+fn ssh_password_flag_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        // `-p <value>` / `--password <value>` / `-p<value>`, for the tools that
+        // take an SSH password inline. Anchored on the tool name so an unrelated
+        // `-p 8080` elsewhere in a log line is not mangled.
+        regex::Regex::new(
+            r"(?i)\b(sshpass|ssh-password|ssh_password)\b(\s+(?:-[A-Za-z]*p[A-Za-z]*|--password)\s*=?\s*)\S+",
+        )
+        .expect("Fleet ssh password-flag redaction pattern must compile")
+    })
+}
+
 /// A single append-only record in the fleet ledger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
@@ -134,6 +156,20 @@ pub enum FleetLedgerRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    ApprovalRequested {
+        approval_id: String,
+        run_id: FleetRunId,
+        worker_id: String,
+        reason: String,
+        timestamp: String,
+    },
+    ApprovalDecided {
+        approval_id: String,
+        run_id: FleetRunId,
+        worker_id: String,
+        decision: String,
+        timestamp: String,
+    },
 }
 
 /// Reconstructed fleet state after replaying the ledger.
@@ -164,6 +200,8 @@ pub struct FleetLedgerState {
     pub receipts: BTreeMap<String, FleetReceipt>,
     /// Durable alert deliveries keyed by run/task/attempt/channel.
     pub(crate) alerts: BTreeMap<(String, String, Option<u32>, String), FleetLedgerAlert>,
+    pub approval_requests: BTreeMap<String, FleetApprovalRequest>,
+    pub approval_decisions: BTreeMap<String, FleetApprovalDecision>,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +245,24 @@ pub(crate) struct FleetLedgerAlert {
     worker_id: Option<String>,
     attempt: Option<u32>,
     seq: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FleetApprovalRequest {
+    pub approval_id: String,
+    pub run_id: FleetRunId,
+    pub worker_id: String,
+    pub reason: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FleetApprovalDecision {
+    pub approval_id: String,
+    pub run_id: FleetRunId,
+    pub worker_id: String,
+    pub decision: String,
+    pub timestamp: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1168,6 +1224,40 @@ impl FleetLedger {
         })
     }
 
+    pub fn record_approval_requested(
+        &self,
+        approval_id: &str,
+        run_id: &FleetRunId,
+        worker_id: &str,
+        reason: &str,
+        timestamp: &str,
+    ) -> Result<()> {
+        self.append_record(&FleetLedgerRecord::ApprovalRequested {
+            approval_id: approval_id.to_string(),
+            run_id: run_id.clone(),
+            worker_id: worker_id.to_string(),
+            reason: reason.to_string(),
+            timestamp: timestamp.to_string(),
+        })
+    }
+
+    pub fn record_approval_decided(
+        &self,
+        approval_id: &str,
+        run_id: &FleetRunId,
+        worker_id: &str,
+        decision: &str,
+        timestamp: &str,
+    ) -> Result<()> {
+        self.append_record(&FleetLedgerRecord::ApprovalDecided {
+            approval_id: approval_id.to_string(),
+            run_id: run_id.clone(),
+            worker_id: worker_id.to_string(),
+            decision: decision.to_string(),
+            timestamp: timestamp.to_string(),
+        })
+    }
+
     /// Record one restart-exhaustion alert for one exact failed attempt.
     /// The audit marker and inspectable escalation are represented by one JSONL
     /// record, so competing schedulers and crash recovery cannot duplicate it.
@@ -1510,6 +1600,24 @@ impl FleetLedger {
                     seq: alert.seq,
                 })?);
             }
+            for approval in state.approval_requests.values() {
+                lines.push(serde_json::to_string(&FleetLedgerRecord::ApprovalRequested {
+                    approval_id: approval.approval_id.clone(),
+                    run_id: approval.run_id.clone(),
+                    worker_id: approval.worker_id.clone(),
+                    reason: approval.reason.clone(),
+                    timestamp: approval.timestamp.clone(),
+                })?);
+            }
+            for decision in state.approval_decisions.values() {
+                lines.push(serde_json::to_string(&FleetLedgerRecord::ApprovalDecided {
+                    approval_id: decision.approval_id.clone(),
+                    run_id: decision.run_id.clone(),
+                    worker_id: decision.worker_id.clone(),
+                    decision: decision.decision.clone(),
+                    timestamp: decision.timestamp.clone(),
+                })?);
+            }
             let mut compacted_events = BTreeMap::new();
             for event in state.latest_events.values() {
                 compacted_events.insert(compact_event_key(event), event.clone());
@@ -1762,6 +1870,48 @@ fn runtime_events_from_record(
             worker_seq: None,
             payload: json!({ "attempt": attempt }),
         }],
+        FleetLedgerRecord::ApprovalRequested {
+            approval_id,
+            run_id,
+            worker_id,
+            reason,
+            timestamp,
+        } => vec![FleetRuntimeEvent {
+            cursor: fleet_runtime_cursor(run_id, "approval_requested", ledger_ordinal, replay_epoch),
+            event: "approval_requested".to_string(),
+            run_id: run_id.clone(),
+            worker_id: Some(worker_id.clone()),
+            task_id: None,
+            timestamp: Some(timestamp.clone()),
+            worker_seq: None,
+            payload: json!({
+                "approval_id": approval_id,
+                "reason": reason,
+                "run_id": run_id,
+                "worker_id": worker_id,
+            }),
+        }],
+        FleetLedgerRecord::ApprovalDecided {
+            approval_id,
+            run_id,
+            worker_id,
+            decision,
+            timestamp,
+        } => vec![FleetRuntimeEvent {
+            cursor: fleet_runtime_cursor(run_id, "approval_decided", ledger_ordinal, replay_epoch),
+            event: "approval_decided".to_string(),
+            run_id: run_id.clone(),
+            worker_id: Some(worker_id.clone()),
+            task_id: None,
+            timestamp: Some(timestamp.clone()),
+            worker_seq: None,
+            payload: json!({
+                "approval_id": approval_id,
+                "decision": decision,
+                "run_id": run_id,
+                "worker_id": worker_id,
+            }),
+        }],
         FleetLedgerRecord::TaskLifecycleCheckpoint { .. }
         | FleetLedgerRecord::EventSequenceCheckpoint { .. } => Vec::new(),
     }
@@ -1913,6 +2063,9 @@ fn redact_fleet_event_text(value: &str) -> String {
     // summary, not the forensic worker log.
     let redacted = bearer_secret_pattern()
         .replace_all(value, "Bearer [redacted]")
+        .into_owned();
+    let redacted = ssh_password_flag_pattern()
+        .replace_all(&redacted, "$1$2[redacted]")
         .into_owned();
     let redacted = inline_secret_assignment_pattern()
         .replace_all(&redacted, "$1$2[redacted]")
@@ -2354,6 +2507,42 @@ fn apply_record(state: &mut FleetLedgerState, record: FleetLedgerRecord) {
                     },
                 );
             }
+        }
+        FleetLedgerRecord::ApprovalRequested {
+            approval_id,
+            run_id,
+            worker_id,
+            reason,
+            timestamp,
+        } => {
+            state.approval_requests.insert(
+                approval_id.clone(),
+                FleetApprovalRequest {
+                    approval_id,
+                    run_id,
+                    worker_id,
+                    reason,
+                    timestamp,
+                },
+            );
+        }
+        FleetLedgerRecord::ApprovalDecided {
+            approval_id,
+            run_id,
+            worker_id,
+            decision,
+            timestamp,
+        } => {
+            state.approval_decisions.insert(
+                approval_id.clone(),
+                FleetApprovalDecision {
+                    approval_id,
+                    run_id,
+                    worker_id,
+                    decision,
+                    timestamp,
+                },
+            );
         }
     }
 }
@@ -3940,5 +4129,123 @@ mod tests {
         ledger.record_receipt(receipt.clone()).unwrap();
         let state = ledger.rebuild_state().unwrap();
         assert_eq!(state.receipts["run-1:task-a"].result, FleetTaskResult::Pass);
+    }
+
+    /// Phase 3 SSH gate: a password in a worker failure reason never reaches the
+    /// durable payload.
+    ///
+    /// This is the path a real leak would take. An SSH failure string is built by
+    /// the transport, not by this crate, so whatever the SSH client or a wrapper
+    /// script puts in it arrives here verbatim — including an operator's habit of
+    /// pasting `password=...` into a diagnostic, or a tool that echoes its
+    /// arguments. `privacy_bounded_worker_payload` is the only thing between that
+    /// string and the append-only ledger, so it is where the guarantee is
+    /// asserted rather than assumed.
+    #[test]
+    fn worker_failure_reason_cannot_persist_a_password() {
+        let cases = [
+            "ssh: connect failed password=hunter2",
+            "auth failed: password: hunter2",
+            "login rejected Password = \"hunter2\"",
+            "Permission denied (password='hunter2')",
+            "sshpass -p hunter2 ssh user@host",
+            "Authorization: Bearer hunter2tokenvalue",
+            "connection error, passwd=hunter2,",
+        ];
+        for reason in cases {
+            let payload = FleetWorkerEventPayload::Failed {
+                reason: reason.to_string(),
+                recoverable: true,
+            };
+            let (_, value) = privacy_bounded_worker_payload(&payload);
+            let serialized = serde_json::to_string(&value).unwrap().to_ascii_lowercase();
+            assert!(
+                !serialized.contains("hunter2"),
+                "the ledger payload must not carry the password from {reason:?}: {serialized}"
+            );
+            // The event still has to be useful: the state and the fact that it
+            // failed must survive redaction, or this "fix" would just be
+            // dropping the diagnosis.
+            assert!(
+                serialized.contains("failed"),
+                "redaction must not erase the failure itself: {serialized}"
+            );
+        }
+    }
+
+    /// An SSH host spec persisted into the ledger cannot carry a password.
+    #[test]
+    fn persisted_run_cannot_carry_an_ssh_password() {
+        let mut run = sample_run("run-ssh");
+        run.worker_specs = vec![hakus_protocol::fleet::FleetWorkerSpec {
+            id: "worker-ssh".to_string(),
+            name: "ssh worker".to_string(),
+            host: hakus_protocol::fleet::FleetHostSpec::Ssh {
+                host: "43.0.0.10".to_string(),
+                port: Some(22),
+                user: Some("fleet".to_string()),
+                identity: Some(std::path::PathBuf::from("~/.ssh/fleet_key")),
+                known_hosts: Some(std::path::PathBuf::from("~/.ssh/known_hosts")),
+                host_key_fingerprint: Some("SHA256:pinnedvalue=".to_string()),
+                working_directory: Some(std::path::PathBuf::from("/srv/hakus")),
+                env_allowlist: vec!["HAKUS_PROFILE".to_string()],
+                hakus_binary: Some("/usr/local/bin/hakus".to_string()),
+                jump_host: None,
+                port_forward: None,
+                auth_mode: None,
+            },
+            trust_level: None,
+            labels: BTreeMap::new(),
+            capabilities: Vec::new(),
+            max_concurrent_tasks: None,
+        }];
+
+        let tmp = TempDir::new().unwrap();
+        let ledger = FleetLedger::open(tmp.path()).unwrap();
+        ledger.create_run(&run).unwrap();
+
+        // Read the raw file rather than the rebuilt state: the question is what
+        // is physically on disk.
+        let raw = std::fs::read_to_string(tmp.path().join(".hakus").join("fleet.jsonl")).unwrap();
+        let lowered = raw.to_ascii_lowercase();
+        assert!(
+            !lowered.contains("password"),
+            "the persisted run must not contain a password field: {raw}"
+        );
+        assert!(!lowered.contains("hunter2"), "{raw}");
+    }
+
+    #[test]
+    fn approval_request_and_decision_replay_without_credentials() {
+        let tmp = TempDir::new().unwrap();
+        let ledger = FleetLedger::open(tmp.path()).unwrap();
+        let run_id = FleetRunId::from("run-approval");
+        ledger
+            .create_run(&sample_run("run-approval"))
+            .expect("run persists");
+        ledger
+            .record_approval_requested(
+                "ssh-password:run-approval:worker-1",
+                &run_id,
+                "worker-1",
+                "ssh_password_required",
+                "2026-10-09T00:00:00Z",
+            )
+            .unwrap();
+        ledger
+            .record_approval_decided(
+                "ssh-password:run-approval:worker-1",
+                &run_id,
+                "worker-1",
+                "provisioned",
+                "2026-10-09T00:00:01Z",
+            )
+            .unwrap();
+        let state = ledger.rebuild_state().unwrap();
+        assert_eq!(state.approval_requests.len(), 1);
+        assert_eq!(state.approval_decisions.len(), 1);
+        let raw = std::fs::read_to_string(ledger.path()).unwrap();
+        assert!(!raw.contains("password="));
+        assert!(!raw.contains("hunter2"));
     }
 }

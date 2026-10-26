@@ -198,9 +198,7 @@ other_section:
 
     #[test]
     fn provider_alias_resolution() {
-        let map = parse_api_keys(
-            "api_keys:\n  dashscope_api_key: sk-ds\n  glm_api_key: sk-glm\n",
-        );
+        let map = parse_api_keys("api_keys:\n  dashscope_api_key: sk-ds\n  glm_api_key: sk-glm\n");
         let get = |kind: &str| -> Option<String> {
             let mut v: Vec<String> = Vec::new();
             if let Some((_, aliases)) = KEY_ALIASES.iter().find(|(k, _)| *k == kind) {

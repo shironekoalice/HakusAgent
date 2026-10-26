@@ -27,7 +27,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-const GITHUB_LATEST_RELEASE_PAGE_URL: &str = "https://github.com/modemneko/HakusAgent/releases/latest";
+const GITHUB_LATEST_RELEASE_PAGE_URL: &str =
+    "https://github.com/modemneko/HakusAgent/releases/latest";
 const GITHUB_RELEASE_DOWNLOAD_BASE_URL: &str =
     "https://github.com/modemneko/HakusAgent/releases/download";
 const UPDATE_HTTP_ATTEMPTS: usize = 3;
@@ -2619,14 +2620,12 @@ mod tests {
                 },
                 Asset {
                     name: "hakus-macos-arm64".to_string(),
-                    browser_download_url: "https://example.invalid/hakus-macos-arm64"
-                        .to_string(),
+                    browser_download_url: "https://example.invalid/hakus-macos-arm64".to_string(),
                 },
             ],
         };
 
-        let asset =
-            select_platform_asset(&release, "hakus-macos-arm64").expect("platform asset");
+        let asset = select_platform_asset(&release, "hakus-macos-arm64").expect("platform asset");
 
         assert_eq!(asset.name, "hakus-macos-arm64");
     }
@@ -2643,8 +2642,7 @@ mod tests {
             }],
         };
 
-        let asset =
-            select_platform_asset(&release, "hakus-macos-arm64").expect("platform asset");
+        let asset = select_platform_asset(&release, "hakus-macos-arm64").expect("platform asset");
 
         assert_eq!(asset.name, "hakus-macos-arm64.tar.gz");
     }
@@ -2719,9 +2717,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *hakus-windows
             Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
         );
         assert_eq!(
-            checksums
-                .get("hakus-windows-x64.exe")
-                .map(String::as_str),
+            checksums.get("hakus-windows-x64.exe").map(String::as_str),
             Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         );
     }
@@ -2811,11 +2807,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *hakus-windows
     #[test]
     fn mocked_release_selects_primary_asset_when_compatibility_alias_invokes_update() {
         let release = mocked_release();
-        let stem = release_asset_stem_for(
-            Path::new("/usr/local/bin/hakus-tui"),
-            "macos",
-            "aarch64",
-        );
+        let stem =
+            release_asset_stem_for(Path::new("/usr/local/bin/hakus-tui"), "macos", "aarch64");
         let asset = select_platform_asset(&release, &stem).expect("primary platform asset");
         assert_eq!(asset.name, "hakus-macos-arm64");
 
@@ -2919,8 +2912,9 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *hakus-windows
 
     #[test]
     fn github_release_url_parser_extracts_tag() {
-        let url = reqwest::Url::parse("https://github.com/modemneko/HakusAgent/releases/tag/v0.8.61")
-            .unwrap();
+        let url =
+            reqwest::Url::parse("https://github.com/modemneko/HakusAgent/releases/tag/v0.8.61")
+                .unwrap();
 
         assert_eq!(
             release_tag_from_github_release_url(&url).as_deref(),
@@ -3050,14 +3044,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *hakus-windows
         let hint = update_network_fallback_hint();
 
         assert!(hint.contains(hakus_release::CNB_REPO_URL), "{hint}");
-        assert!(
-            hint.contains(hakus_release::RELEASE_BASE_URL_ENV),
-            "{hint}"
-        );
-        assert!(
-            hint.contains(hakus_release::UPDATE_VERSION_ENV),
-            "{hint}"
-        );
+        assert!(hint.contains(hakus_release::RELEASE_BASE_URL_ENV), "{hint}");
+        assert!(hint.contains(hakus_release::UPDATE_VERSION_ENV), "{hint}");
         assert!(hint.contains("hakus-cli"), "{hint}");
         assert!(!hint.contains("hakus-tui --locked"), "{hint}");
     }
@@ -3443,10 +3431,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *hakus-windows
             candidate.manifest_url,
             "https://github.com/modemneko/HakusAgent/releases/download/v0.9.9/hakus-artifacts-sha256.txt"
         );
-        assert_eq!(
-            candidate.binary_url,
-            "https://cdn.example/hakus-linux-x64"
-        );
+        assert_eq!(candidate.binary_url, "https://cdn.example/hakus-linux-x64");
     }
 
     #[test]
@@ -3760,10 +3745,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *hakus-windows
         let err = verify_downloaded_asset(&plan, b"bytes")
             .expect_err("an uncovered asset must never install");
         let message = format!("{err:#}");
-        assert!(
-            message.contains("is missing hakus-linux-x64"),
-            "{message}"
-        );
+        assert!(message.contains("is missing hakus-linux-x64"), "{message}");
     }
 
     #[test]

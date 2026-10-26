@@ -3,3 +3,10 @@
 # the developer's real repo credentials. The shipped binary is unaffected.
 [env]
 HAKUS_AGENT_BRIDGE = { value = "0", force = true }
+# The full test suite (10.5k tests) overflows the libtest harness's default
+# 2 MiB thread stack — the agent dispatch pipeline's documented high-water
+# mark is 2.25-2.5 MiB in debug builds, and `build_runtime` runs its workers
+# on 64 MiB stacks for the same reason. 32 MiB covers the deep
+# dispatch/config fixtures; the shipped binary is unaffected (this applies
+# only to processes Cargo spawns, i.e. tests and benches).
+RUST_MIN_STACK = { value = "33554432", force = true }

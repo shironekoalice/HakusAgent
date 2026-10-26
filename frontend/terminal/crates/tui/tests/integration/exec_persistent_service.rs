@@ -223,10 +223,7 @@ fn exec_command(server: &MockServer, workspace: &Path, home: &Path) -> Command {
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local").join("share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env(
-            "HAKUS_CONFIG_PATH",
-            home.join(".hakus").join("config.toml"),
-        )
+        .env("HAKUS_CONFIG_PATH", home.join(".hakus").join("config.toml"))
         .env(
             "DEEPSEEK_CONFIG_PATH",
             home.join(".deepseek").join("config.toml"),

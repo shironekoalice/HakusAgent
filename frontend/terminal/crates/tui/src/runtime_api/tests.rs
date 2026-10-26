@@ -826,6 +826,7 @@ async fn spawn_test_server_with_root_token_mobile_workspace(
 struct TestServerOverrides {
     sub_agent_manager: Option<SharedSubAgentManager>,
     fleet_hakus_binary: Option<String>,
+    ssh_password_vault: Option<Arc<crate::fleet::ssh_secret::SshPasswordVault>>,
     config_path: Option<PathBuf>,
     config_profile: Option<String>,
     web: Option<web::RuntimeWebState>,
@@ -892,6 +893,10 @@ async fn spawn_test_server_with_root_token_mobile_workspace_and_overrides(
     config.mcp_config_path = Some(root.join("mcp.json").to_string_lossy().to_string());
 
     config.mcp_config_path = Some(root.join("mcp.json").to_string_lossy().to_string());
+    let plugin_discovery = overrides
+        .plugin_discovery
+        .unwrap_or_else(crate::plugins::PluginDiscoveryContext::capture_pre_dotenv);
+    let plugin_registry = plugin_discovery.registry_for_workspace(&workspace);
     let manager = TaskManager::start_with_executor(
         TaskManagerConfig {
             data_dir: root.join("tasks"),
@@ -906,10 +911,11 @@ async fn spawn_test_server_with_root_token_mobile_workspace_and_overrides(
         Arc::new(MockExecutor),
     )
     .await?;
-    let runtime_threads: SharedRuntimeThreadManager = Arc::new(RuntimeThreadManager::open(
+    let runtime_threads: SharedRuntimeThreadManager = Arc::new(RuntimeThreadManager::open_with_plugin_registry(
         config.clone(),
         workspace.clone(),
         RuntimeThreadManagerConfig::from_task_data_dir(root.join("runtime")),
+        plugin_registry,
     )?);
     runtime_threads.attach_task_manager(manager.clone());
     let automations = Arc::new(Mutex::new(AutomationManager::open(
@@ -930,9 +936,7 @@ async fn spawn_test_server_with_root_token_mobile_workspace_and_overrides(
     let state = RuntimeApiState {
         config: Arc::new(parking_lot::RwLock::new(config)),
         workspace,
-        plugin_discovery: overrides
-            .plugin_discovery
-            .unwrap_or_else(crate::plugins::PluginDiscoveryContext::capture_pre_dotenv),
+        plugin_discovery,
         task_manager: manager,
         runtime_threads: runtime_threads.clone(),
         cors_origins: Vec::new(),
@@ -954,6 +958,9 @@ async fn spawn_test_server_with_root_token_mobile_workspace_and_overrides(
         fleet_hakus_binary: overrides
             .fleet_hakus_binary
             .unwrap_or_else(configured_hakus_binary),
+        ssh_password_vault: overrides
+            .ssh_password_vault
+            .unwrap_or_else(|| Arc::new(crate::fleet::ssh_secret::SshPasswordVault::new())),
         compat_stream_test_hook: overrides.compat_stream_test_hook,
         mcp_global_config: Arc::new(Mutex::new(McpGlobalConfig::default())),
         wechat: Arc::new(Mutex::new(WechatRuntimeState {
@@ -965,6 +972,9 @@ async fn spawn_test_server_with_root_token_mobile_workspace_and_overrides(
             users: HashMap::new(),
         })),
         started_at: Instant::now(),
+        started_at_unix_ms: 0,
+        execution_plane: RuntimeExecutionPlane::Rust,
+        feature_gates: runtime_feature_gates(),
     };
     let app = build_router(state);
     let handle = tokio::spawn(async move {
@@ -2024,6 +2034,201 @@ async fn fleet_status_runtime_api_exposes_state_and_actions() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn fleet_ssh_password_provisioning_pauses_resumes_and_consumes_broker() -> Result<()> {
+    let root = std::env::temp_dir().join(format!("hakus-fleet-ssh-api-{}", Uuid::new_v4()));
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace)?;
+    let sub_agent_manager = runtime_api_sub_agent_manager(&workspace, 2);
+    let manager = FleetManager::open(&workspace)?
+        .with_sub_agent_manager(sub_agent_manager.clone())
+        .with_session_model(DEFAULT_TEXT_MODEL);
+    let worker_id = "ssh-password-worker".to_string();
+    let task = hakus_protocol::fleet::FleetTaskSpec {
+        id: "ssh-password-task".to_string(),
+        name: "SSH password provisioning".to_string(),
+        description: None,
+        objective: Some("Exercise Runtime API SSH password provisioning".to_string()),
+        instructions: "Run the worker command after password provisioning.".to_string(),
+        worker: Some(hakus_protocol::fleet::FleetTaskWorkerProfile {
+            agent_profile: None,
+            role: Some("reviewer".to_string()),
+            loadout: None,
+            model_class: None,
+            model: None,
+            tool_profile: Some("read-only".to_string()),
+            tools: vec!["rg".to_string()],
+            capabilities: vec!["fleet".to_string()],
+        }),
+        workspace: None,
+        input_files: Vec::new(),
+        context: Vec::new(),
+        budget: None,
+        tags: Vec::new(),
+        expected_artifacts: vec![FleetArtifactKind::Log],
+        scorer: None,
+        retry_policy: None,
+        alert_policy: None,
+        timeout_seconds: None,
+        metadata: std::collections::BTreeMap::new(),
+    };
+    let worker = hakus_protocol::fleet::FleetWorkerSpec {
+        id: worker_id.clone(),
+        name: "Password SSH worker".to_string(),
+        host: hakus_protocol::fleet::FleetHostSpec::Ssh {
+            host: "127.0.0.1".to_string(),
+            port: Some(1),
+            user: Some("hakus-test".to_string()),
+            identity: None,
+            known_hosts: None,
+            host_key_fingerprint: None,
+            working_directory: Some(workspace.clone()),
+            env_allowlist: Vec::new(),
+            hakus_binary: Some("hakus".to_string()),
+            jump_host: None,
+            port_forward: None,
+            auth_mode: Some("password".to_string()),
+        },
+        trust_level: Some(hakus_protocol::fleet::FleetTrustLevel::RemoteVerified),
+        labels: std::collections::BTreeMap::new(),
+        capabilities: vec!["ssh".to_string()],
+        max_concurrent_tasks: Some(1),
+    };
+    let report = manager.create_queued_run_with_descriptor(
+        crate::fleet::task_spec::FleetTaskSpecDocument {
+            name: Some("SSH password API smoke".to_string()),
+            labels: std::collections::BTreeMap::new(),
+            security_policy: None,
+            workers: vec![worker],
+            tasks: vec![task],
+        },
+        1,
+        ManagedFleetRunDescriptor {
+            target: Some(FleetRuntimeTarget::ThisComputer),
+            workflow: Some(FleetWorkflowDescriptor {
+                id: "ssh-password-api".to_string(),
+                kind: FleetWorkflowKind::Parallel,
+            }),
+            roles: vec!["reviewer".to_string()],
+        },
+    )?;
+    let vault = Arc::new(crate::fleet::ssh_secret::SshPasswordVault::new());
+    let sessions_dir = root.join("sessions");
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            sessions_dir,
+            None,
+            false,
+            workspace.clone(),
+            TestServerOverrides {
+                sub_agent_manager: Some(sub_agent_manager),
+                ssh_password_vault: Some(vault.clone()),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    client
+        .post(format!("http://{addr}/v1/fleet/runs/{}/start", report.run_id.0))
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let paused = tokio::time::timeout(ci_scaled(Duration::from_secs(5)), async {
+        loop {
+            let run: serde_json::Value = client
+                .get(format!("http://{addr}/v1/fleet/runs/{}", report.run_id.0))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if run["lifecycle_status"] == "paused" {
+                break Ok::<serde_json::Value, anyhow::Error>(run);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("password-mode Fleet run did not pause for approval")??;
+    assert_eq!(paused["lifecycle_status"], "paused");
+
+    let replay: serde_json::Value = client
+        .get(format!(
+            "http://{addr}/v1/fleet/runs/{}/events/replay",
+            report.run_id.0
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(replay["events"].as_array().is_some_and(|events| {
+        events.iter().any(|event| {
+            event["event"] == "approval_requested"
+                && event["payload"]["reason"] == "ssh_password_required"
+                && event["worker_id"] == worker_id
+        })
+    }));
+
+    let secret = "runtime-api-password-must-not-persist";
+    let provisioned: serde_json::Value = client
+        .post(format!(
+            "http://{addr}/v1/fleet/runs/{}/workers/{}/ssh-password",
+            report.run_id.0, worker_id
+        ))
+        .json(&serde_json::json!({ "password": secret }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(provisioned["execution"], "resumed");
+    assert_eq!(provisioned["approval_id"], format!("ssh-password:{}:{}", report.run_id.0, worker_id));
+
+    let consumed = tokio::time::timeout(ci_scaled(Duration::from_secs(5)), async {
+        loop {
+            if !vault.contains(&worker_id) {
+                break Ok::<(), anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("Fleet worker never consumed the provisioned SSH broker")??;
+    let _ = consumed;
+
+    let replay: serde_json::Value = client
+        .get(format!(
+            "http://{addr}/v1/fleet/runs/{}/events/replay",
+            report.run_id.0
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let events = replay["events"].as_array().context("missing Fleet replay")?;
+    assert!(events.iter().any(|event| {
+        event["event"] == "approval_decided"
+            && event["payload"]["decision"] == "provisioned"
+            && event["worker_id"] == worker_id
+    }));
+    assert!(events.iter().any(|event| {
+        event["event"] == "fleet.run.status_changed"
+            && event["payload"]["status"] == "running"
+    }));
+
+    let ledger = fs::read_to_string(workspace.join(".hakus/fleet.jsonl"))?;
+    assert!(!ledger.contains(secret), "SSH password reached the Fleet ledger");
+    handle.abort();
+    Ok(())
+}
+
 #[test]
 fn fleet_worker_json_includes_runtime_state_projection() {
     let inspection = FleetWorkerInspection {
@@ -3068,6 +3273,77 @@ async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
     Ok(())
 }
 
+/// The canonical ledger is the read authority: a request that names no source
+/// replays it, and only an explicit `source=jsonl` reaches the legacy event file.
+///
+/// The two logs hold the same events, so agreement between them cannot show
+/// which one was read. A `replay_limit` above the JSONL tail bound can: the
+/// legacy file rejects it, the ledger accepts it.
+#[tokio::test]
+async fn events_endpoint_defaults_to_the_canonical_ledger() -> Result<()> {
+    let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let thread = runtime_threads
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let oversized_limit = MAX_RUNTIME_EVENT_REPLAY_TAIL.saturating_add(1);
+
+    // No source named: the ledger serves it. The response is an infinite SSE
+    // stream, so it is never read as a body: the status is the assertion, and
+    // the connection is dropped immediately so an open stream cannot outlive
+    // this test and disturb another one on the shared runtime.
+    let default_response = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/events?replay_limit={oversized_limit}",
+            thread.id
+        ))
+        .send()
+        .await?;
+    assert_eq!(
+        default_response.status(),
+        reqwest::StatusCode::OK,
+        "the default source must be the ledger, which is not bound by the JSONL tail limit"
+    );
+    drop(default_response);
+
+    // The same request against the legacy source is still rejected, so the
+    // check above is about the default and not about the bound disappearing.
+    let legacy_response = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/events?source=jsonl&replay_limit={oversized_limit}",
+            thread.id
+        ))
+        .send()
+        .await?;
+    assert_eq!(
+        legacy_response.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "the JSONL tail bound must still apply when that source is requested"
+    );
+
+    // And an explicit JSONL request still replays the same first event, so the
+    // compatibility path is intact.
+    let events = runtime_threads.events_since(&thread.id, None)?;
+    let first = events.first().context("thread event should be durable")?;
+    let legacy = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/events?source=jsonl&since_seq=0",
+            thread.id
+        ))
+        .send()
+        .await?
+        .error_for_status()?;
+    let frame = read_first_sse_frame(legacy).await?;
+    let (event_name, payload) = parse_sse_frame(&frame)?;
+    assert_eq!(event_name, first.event);
+    assert_eq!(payload["seq"], first.seq);
+
+    handle.abort();
+    Ok(())
+}
+
 #[tokio::test]
 async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
     let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
@@ -3187,6 +3463,50 @@ async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
         "expected seq after cursor: {seq_b} <= {seq_a}"
     );
 
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_event_source_replays_sqlite_ledger_with_cursor() -> Result<()> {
+    let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let thread = runtime_threads
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let events = runtime_threads.events_since(&thread.id, None)?;
+    let first = events.first().context("thread event should be durable")?;
+    let response = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/events?source=canonical&since_seq=0",
+            thread.id
+        ))
+        .send()
+        .await?
+        .error_for_status()?;
+    let frame = read_first_sse_frame(response).await?;
+    let (event_name, payload) = parse_sse_frame(&frame)?;
+    assert_eq!(event_name, first.event);
+    assert_eq!(payload["thread_id"], thread.id);
+    assert_eq!(payload["seq"], first.seq);
+
+    // A bounded tail replay is supported on the canonical source too, and keeps
+    // the newest events: the response must still carry the event the client
+    // would otherwise have lost.
+    let tailed = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/events?source=canonical&replay_limit=1",
+            thread.id
+        ))
+        .send()
+        .await?
+        .error_for_status()?;
+    let tail_frame = read_first_sse_frame(tailed).await?;
+    let (tail_name, tail_payload) = parse_sse_frame(&tail_frame)?;
+    assert_eq!(tail_name, first.event);
+    assert_eq!(tail_payload["seq"], first.seq);
     handle.abort();
     Ok(())
 }
@@ -3581,8 +3901,7 @@ async fn stream_compat_mapping_handles_expected_runtime_events() -> Result<()> {
             "description": "Run tests",
             "input": { "token": "approval-secret" },
         }),
-    };
-    let mapped =
+    };    let mapped =
         map_compat_stream_event(&approval_required).context("missing approval.required event")?;
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(mapped);
@@ -3635,6 +3954,69 @@ async fn stream_compat_mapping_handles_expected_runtime_events() -> Result<()> {
         }),
     };
     assert!(map_compat_stream_event(&unknown).is_none());
+    Ok(())
+}
+
+/// The desktop draws its execution-plan card from a `task_progress` frame, and
+/// that frame had no producer on the Rust path. The Runtime's `task.progress`
+/// event must map onto the shape the client already knows, including the keys
+/// it reads unconditionally.
+#[tokio::test]
+async fn task_progress_event_maps_onto_the_desktop_execution_plan_frame() -> Result<()> {
+    let progress = RuntimeEventRecord {
+        schema_version: 2,
+        seq: 11,
+        timestamp: chrono::Utc::now(),
+        thread_id: "thr_test".to_string(),
+        turn_id: Some("turn_test".to_string()),
+        item_id: None,
+        event: "task.progress".to_string(),
+        payload: json!({
+            "completed": 2,
+            "total": 5,
+            "current_task": "wire the projection",
+            "completion_pct": 40,
+            "items": [
+                { "id": 1, "content": "read the contract", "status": "completed" },
+                { "id": 2, "content": "map the frame", "status": "completed" },
+                { "id": 3, "content": "wire the projection", "status": "in_progress" },
+            ],
+        }),
+    };
+    let mapped = map_compat_stream_event(&progress).context("missing task_progress event")?;
+    let stream = async_stream::stream! {
+        yield Ok::<_, Infallible>(mapped);
+    };
+    let body =
+        axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+
+    assert!(text.contains("event: task_progress"), "{text}");
+    assert!(text.contains("\"completed\":2"), "{text}");
+    assert!(text.contains("\"total\":5"), "{text}");
+    assert!(text.contains("\"current_task\":\"wire the projection\""), "{text}");
+    // The legacy frame carries these two; a client reading them must not get
+    // `undefined` just because the Runtime has nothing to say yet.
+    assert!(text.contains("\"phase\":\"\""), "{text}");
+    assert!(text.contains("\"detail\":\"\""), "{text}");
+
+    // A list with nothing in progress still reports the counts; the card shows
+    // the tally even when no single row is current.
+    let idle = RuntimeEventRecord {
+        payload: json!({ "completed": 3, "total": 3, "current_task": null }),
+        seq: 12,
+        ..progress.clone()
+    };
+    let mapped = map_compat_stream_event(&idle).context("missing idle task_progress event")?;
+    let stream = async_stream::stream! {
+        yield Ok::<_, Infallible>(mapped);
+    };
+    let body =
+        axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("\"completed\":3"), "{text}");
+    assert!(text.contains("\"total\":3"), "{text}");
+    assert!(text.contains("\"current_task\":\"\""), "{text}");
     Ok(())
 }
 
@@ -5093,6 +5475,9 @@ async fn usage_endpoint_returns_empty_aggregation_for_fresh_store() -> Result<()
 
 #[tokio::test]
 async fn runtime_info_reports_bind_state() -> Result<()> {
+    // /v1/runtime/info reports the live feature gates, so this test must not
+    // spawn while another test holds a guarded env override.
+    let _lock = lock_test_env();
     let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
         return Ok(());
     };
@@ -5128,10 +5513,735 @@ async fn runtime_info_reports_bind_state() -> Result<()> {
     assert_eq!(info["auth_required"], false);
     assert!(info["version"].is_string());
     assert_eq!(info["transports"], json!(["http", "sse"]));
+    assert_eq!(info["execution_plane"], json!("rust"));
+    assert_eq!(info["feature_gates"]["rust_default_path"], json!(true));
+    assert_eq!(info["feature_gates"]["python_compat_path"], json!(false));
+    assert!(info["process_started_at_unix_ms"].as_u64().is_some());
     assert_eq!(info["capabilities"]["threads"], true);
     assert_eq!(info["capabilities"]["external_tools"], true);
     assert_eq!(info["capabilities"]["worker_runtime"], true);
     assert!(info["experimental"].is_object());
+
+    let health = client
+        .get(format!("http://{addr}/v1/health"))
+        .send()
+        .await?;
+    assert!(health.status().is_success());
+    let capabilities: serde_json::Value = client
+        .get(format!("http://{addr}/v1/capabilities"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(capabilities["runtime_api_version"], "1.0");
+    assert_eq!(capabilities["event_schema_version"], 1);
+    assert_eq!(capabilities["execution_plane"], "rust");
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn diagnostics_bundle_is_redacted_and_counters_only() -> Result<()> {
+    // Feature gates leak into the bundle's migration section, so this test
+    // must not spawn while another test holds a guarded env override.
+    let _lock = lock_test_env();
+    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    // Create a thread so the canonical ledger is non-empty: with zero on both
+    // sides of the projection-lag triple the assertion would be vacuous.
+    let _created: serde_json::Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({"model": "test-model"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let body_text = client
+        .get(format!("http://{addr}/v1/diagnostics/bundle"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let bundle: serde_json::Value =
+        serde_json::from_str(&body_text).expect("bundle is valid JSON");
+
+    // Core identity and counters are present.
+    assert_eq!(bundle["service"], "hakus-runtime-api");
+    assert_eq!(bundle["runtime_api_version"], "1.0");
+    assert_eq!(bundle["execution_plane"], json!("rust"));
+    assert!(bundle["generated_at_unix_ms"].as_u64().is_some());
+    assert!(bundle["process_started_at_unix_ms"].as_u64().is_some());
+    assert!(bundle["uptime_seconds"].as_u64().is_some());
+    assert!(bundle["event_count"].as_u64().is_some());
+    assert!(bundle["canonical_ledger_event_count"].as_u64().is_some());
+    assert!(bundle["canonical_ledger_session_count"].as_u64().is_some());
+    assert!(bundle["canonical_ledger_integrity"].is_object());
+    assert!(bundle["provider_activity"].is_array());
+    assert!(bundle["compat_imported_event_count"].as_u64().is_some());
+
+    // Memory sample: numeric on Windows, but never absent as a field.
+    assert!(matches!(
+        bundle["memory"]["working_set_mb"],
+        serde_json::Value::Number(_) | serde_json::Value::Null
+    ));
+    assert!(matches!(
+        bundle["memory"]["peak_working_set_mb"],
+        serde_json::Value::Number(_) | serde_json::Value::Null
+    ));
+
+    // Projection lag is a coherent triple: lag is |jsonl - canonical| by
+    // construction (saturating), never negative.
+    let jsonl_seq = bundle["projection"]["jsonl_event_seq"].as_u64().unwrap();
+    let canonical = bundle["projection"]["canonical_event_count"]
+        .as_u64()
+        .unwrap();
+    let lag = bundle["projection"]["shadow_write_lag"].as_u64().unwrap();
+    assert_eq!(lag, jsonl_seq.saturating_sub(canonical));
+
+    // Migration diagnostics (Phase 8): live-state evidence, never asserted.
+    assert_eq!(bundle["migration"]["python_compat_flag"], json!(false));
+    assert_eq!(bundle["migration"]["shadow_write_lag"], lag);
+    assert_eq!(bundle["migration"]["compat_imported_event_count"], bundle["compat_imported_event_count"]);
+    assert_eq!(bundle["migration"]["canonical_ledger_healthy"], json!(true));
+    assert!(bundle["migration"]["canonical_ledger_sessions_verified"].as_u64().unwrap() >= 1);
+    assert!(bundle["migration"]["canonical_ledger_events_verified"].as_u64().unwrap() >= 1);
+
+    // Field-level redaction: the serialized payload must not carry
+    // credentials, prompts, message content, or filesystem paths.
+    let text = body_text.to_ascii_lowercase();
+    for forbidden in [
+        "api_key",
+        "authorization",
+        "password",
+        "secret",
+        "token",
+        "\"content\"",
+        "\"prompt\"",
+        "\"message\"",
+        "c:\\\\",
+        "d:\\\\",
+    ] {
+        assert!(!text.contains(forbidden), "bundle leaked {forbidden}: {body_text}");
+    }
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugins_endpoint_exposes_trust_state_and_capability_inventory() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("workspace");
+    let plugin_root = tmp.path().join("plugins/demo");
+    fs::create_dir_all(plugin_root.join("skills/review"))?;
+    fs::write(
+        plugin_root.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n[mcp_servers.remote]\nurl = \"https://api.example.com/mcp\"\n[capabilities]\nnetwork_hosts = [\"api.example.com\"]\n[extension]\nid = \"demo\"\nversion = \"1.0.0\"\nprotocol = \"hakus.extension.v1\"\nentrypoint = \"python -m demo_extension\"\ncapabilities = [\"audio.capture\"]\npermissions = [\"microphone\"]\nsupported_platforms = [\"windows\"]\nchecksum = \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+    )?;
+    fs::write(
+        plugin_root.join("skills/review/SKILL.md"),
+        "---\nname: review\ndescription: reviewed plugin Skill\n---\nbody\n",
+    )?;
+    let plugin_config = crate::plugins::discovery::DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: tmp.path().join("plugins"),
+        workspace_plugins_dir: workspace.join(".hakus/plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: tmp.path().join("plugin-state/state.json"),
+    };
+    let discovery = crate::plugins::PluginDiscoveryContext::from_config_and_environment(
+        &plugin_config,
+        crate::plugins::HostEnvironment::default(),
+    );
+    let mut plugins = discovery.registry_for_workspace(&workspace);
+    Arc::make_mut(&mut plugins)
+        .trust("demo")
+        .map_err(anyhow::Error::msg)?;
+    Arc::make_mut(&mut plugins)
+        .enable("demo")
+        .map_err(anyhow::Error::msg)?;
+
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            root.join("sessions"),
+            None,
+            false,
+            workspace,
+            TestServerOverrides {
+                plugin_discovery: Some(discovery),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let body_text = client
+        .get(format!("http://{addr}/v1/plugins"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let body: serde_json::Value = serde_json::from_str(&body_text)?;
+    let entry = body["plugins"]
+        .as_array()
+        .and_then(|plugins| {
+            plugins
+                .iter()
+                .find(|plugin| plugin["name"] == "demo")
+        })
+        .context("installed plugin appears in the runtime API inventory")?;
+
+    // Identity and trust state are visible.
+    assert_eq!(entry["version"], "1.0.0");
+    assert_eq!(entry["scope"], "user");
+    assert_eq!(entry["origin"], "hakus-home");
+    assert_eq!(entry["enabled"], true);
+    assert_eq!(entry["trust_status"], "trusted");
+    assert_eq!(entry["staged"], true);
+    assert!(entry["state_generation"].as_u64().is_some());
+    assert!(entry["content_hash"].as_str().is_some());
+    assert!(entry["capability_hash"].as_str().is_some());
+    assert_eq!(entry["skill_count"], 1);
+
+    // Declared capability requests are the visible permission surface.
+    assert_eq!(
+        entry["capabilities"]["network_hosts"],
+        json!(["api.example.com"])
+    );
+    assert_eq!(entry["capabilities"]["lifecycle_mutation"], false);
+    assert_eq!(entry["extension"]["id"], "demo");
+    assert_eq!(entry["extension"]["protocol"], "hakus.extension.v1");
+    assert_eq!(entry["extension"]["permissions"], json!(["microphone"]));
+
+    // Redaction by construction: no install or staged paths may leak.
+    assert!(
+        !body_text.contains(&plugin_root.display().to_string()),
+        "plugin inventory must not expose install paths: {body_text}"
+    );
+    assert!(
+        !body_text.contains("base_path") && !body_text.contains("staged_root"),
+        "plugin inventory must not expose path fields: {body_text}"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn extension_lifecycle_routes_use_runtime_owned_processes() -> Result<()> {
+    let fixture = crate::plugins::test_fixture::ExtensionPluginFixture::new();
+    let root = tempfile::tempdir()?;
+    let runtime_root = root.path().join("runtime");
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            runtime_root.clone(),
+            runtime_root.join("sessions"),
+            None,
+            false,
+            fixture.workspace.clone(),
+            TestServerOverrides {
+                plugin_discovery: Some(fixture.discovery.clone()),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let started: serde_json::Value = client
+        .post(format!("http://{addr}/v1/extensions/fake-extension/start"))
+        .json(&json!({
+            "thread_id": "thread_extension_http",
+            "event_type": "voice.start",
+            "payload": {"mode": "hold", "password": "never-persist"}
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(started["running"], true);
+    assert!(started["pid"].as_u64().is_some());
+
+    let running: serde_json::Value = client
+        .get(format!("http://{addr}/v1/extensions/fake-extension"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(running["running"], true);
+
+    let stopped: serde_json::Value = client
+        .post(format!("http://{addr}/v1/extensions/fake-extension/stop"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(stopped["running"], false);
+    assert_eq!(stopped["state"], "unavailable");
+    assert!(stopped["pid"].as_u64().is_some());
+
+    let events = runtime_threads
+        .canonical_ledger_events("thread_extension_http", 0, 10)
+        .await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event_type, "extension_event");
+    assert_eq!(events[1].payload["type"], "extension.stop");
+    assert!(events[0].payload["payload"].get("password").is_none());
+
+    runtime_threads.shutdown();
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_enable_disable_endpoint_gates_untrusted_and_persists() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("workspace");
+
+    // `demo`: reviewed and trusted. `beta`: valid bundle, never reviewed —
+    // the trust gate must reject its enablement over the API.
+    for (name, reviewed) in [("demo", true), ("beta", false)] {
+        let plugin_root = tmp.path().join("plugins").join(name);
+        fs::create_dir_all(plugin_root.join("skills/review"))?;
+        fs::write(
+            plugin_root.join("plugin.toml"),
+            format!(
+                "schema_version = 1\n[plugin]\nname = \"{name}\"\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n"
+            ),
+        )?;
+        fs::write(
+            plugin_root.join("skills/review/SKILL.md"),
+            format!(
+                "---\nname: review\ndescription: reviewed plugin Skill for {name}\n---\nbody\n"
+            ),
+        )?;
+        if reviewed {
+            let discovery = crate::plugins::PluginDiscoveryContext::from_config_and_environment(
+                &crate::plugins::discovery::DiscoveryConfig {
+                    workspace: workspace.clone(),
+                    user_plugins_dir: tmp.path().join("plugins"),
+                    workspace_plugins_dir: workspace.join(".hakus/plugins"),
+                    builtin_plugin_dirs: Vec::new(),
+                    state_path: tmp.path().join("plugin-state/state.json"),
+                },
+                crate::plugins::HostEnvironment::default(),
+            );
+            let mut plugins = discovery.registry_for_workspace(&workspace);
+            Arc::make_mut(&mut plugins)
+                .trust(name)
+                .map_err(anyhow::Error::msg)?;
+        }
+    }
+    let plugin_config = crate::plugins::discovery::DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: tmp.path().join("plugins"),
+        workspace_plugins_dir: workspace.join(".hakus/plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: tmp.path().join("plugin-state/state.json"),
+    };
+    let discovery = crate::plugins::PluginDiscoveryContext::from_config_and_environment(
+        &plugin_config,
+        crate::plugins::HostEnvironment::default(),
+    );
+
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            root.join("sessions"),
+            None,
+            false,
+            workspace,
+            TestServerOverrides {
+                plugin_discovery: Some(discovery),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    // Disable the trusted plugin: reversible, generation bumps.
+    let disabled: serde_json::Value = client
+        .post(format!("http://{addr}/v1/plugins/demo/disable"))
+        .json(&json!({ "enabled": false }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(disabled["name"], "demo");
+    assert_eq!(disabled["enabled"], false);
+    assert_eq!(disabled["trust_status"], "trusted");
+    let disabled_generation = disabled["state_generation"].as_u64().unwrap();
+    assert!(disabled_generation > 0);
+
+    // Re-enable: the toggle is symmetric and reversible.
+    let enabled: serde_json::Value = client
+        .post(format!("http://{addr}/v1/plugins/demo/enable"))
+        .json(&json!({ "enabled": true }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(enabled["enabled"], true);
+    assert!(enabled["state_generation"].as_u64().unwrap() > disabled_generation);
+
+    // The inventory reflects the persisted state.
+    let inventory: serde_json::Value = client
+        .get(format!("http://{addr}/v1/plugins"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let demo = inventory["plugins"]
+        .as_array()
+        .and_then(|plugins| plugins.iter().find(|plugin| plugin["name"] == "demo"))
+        .context("demo in inventory")?;
+    assert_eq!(demo["enabled"], true);
+
+    // Trust gate: an unreviewed bundle cannot be enabled over the API.
+    let beta = client
+        .post(format!("http://{addr}/v1/plugins/beta/enable"))
+        .json(&json!({ "enabled": true }))
+        .send()
+        .await?;
+    assert_eq!(
+        beta.status(),
+        StatusCode::BAD_REQUEST,
+        "untrusted plugin enablement must be rejected: {beta:?}"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_lifecycle_routes_use_runtime_mutation_boundary_and_redact_paths() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("workspace");
+    let source = tmp.path().join("reviewed-source");
+    fs::create_dir_all(&source)?;
+    fs::write(
+        source.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"runtime-demo\"\nversion = \"1.0.0\"\n",
+    )?;
+    let plugin_config = crate::plugins::discovery::DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: tmp.path().join("plugins"),
+        workspace_plugins_dir: workspace.join(".hakus/plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: tmp.path().join("plugin-state/state.json"),
+    };
+    let discovery = crate::plugins::PluginDiscoveryContext::from_config_and_environment(
+        &plugin_config,
+        crate::plugins::HostEnvironment::default(),
+    );
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            root.join("sessions"),
+            None,
+            false,
+            workspace,
+            TestServerOverrides {
+                plugin_discovery: Some(discovery),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let source_spec = source.to_string_lossy().to_string();
+
+    let installed = client
+        .post(format!("http://{addr}/v1/plugins/install"))
+        .json(&json!({ "source": source_spec }))
+        .send()
+        .await?;
+    assert_eq!(installed.status(), StatusCode::CREATED);
+    let installed_text = installed.text().await?;
+    let installed_body: serde_json::Value = serde_json::from_str(&installed_text)?;
+    assert_eq!(installed_body["name"], "runtime-demo");
+    assert_eq!(installed_body["outcome"], "installed");
+    assert!(installed_body.get("path").is_none());
+    assert!(
+        !installed_text.contains(&tmp.path().display().to_string()),
+        "plugin receipt leaked a local path: {installed_text}"
+    );
+
+    let installed_path = tmp.path().join("plugins/runtime-demo");
+    assert!(installed_path.join(".installed-from").is_file());
+
+    let updated = client
+        .post(format!("http://{addr}/v1/plugins/runtime-demo/update"))
+        .json(&json!({}))
+        .send()
+        .await?;
+    let updated_status = updated.status();
+    let updated_text = updated.text().await?;
+    assert_eq!(updated_status, StatusCode::BAD_REQUEST);
+    assert!(
+        !updated_text.contains(&tmp.path().display().to_string()),
+        "plugin update receipt leaked a local path: {updated_text}"
+    );
+
+    let removed = client
+        .delete(format!("http://{addr}/v1/plugins/runtime-demo"))
+        .send()
+        .await?;
+    assert_eq!(removed.status(), StatusCode::OK);
+    let removed_body: serde_json::Value = removed.json().await?;
+    assert_eq!(removed_body["outcome"], "uninstalled");
+    assert!(!installed_path.exists());
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn python_compat_flag_rollback_is_reported_live() -> Result<()> {
+    // Phase 8 rollback evidence: flipping HAKUS_PYTHON_COMPAT_PATH before
+    // launch must be reflected verbatim in /v1/runtime/info and in the
+    // diagnostics bundle's migration section — a release can switch the
+    // compat path back on and see that fact, not a hardcoded false.
+    let _lock = lock_test_env();
+    let flag = EnvVarGuard::set("HAKUS_PYTHON_COMPAT_PATH", "true");
+
+    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    // The gates were captured into the server's state at spawn; restore the
+    // environment now so parallel tests spawning servers read the default.
+    drop(flag);
+    let client = crate::tls::reqwest_client();
+
+    let info: serde_json::Value = client
+        .get(format!("http://{addr}/v1/runtime/info"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(info["feature_gates"]["python_compat_path"], json!(true));
+    assert_eq!(info["feature_gates"]["legacy_agentcore"], json!(false));
+
+    let bundle: serde_json::Value = client
+        .get(format!("http://{addr}/v1/diagnostics/bundle"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(bundle["migration"]["python_compat_flag"], json!(true));
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn sessions_backup_export_import_roundtrip_preserves_history() -> Result<()> {
+    // Phase 8 deletion prerequisite: "a backup/export path for user data".
+    // The portable backup shape must round-trip legacy-shaped sessions
+    // through the runtime API without losing message history.
+    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    // Import a legacy-shaped backup.
+    let backup = json!({
+        "schema_version": 1,
+        "sessions": [
+            { "id": "legacy-1", "title": "Legacy Chat", "pinned": false }
+        ],
+        "messages": {
+            "legacy-1": [
+                { "role": "user", "content": "hello there" },
+                { "role": "assistant", "content": "hi from legacy" },
+                { "role": "system", "content": "dropped on purpose" }
+            ]
+        }
+    });
+    let imported: serde_json::Value = client
+        .post(format!("http://{addr}/v1/sessions/migrate"))
+        .json(&backup)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(imported["imported"]["sessions"], 1);
+    assert_eq!(
+        imported["imported"]["messages"], 2,
+        "user+assistant history imported; system rows are not chat history"
+    );
+
+    // Export the portable backup and verify the history survived.
+    let exported: serde_json::Value = client
+        .get(format!("http://{addr}/v1/sessions/export"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(exported["schema_version"], 1);
+    let exported_session = exported["sessions"]
+        .as_array()
+        .and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|session| session["title"] == "Legacy Chat")
+        })
+        .context("imported session appears in the export")?;
+    assert!(exported_session["id"].as_str().is_some());
+    let exported_rows = exported["messages"][exported_session["id"].as_str().unwrap()]
+        .as_array()
+        .context("exported messages for the imported session")?;
+    let roles: Vec<&str> = exported_rows
+        .iter()
+        .filter_map(|row| row["role"].as_str())
+        .collect();
+    assert_eq!(roles, vec!["user", "assistant"]);
+    let contents: Vec<&str> = exported_rows
+        .iter()
+        .filter_map(|row| row["content"].as_str())
+        .collect();
+    assert_eq!(contents, vec!["hello there", "hi from legacy"]);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_ledger_routes_replay_and_verify_runtime_events() -> Result<()> {
+    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({"model": "test-model"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().expect("created thread id");
+
+    let ledger: serde_json::Value = client
+        .get(format!("http://{addr}/v1/threads/{thread_id}/ledger?limit=20"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(ledger["session_id"], thread_id);
+    assert!(ledger["events"].as_array().is_some_and(|events| {
+        events.iter().any(|event| event["event_type"] == "thread.started")
+    }));
+    assert!(ledger["verification"]["contiguous"] == true);
+    assert!(ledger["verification"]["event_count"].as_u64().unwrap_or(0) >= 1);
+
+    let verified: serde_json::Value = client
+        .get(format!("http://{addr}/v1/threads/{thread_id}/ledger/verify"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(verified["session_id"], thread_id);
+    assert_eq!(verified["contiguous"], true);
+
+    let metrics: serde_json::Value = client
+        .get(format!("http://{addr}/v1/metrics"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(metrics["canonical_ledger_event_count"].as_u64().unwrap_or(0) >= 1);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_session_state_route_imports_python_projection() -> Result<()> {
+    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let root = tempfile::tempdir()?;
+    let source_path = root.path().join("sessions.db");
+    let source = rusqlite::Connection::open(&source_path)?;
+    source.execute_batch(
+        r#"
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, provider TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, reasoning TEXT, tool_calls_json TEXT, input_tokens INTEGER, output_tokens INTEGER, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        INSERT INTO sessions VALUES ('python-route', 'Route import', 'openai', 1735689600000, 1735689600000);
+        INSERT INTO messages VALUES ('m-route', 'python-route', 'user', 'import me', NULL, NULL, NULL, NULL, NULL, 1735689600000, 1735689600000);
+        "#,
+    )?;
+    drop(source);
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({"model": "test-model"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().expect("created thread id");
+    let payload = json!({
+        "source_path": source_path,
+        "source_session_id": "python-route"
+    });
+    let summary: serde_json::Value = client
+        .post(format!("http://{addr}/v1/threads/{thread_id}/state/import-legacy"))
+        .json(&payload)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(summary["imported_messages"], 1);
+    assert_eq!(summary["skipped_messages"], 0);
+
+    let thread: serde_json::Value = client
+        .get(format!("http://{addr}/v1/threads/{thread_id}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(thread["thread"]["id"], thread_id);
 
     handle.abort();
     Ok(())
@@ -5463,15 +6573,34 @@ async fn submit_user_input_404s_without_entering_engine_mailbox_for_unknown_id()
     Ok(())
 }
 
+/// A tail replay must stay bounded on both sources, and each source is bounded
+/// by its own limit: the legacy event file by `MAX_RUNTIME_EVENT_REPLAY_TAIL`,
+/// the ledger by `CANONICAL_REPLAY_LIMIT`. An over-limit request is refused on
+/// the source that cannot honour it rather than silently truncated.
 #[tokio::test]
-async fn events_endpoint_rejects_unbounded_tail_requests() -> Result<()> {
+async fn events_endpoint_bounds_tail_requests_per_source() -> Result<()> {
     let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
         return Ok(());
     };
     let thread = runtime_threads
         .create_thread(CreateThreadRequest::default())
         .await?;
-    let response = crate::tls::reqwest_client()
+    let client = crate::tls::reqwest_client();
+
+    // The legacy file source still refuses more than its tail bound.
+    let legacy = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/events?source=jsonl&replay_limit={}",
+            thread.id,
+            MAX_RUNTIME_EVENT_REPLAY_TAIL.saturating_add(1),
+        ))
+        .send()
+        .await?;
+    assert_eq!(legacy.status(), StatusCode::BAD_REQUEST);
+
+    // The ledger is not bound by the file limit, so the same request is served
+    // and still bounded by the ledger's own window.
+    let ledger = client
         .get(format!(
             "http://{addr}/v1/threads/{}/events?replay_limit={}",
             thread.id,
@@ -5479,7 +6608,63 @@ async fn events_endpoint_rejects_unbounded_tail_requests() -> Result<()> {
         ))
         .send()
         .await?;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(ledger.status(), StatusCode::OK);
+
+    handle.abort();
+    Ok(())
+}
+
+/// The migration discovery route reports what a previous Python install left
+/// behind without importing any of it, so a migration surface can show a person
+/// the summary first.
+#[tokio::test]
+async fn legacy_discovery_route_summarizes_python_stores_read_only() -> Result<()> {
+    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let root = tempfile::tempdir()?;
+    let store_dir = root.path().join("previous-install");
+    std::fs::create_dir_all(&store_dir)?;
+    let source_path = store_dir.join("sessions.db");
+    let source = rusqlite::Connection::open(&source_path)?;
+    source.execute_batch(
+        r#"
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, provider TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, reasoning TEXT, tool_calls_json TEXT, input_tokens INTEGER, output_tokens INTEGER, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        INSERT INTO sessions VALUES ('python-old', 'Old chat', 'openai', 1735689600000, 1735689600000);
+        INSERT INTO messages VALUES ('m-1', 'python-old', 'user', 'hello', NULL, NULL, NULL, NULL, NULL, 1735689600000, 1735689600000);
+        "#,
+    )?;
+    drop(source);
+
+    let discovery: serde_json::Value = client
+        .post(format!("http://{addr}/v1/migrations/legacy-sessions"))
+        .json(&json!({ "roots": [store_dir] }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    assert_eq!(discovery["stores"].as_array().map(Vec::len), Some(1), "{discovery}");
+    let store = &discovery["stores"][0];
+    assert_eq!(store["path"], json!(source_path));
+    assert_eq!(store["sessions"][0]["session_id"], "python-old");
+    assert_eq!(store["sessions"][0]["message_count"], 1);
+    assert!(
+        discovery["rejected"].as_array().is_some_and(Vec::is_empty),
+        "a valid store must not be rejected: {discovery}"
+    );
+
+    // An empty root list is a validation error rather than a silent scan of
+    // whatever the process happens to be sitting in.
+    let invalid = client
+        .post(format!("http://{addr}/v1/migrations/legacy-sessions"))
+        .json(&json!({ "roots": [""] }))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
 
     handle.abort();
     Ok(())
@@ -9264,6 +10449,528 @@ async fn skill_lifecycle_runtime_info_advertises_skill_lifecycle_capability() ->
         info["capabilities"]["skill_lifecycle"], true,
         "runtime/info must advertise skill_lifecycle capability"
     );
+
+    handle.abort();
+    Ok(())
+}
+
+/// Stage a rewrite of one tracked file, returning a repo and its init commit.
+///
+/// The hunk route needs a *real* repository with a real unstaged change, because
+/// the thing under test is `git apply` actually moving that change between the
+/// worktree and the index. A mocked git would test nothing.
+fn hunk_test_repo(tmp: &std::path::Path, body: &str) -> Result<PathBuf> {
+    let repo = tmp.join("repo");
+    fs::create_dir_all(&repo)?;
+    run_test_git(&repo, &["init", "-b", "main"])?;
+    run_test_git(&repo, &["config", "core.autocrlf", "false"])?;
+    fs::write(repo.join("tracked.txt"), "alpha\nbeta\ngamma\n")?;
+    run_test_git(&repo, &["add", "tracked.txt"])?;
+    run_test_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=CodeWhale Test",
+            "-c",
+            "user.email=hakus@example.invalid",
+            "commit",
+            "-m",
+            "init",
+        ],
+    )?;
+    fs::write(repo.join("tracked.txt"), body)?;
+    Ok(repo)
+}
+
+fn git_stdout(workspace: &std::path::Path, args: &[&str]) -> Result<String> {
+    let output = crate::dependencies::Git::output(args, workspace)?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// A one-hunk patch turning `alpha\nbeta\ngamma` into `alpha\nBETA\ngamma`.
+const HUNK_PATCH: &str = "\
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1,3 +1,3 @@
+ alpha
+-beta
++BETA
+ gamma
+";
+
+/// Phase 2: the Review panel's per-hunk Stage must be able to go through the
+/// Runtime instead of the desktop spawning `git apply` itself.
+#[tokio::test]
+async fn apply_hunk_stages_one_hunk_through_the_runtime() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = hunk_test_repo(tmp.path(), "alpha\nBETA\ngamma\n")?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace(
+            root,
+            sessions_dir,
+            None,
+            false,
+            repo.clone(),
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    // Nothing is staged yet: the change exists only in the worktree.
+    let before = git_stdout(&repo, &["diff", "--cached", "--name-only"])?;
+    assert!(before.trim().is_empty(), "precondition: index is clean");
+
+    let staged: serde_json::Value = client
+        .post(format!("http://{addr}/v1/workspace/apply-hunk"))
+        .json(&json!({ "path": "tracked.txt", "patch": HUNK_PATCH, "cached": true }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(staged["ok"], true);
+    assert_eq!(staged["path"], "tracked.txt");
+    assert_eq!(staged["cached"], true);
+
+    // The hunk really moved into the index, and the worktree still holds it.
+    let after = git_stdout(&repo, &["diff", "--cached", "--name-only"])?;
+    assert_eq!(
+        after.trim(),
+        "tracked.txt",
+        "the hunk must be staged, got {after:?}"
+    );
+    let cached_diff = git_stdout(&repo, &["diff", "--cached"])?;
+    assert!(
+        cached_diff.contains("+BETA") && cached_diff.contains("-beta"),
+        "the staged hunk must be the one that was sent: {cached_diff}"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+/// Reversing a hunk must undo exactly that hunk, leaving the rest of the file.
+///
+/// This is the "Revert hunk" button. It is the dangerous direction — a revert
+/// that over-applied would discard work the operator did not select — so it is
+/// asserted on file contents, not just on git's exit status.
+#[tokio::test]
+async fn apply_hunk_reverse_reverts_only_that_hunk() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    // Two edits: the one being reverted, and an unrelated one that must survive.
+    let repo = hunk_test_repo(tmp.path(), "alpha\nBETA\ngamma\ndelta\n")?;
+    fs::write(repo.join("other.txt"), "untouched\n")?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace(
+            root,
+            sessions_dir,
+            None,
+            false,
+            repo.clone(),
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let reverted: serde_json::Value = client
+        .post(format!("http://{addr}/v1/workspace/apply-hunk"))
+        .json(&json!({
+            "path": "tracked.txt",
+            "patch": HUNK_PATCH,
+            "reverse": true
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(reverted["reverse"], true);
+
+    let contents = fs::read_to_string(repo.join("tracked.txt"))?;
+    assert_eq!(
+        contents, "alpha\nbeta\ngamma\ndelta\n",
+        "only the hunk must be reverted; the unrelated `delta` line must survive"
+    );
+    // The unrelated file is not touched at all.
+    assert_eq!(
+        fs::read_to_string(repo.join("other.txt"))?,
+        "untouched\n",
+        "a hunk revert must not touch files it was not given"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+/// The path is validated the same way every other workspace route validates it.
+/// Phase 2: the desktop's worktree creation must go through the Runtime
+/// instead of the Tauri process spawning `git worktree add` with a
+/// caller-supplied workdir.
+#[tokio::test]
+async fn worktree_add_creates_a_worktree_inside_the_workspace() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = hunk_test_repo(tmp.path(), "alpha
+beta
+gamma
+")?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace(
+            root,
+            sessions_dir,
+            None,
+            false,
+            repo.clone(),
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/v1/workspace/worktree"))
+        .json(&json!({ "path": "trees/feature", "new_branch": "feature" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(created["ok"], true);
+    assert_eq!(created["path"], "trees/feature");
+
+    // The worktree really exists, on the requested branch, registered in the
+    // repository the Runtime owns.
+    assert!(repo.join("trees").join("feature").is_dir());
+    let listing = git_stdout(&repo, &["worktree", "list", "--porcelain"])?;
+    assert!(
+        listing.contains("trees/feature"),
+        "worktree must be registered: {listing}"
+    );
+    let branches = git_stdout(&repo, &["branch", "--format=%(refname:short)"])?;
+    assert!(
+        branches.lines().any(|b| b.trim() == "feature"),
+        "new branch must exist: {branches}"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn worktree_add_rejects_escaping_paths_and_option_branches() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = hunk_test_repo(tmp.path(), "alpha
+beta
+gamma
+")?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace(
+            root,
+            sessions_dir,
+            None,
+            false,
+            repo.clone(),
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    for path in ["../outside", "/etc/passwd", "", "trees/../../outside"] {
+        let response = client
+            .post(format!("http://{addr}/v1/workspace/worktree"))
+            .json(&json!({ "path": path, "new_branch": "feature" }))
+            .send()
+            .await?;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "path {path:?} must be rejected"
+        );
+    }
+
+    // A branch name that begins with `-` would be parsed as an option by git,
+    // which is how a name field becomes an argv-injection vector.
+    for branch_field in ["new_branch", "branch"] {
+        let mut body = json!({ "path": "trees/feature" });
+        body[branch_field] = json!("-oProxyCommand=evil");
+        let response = client
+            .post(format!("http://{addr}/v1/workspace/worktree"))
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "option-looking {branch_field} must be rejected"
+        );
+    }
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn apply_hunk_rejects_paths_that_escape_the_workspace() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = hunk_test_repo(tmp.path(), "alpha\nBETA\ngamma\n")?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace(
+            root,
+            sessions_dir,
+            None,
+            false,
+            repo.clone(),
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    for path in ["../outside.txt", "/etc/passwd", "", "a/../../b.txt"] {
+        let response = client
+            .post(format!("http://{addr}/v1/workspace/apply-hunk"))
+            .json(&json!({ "path": path, "patch": HUNK_PATCH }))
+            .send()
+            .await?;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "path {path:?} must be rejected"
+        );
+    }
+
+    // An empty patch is a no-op request, not a success.
+    let empty = client
+        .post(format!("http://{addr}/v1/workspace/apply-hunk"))
+        .json(&json!({ "path": "tracked.txt", "patch": "   " }))
+        .send()
+        .await?;
+    assert_eq!(empty.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    // A patch that does not match the file must fail loudly, not silently
+    // succeed and leave the caller believing a stage happened.
+    let mismatched = client
+        .post(format!("http://{addr}/v1/workspace/apply-hunk"))
+        .json(&json!({
+            "path": "tracked.txt",
+            "patch": "--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1,3 +1,3 @@\n zzz\n-nonexistent\n+whatever\n zzz\n"
+        }))
+        .send()
+        .await?;
+    assert_eq!(
+        mismatched.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "a hunk that does not apply must be reported as a failure"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+/// The route is bound to the Runtime's workspace, not to a caller-supplied one.
+///
+/// This is the property that makes delegating to the Runtime safer than the
+/// desktop command it replaces: `git_apply_patch` in the Tauri process takes any
+/// `workdir`, so a caller picks the repository. Here the repository is fixed and
+/// only the hunk is caller-controlled.
+#[tokio::test]
+async fn apply_hunk_cannot_target_a_repository_outside_the_workspace() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = hunk_test_repo(tmp.path(), "alpha\nBETA\ngamma\n")?;
+
+    // A second repository the caller must not be able to reach.
+    let elsewhere = tmp.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere)?;
+    run_test_git(&elsewhere, &["init", "-b", "main"])?;
+    run_test_git(&elsewhere, &["config", "core.autocrlf", "false"])?;
+    fs::write(elsewhere.join("secret.txt"), "alpha\nbeta\ngamma\n")?;
+    run_test_git(&elsewhere, &["add", "secret.txt"])?;
+    run_test_git(
+        &elsewhere,
+        &[
+            "-c",
+            "user.name=CodeWhale Test",
+            "-c",
+            "user.email=hakus@example.invalid",
+            "commit",
+            "-m",
+            "init",
+        ],
+    )?;
+    fs::write(elsewhere.join("secret.txt"), "alpha\nBETA\ngamma\n")?;
+
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace(
+            root,
+            sessions_dir,
+            None,
+            false,
+            repo.clone(),
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    // Ask for the other repo's file by a relative path that climbs out.
+    let escaped = client
+        .post(format!("http://{addr}/v1/workspace/apply-hunk"))
+        .json(&json!({
+            "path": "../elsewhere/secret.txt",
+            "patch": HUNK_PATCH,
+            "cached": true
+        }))
+        .send()
+        .await?;
+    assert_eq!(escaped.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    // And the other repository is genuinely unmodified.
+    let elsewhere_status = git_stdout(&elsewhere, &["diff", "--cached", "--name-only"])?;
+    assert!(
+        elsewhere_status.trim().is_empty(),
+        "the out-of-workspace repo must be untouched, got {elsewhere_status:?}"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+/// Phase 3 SSH gate: diagnostics carry no credential.
+///
+/// The response is a closed struct with no credential field, so this is a
+/// property test rather than a bug hunt: it pins the shape so that adding a
+/// field which happens to hold a key, a token, or a password has to fail here
+/// first. The same marker list is used by the protocol's route-receipt test, so
+/// "no secrets in a serialized payload" has one definition rather than several
+/// drifting ones.
+#[tokio::test]
+async fn diagnostics_expose_no_credential_markers() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root(root, sessions_dir).await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let raw = client
+        .get(format!("http://{addr}/v1/diagnostics"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let lowered = raw.to_ascii_lowercase();
+
+    for marker in [
+        "password",
+        "passwd",
+        "api_key",
+        "apikey",
+        "api-key",
+        "authorization",
+        "bearer ",
+        "auth_token",
+        "auth-token",
+        "credential",
+        "private_key",
+        "secret",
+        "sk-ant-",
+        "sk-proj-",
+        "sk-or-",
+    ] {
+        assert!(
+            !lowered.contains(marker),
+            "diagnostics must not contain credential marker {marker:?}: {raw}"
+        );
+    }
+
+    // The endpoint still has to do its job: it reports the execution plane and
+    // ledger integrity, so a "no secrets" pass cannot come from an empty body.
+    let parsed: serde_json::Value = serde_json::from_str(&raw)?;
+    assert_eq!(parsed["execution_plane"], json!("rust"));
+    assert!(
+        parsed.get("canonical_ledger_integrity").is_some(),
+        "diagnostics must still report ledger integrity: {raw}"
+    );
+
+    handle.abort();
+    Ok(())
+}
+
+/// Desktop project registration must accept an existing absolute path even
+/// when Windows cannot canonicalize a non-ASCII workspace name.
+#[tokio::test]
+async fn desktop_project_route_accepts_existing_unicode_workspace_path() -> Result<()> {
+    let project_path = std::env::current_dir()?;
+    assert!(project_path.is_absolute());
+    assert!(project_path.is_dir());
+
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = root.join("sessions");
+    let workspace = root.join("workspace");
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace(
+            root,
+            sessions_dir,
+            None,
+            false,
+            workspace,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+
+    let client = crate::tls::reqwest_client();
+    let response = client
+        .post(format!("http://{addr}/v1/projects"))
+        .json(&json!({
+            "name": "HakusAgent",
+            "path": project_path,
+        }))
+        .send()
+        .await?;
+    let status = response.status();
+    if status != StatusCode::CREATED && status != StatusCode::OK {
+        bail!("project registration failed with {status}: {}", response.text().await?);
+    }
+
+    let registered: serde_json::Value = response.json().await?;
+    assert_eq!(registered["name"], "HakusAgent");
+    let registered_path = registered["path"]
+        .as_str()
+        .context("project response must include path")?;
+    assert!(Path::new(registered_path).is_absolute());
+    assert!(Path::new(registered_path).is_dir());
 
     handle.abort();
     Ok(())

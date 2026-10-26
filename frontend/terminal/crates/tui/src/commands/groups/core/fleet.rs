@@ -231,11 +231,7 @@ mod tests {
         // unavailability — never an empty-looking "all clear".
         assert!(message.contains("no_fleet_ledger"), "got: {message}");
         assert!(
-            !workspace
-                .path()
-                .join(".hakus")
-                .join("fleet.jsonl")
-                .exists(),
+            !workspace.path().join(".hakus").join("fleet.jsonl").exists(),
             "a read verb must not create the durable ledger"
         );
     }

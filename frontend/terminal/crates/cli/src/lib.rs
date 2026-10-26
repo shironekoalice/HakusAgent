@@ -1046,10 +1046,9 @@ fn run_workflow_command(
             // loaded and validated before the run starts.
             if let Some(name) = fleet.as_deref() {
                 let roots = named_fleet_search_roots(&workspace);
-                let loaded =
-                    hakus_workflow::load_named_fleet(name, &roots).with_context(|| {
-                        format!("load fleet `{name}` from {}", display_roots(&roots))
-                    })?;
+                let loaded = hakus_workflow::load_named_fleet(name, &roots).with_context(|| {
+                    format!("load fleet `{name}` from {}", display_roots(&roots))
+                })?;
                 if workflow == "stopship" || name == "stopship" {
                     loaded
                         .validate_stopship_roles()
@@ -1350,7 +1349,6 @@ fn lane_process_spec_from_argv(argv: &[String]) -> Result<WorkflowProcessSpec> {
         environment: environment.into_iter().collect(),
     })
 }
-
 
 #[derive(Debug, Args)]
 struct LoginArgs {
@@ -3394,8 +3392,7 @@ fn xai_auth_status_lines_for_provider(
         XaiOAuthGenerationPointer::Valid
             if diagnostics.route == XaiAuthDiagnosticRoute::OwnedOAuth =>
         {
-            "xAI OAuth generation: configured Hakus-owned pointer (storage unprobed)"
-                .to_string()
+            "xAI OAuth generation: configured Hakus-owned pointer (storage unprobed)".to_string()
         }
         XaiOAuthGenerationPointer::Valid => {
             "xAI OAuth generation: valid but inactive for this route".to_string()
@@ -5402,14 +5399,7 @@ mod tests {
             Some(Commands::Fleet(TuiPassthroughArgs { ref args })) if args == &["init"]
         ));
 
-        let cli = parse_ok(&[
-            "hakus",
-            "fleet",
-            "run",
-            "tasks.json",
-            "--max-workers",
-            "2",
-        ]);
+        let cli = parse_ok(&["hakus", "fleet", "run", "tasks.json", "--max-workers", "2"]);
         assert!(cli.prompt.is_empty());
         assert!(matches!(
             cli.command,
@@ -5555,14 +5545,9 @@ mod tests {
             .expect_err("auth keeps enum-only provider validation");
         assert_eq!(err.kind(), ErrorKind::InvalidValue);
 
-        let err = Cli::try_parse_from([
-            "hakus",
-            "--provider",
-            "../../lm-studio",
-            "exec",
-            "Reply OK",
-        ])
-        .expect_err("provider ids must stay simple tokens");
+        let err =
+            Cli::try_parse_from(["hakus", "--provider", "../../lm-studio", "exec", "Reply OK"])
+                .expect_err("provider ids must stay simple tokens");
         assert!(
             err.to_string()
                 .contains("provider must be a simple identifier")
@@ -5675,8 +5660,6 @@ mod tests {
             }))
         ));
     }
-
-
 
     #[test]
     fn exec_keeps_global_looking_flags_as_passthrough_args() {
@@ -5905,8 +5888,8 @@ mod tests {
             secrets.get("openrouter").expect("read secret").as_deref(),
             Some("sk-or-repo-scoped")
         );
-        let global = std::fs::read_to_string(hakus_home.join("config.toml"))
-            .expect("user-global config");
+        let global =
+            std::fs::read_to_string(hakus_home.join("config.toml")).expect("user-global config");
         assert!(
             global.contains("auth_mode = \"api_key\""),
             "user-global config must carry the auth markers: {global}"
@@ -5922,7 +5905,6 @@ mod tests {
             "workspace config must stay untouched by credential metadata: {repo_after}"
         );
     }
-
 
     #[test]
     fn auth_help_describes_runtime_effective_diagnostics() {
@@ -6381,7 +6363,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-
     #[test]
     fn xai_valid_owned_generation_blocks_external_consent_without_storage_probes() {
         use std::sync::Arc;
@@ -6418,7 +6399,12 @@ mod tests {
             ),
             "{scoped}"
         );
-        assert!(scoped.contains("external credentials: blocked by the configured Hakus-owned xAI OAuth generation"), "{scoped}");
+        assert!(
+            scoped.contains(
+                "external credentials: blocked by the configured Hakus-owned xAI OAuth generation"
+            ),
+            "{scoped}"
+        );
         assert!(
             scoped.contains(
                 "xAI OAuth generation: configured Hakus-owned pointer (storage unprobed)"
@@ -6875,7 +6861,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn external_consent_persists_exact_scope_and_api_key_or_revoke_disables_it() {
         let _lock = env_lock();
@@ -7043,7 +7028,6 @@ mod tests {
             external_raw
         );
     }
-
 
     #[test]
     fn api_key_config_failure_restores_absent_and_existing_secret_state() {
@@ -7503,8 +7487,7 @@ mod tests {
             "the help string must disclose the default: {telemetry_line}"
         );
         assert!(
-            telemetry_line.contains("HAKUS_TELEMETRY=0 always")
-                && telemetry_line.contains("wins"),
+            telemetry_line.contains("HAKUS_TELEMETRY=0 always") && telemetry_line.contains("wins"),
             "the help string must document the always-winning opt-out: {telemetry_line}"
         );
     }
@@ -7599,10 +7582,7 @@ mod tests {
         let cli = parse_ok(&["hakus", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
-        assert!(
-            err.to_string()
-                .contains("hakus exec --continue <PROMPT>")
-        );
+        assert!(err.to_string().contains("hakus exec --continue <PROMPT>"));
     }
 
     #[test]

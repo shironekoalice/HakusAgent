@@ -64,10 +64,19 @@ use hakus_protocol::runtime::{
     DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult, DynamicToolSpec,
     TurnEnvironmentParams,
 };
+use hakus_state::{
+    LedgerEventAppend, LedgerEventRecord, LedgerImportSummary, LedgerStats, LedgerVerification,
+    LegacySessionImportSummary, StateStore,
+};
 
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub(crate) const RUNTIME_EVENT_REPLAY_BATCH_SIZE: usize = 256;
 pub(crate) const MAX_RUNTIME_EVENT_REPLAY_TAIL: usize = 4096;
+/// Upper bound on one canonical-ledger replay window. The store read is bounded
+/// so a long thread cannot materialize its whole ledger into a single batch;
+/// callers must treat a replay that starts above the requested cursor as
+/// bounded rather than complete.
+const CANONICAL_REPLAY_LIMIT: usize = 5000;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
 const MAX_PENDING_DYNAMIC_TOOL_CALLS: usize = 128;
 const SUMMARY_LIMIT: usize = 280;
@@ -492,6 +501,33 @@ fn sort_turn_items_by_start(items: &mut [TurnItemRecord]) {
 /// thread/turn/item records did not change shape, but a v1 reader on a v2
 /// session should still fail closed rather than silently mis-replay.
 const CURRENT_RUNTIME_SCHEMA_VERSION: u32 = 2;
+
+/// Metadata key holding the exact provider content blocks of a user turn item.
+///
+/// Written from the engine's composition receipt
+/// ([`EngineEvent::UserMessageComposed`]) and replayed verbatim by the
+/// transcript rebuilds. Absent on items recorded before the receipt existed,
+/// which is why every reader keeps a text-only fallback.
+pub(crate) const USER_ITEM_PROVIDER_BLOCKS_KEY: &str = "provider_blocks";
+
+/// The engine-composed provider blocks recorded for a user turn item.
+///
+/// `None` when the item predates the composition receipt (or carries a shape
+/// this reader does not understand), which is the caller's signal to fall back
+/// to rebuilding the block from its text alone.
+pub(crate) fn recorded_provider_blocks(metadata: Option<&Value>) -> Option<Vec<ContentBlock>> {
+    let recorded = metadata?.get(USER_ITEM_PROVIDER_BLOCKS_KEY)?;
+    if recorded.is_null() {
+        return None;
+    }
+    match serde_json::from_value::<Vec<ContentBlock>>(recorded.clone()) {
+        Ok(blocks) => Some(blocks),
+        Err(err) => {
+            tracing::warn!("Ignoring unreadable user turn provider blocks in item metadata: {err}");
+            None
+        }
+    }
+}
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
@@ -1284,9 +1320,7 @@ impl RuntimeThreadStore {
     /// Tombstones live only for this process: after a restart no engine
     /// exists that could resurrect the deleted records.
     pub fn tombstone_thread(&self, thread_id: &str) {
-        self.deleted_tombstones
-            .lock()
-            .insert(thread_id.to_string());
+        self.deleted_tombstones.lock().insert(thread_id.to_string());
     }
 
     fn is_thread_tombstoned(&self, thread_id: &str) -> bool {
@@ -2615,6 +2649,16 @@ pub struct RuntimeThreadManager {
     goal_continuations: Arc<Mutex<HashSet<String>>>,
     goal_clear_barriers: Arc<Mutex<HashMap<String, GoalClearBarrier>>>,
     event_tx: broadcast::Sender<RuntimeEventRecord>,
+    /// SQLite ledger shadow used during the JSONL-to-SQLite migration. JSONL
+    /// replay remains available until the Phase-1 cutover gate is complete.
+    state_store: Arc<StateStore>,
+    /// Runtime-owned feature-plane extension children. Desktop clients only
+    /// receive redacted status projections and never receive process handles.
+    extension_children: Arc<parking_lot::Mutex<HashMap<String, ManagedExtensionChild>>>,
+    /// Last redacted terminal status for each managed extension. Keeping this
+    /// separately from the child map lets diagnostics and desktop polling
+    /// observe a crash after the child has been reaped.
+    extension_statuses: Arc<parking_lot::Mutex<HashMap<String, ExtensionRuntimeStatus>>>,
     manager_cfg: RuntimeThreadManagerConfig,
     cancel_token: CancellationToken,
     task_manager: Arc<parking_lot::Mutex<Option<crate::task_manager::SharedTaskManager>>>,
@@ -2627,6 +2671,20 @@ pub struct RuntimeThreadManager {
     recovery_flush: Arc<Mutex<()>>,
     #[cfg(test)]
     snapshot_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<SnapshotTestPoint>>>>,
+}
+
+struct ManagedExtensionChild {
+    child: crate::plugins::extension_host::ExtensionChild,
+    thread_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionRuntimeStatus {
+    pub extension_id: String,
+    pub state: crate::plugins::extension_host::ExtensionHostState,
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub error: Option<String>,
 }
 
 fn normalize_thread_environments(
@@ -2673,13 +2731,21 @@ fn thread_environment_workspace(
         if requested.eq_ignore_ascii_case("local") {
             return Ok(("local".to_string(), thread.workspace.clone()));
         }
-        bail!("environment '{requested}' is not configured for thread {}", thread.id);
+        bail!(
+            "environment '{requested}' is not configured for thread {}",
+            thread.id
+        );
     }
     let environment = thread
         .environments
         .iter()
         .find(|environment| environment.environment_id.eq_ignore_ascii_case(requested))
-        .ok_or_else(|| anyhow!("environment '{requested}' is not configured for thread {}", thread.id))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "environment '{requested}' is not configured for thread {}",
+                thread.id
+            )
+        })?;
     Ok((environment.environment_id.clone(), environment.cwd.clone()))
 }
 
@@ -2797,6 +2863,125 @@ enum DynamicToolTerminalOutcome {
 
 struct DynamicToolSettlementAck {
     result_accepted: bool,
+}
+
+/// Narrow a bounded canonical-ledger read into the replay window a client may
+/// treat as contiguous.
+///
+/// `list_ledger_events` is itself bounded, so omission is not observable from
+/// `events.len()`. It is observable from the sequence numbers: the store returns
+/// the *oldest* events after the cursor, so a first sequence above
+/// `requested + 1` means older history was cut off. A replay that claimed to
+/// start at the request cursor while actually starting later would leave a
+/// silent gap in the middle of the stream, so `base_seq` advances to just before
+/// the window actually returned. The live tail then continues from there with
+/// nothing skipped.
+fn canonical_replay_window(
+    requested: u64,
+    events: Vec<hakus_state::LedgerEventRecord>,
+) -> (u64, Vec<hakus_state::LedgerEventRecord>) {
+    let base_seq = match events.first().map(|event| event.seq) {
+        Some(seq) if seq > requested.saturating_add(1) => seq - 1,
+        _ => requested,
+    };
+    (base_seq, events)
+}
+
+/// The newest event before a tail window, which is where a tail replay must
+/// resume from.
+///
+/// A tail replay keeps only the newest `tail_limit` events and must advance
+/// `base_seq` past everything it dropped, so a client reconnecting from
+/// `base_seq` receives a contiguous stream instead of a silent gap. `floor` is
+/// the newest omitted sequence as the sequence numbers suggest it; this confirms
+/// the event actually exists in the session and that the window follows it
+/// directly. When the claim does not hold, `floor` is itself already the resume
+/// point.
+///
+/// `None` when there is no floor to reason about.
+fn canonical_tail_floor(
+    state_store: &hakus_state::StateStore,
+    session_id: &str,
+    floor: u64,
+) -> Result<Option<u64>> {
+    if floor == 0 {
+        // Nothing precedes sequence 0, so a window at the start of the session
+        // omitted nothing and the request cursor is already the resume point.
+        return Ok(None);
+    }
+    let probe = state_store
+        .list_ledger_events(session_id, floor.saturating_sub(1), 2)
+        .context("reading the boundary before a canonical tail replay window")?;
+    let mut probe = probe.into_iter();
+    match (probe.next(), probe.next()) {
+        // The floor event exists and the next event in the session is exactly
+        // one past it: nothing was skipped, so the floor is the resume point.
+        (Some(present), Some(next)) if present.seq == floor && next.seq == floor.saturating_add(1) => {
+            Ok(Some(floor))
+        }
+        // The floor event is the newest one this session holds.
+        (Some(present), None) if present.seq == floor => Ok(Some(floor)),
+        // Either the floor is not a real sequence of this session, or events
+        // between it and the window are missing. Resume from the newest event
+        // that does exist, so the client cannot be pinned to a sequence that
+        // will never arrive.
+        (Some(present), _) => Ok(Some(present.seq)),
+        (None, _) => Ok(None),
+    }
+}
+
+/// Read one canonical replay window, resolving its exact resume cursor.
+///
+/// Two window shapes, matching the JSONL replay the runtime has always served:
+///
+/// - no `tail_limit`: the oldest `CANONICAL_REPLAY_LIMIT` events after the
+///   cursor, with `base_seq` advanced past the store's own bound so a truncated
+///   prefix is never presented as contiguous;
+/// - `tail_limit`: the newest `tail_limit` events after the cursor, with
+///   `base_seq` advanced past every omitted event so a reconnect resumes with no
+///   gap. `tail_limit = 0` yields no events and a cursor at the newest event,
+///   which is a client asking for "just the cursor".
+///
+/// `list_ledger_events` returns the *oldest* events after a cursor, so a tail
+/// window has to be located through the sequence numbers, not by asking the
+/// store for a tail.
+fn canonical_replay_read(
+    state_store: &hakus_state::StateStore,
+    session_id: &str,
+    requested: u64,
+    tail_limit: Option<usize>,
+) -> Result<(u64, Vec<hakus_state::LedgerEventRecord>)> {
+    let Some(limit) = tail_limit else {
+        let events = state_store
+            .list_ledger_events(session_id, requested, CANONICAL_REPLAY_LIMIT)
+            .context("reading the canonical replay window")?;
+        return Ok(canonical_replay_window(requested, events));
+    };
+    let verification = state_store
+        .verify_ledger(session_id)
+        .context("reading the canonical ledger tail position")?;
+    if verification.last_seq <= requested {
+        // Nothing after the cursor: the client is caught up and its own cursor
+        // remains the resume point.
+        return Ok((requested, Vec::new()));
+    }
+    if limit == 0 {
+        // "Cursor only": every event after the request is omitted, so the resume
+        // cursor is the newest event this session holds.
+        return Ok((verification.last_seq, Vec::new()));
+    }
+    let asked = u64::try_from(limit).unwrap_or(u64::MAX);
+    let first = verification
+        .last_seq
+        .saturating_sub(asked)
+        .saturating_add(1)
+        .max(requested.saturating_add(1));
+    let events = state_store
+        .list_ledger_events(session_id, first.saturating_sub(1), limit)
+        .context("reading the canonical tail replay window")?;
+    let floor = first.saturating_sub(1);
+    let base_seq = canonical_tail_floor(state_store, session_id, floor)?.unwrap_or(floor);
+    Ok((base_seq, events))
 }
 
 impl RuntimeThreadManager {
@@ -3129,6 +3314,9 @@ impl RuntimeThreadManager {
         plugin_registry: Option<Arc<crate::plugins::PluginRegistry>>,
     ) -> Result<Self> {
         let store = RuntimeThreadStore::open(manager_cfg.data_dir.clone())?;
+        let state_store = Arc::new(StateStore::open(Some(
+            manager_cfg.data_dir.join("state.db"),
+        ))?);
         let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let manager = Self {
             config: Arc::new(parking_lot::RwLock::new(config)),
@@ -3142,6 +3330,9 @@ impl RuntimeThreadManager {
             goal_continuations: Arc::new(Mutex::new(HashSet::new())),
             goal_clear_barriers: Arc::new(Mutex::new(HashMap::new())),
             event_tx,
+            state_store,
+            extension_children: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            extension_statuses: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             manager_cfg,
             cancel_token: CancellationToken::new(),
             task_manager: Arc::new(parking_lot::Mutex::new(None)),
@@ -3178,6 +3369,11 @@ impl RuntimeThreadManager {
         self.pending_approvals.lock().clear();
         self.pending_user_inputs.lock().clear();
         self.pending_dynamic_tools.lock().clear();
+        for managed in self.extension_children.lock().drain().map(|(_, child)| child) {
+            let mut child = managed.child;
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     #[allow(dead_code)] // Public API for external callers
@@ -3856,10 +4052,7 @@ impl RuntimeThreadManager {
     }
 
     /// Return the persistent goal for a thread, or `Ok(None)` if none exists.
-    pub async fn get_goal(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<hakus_protocol::ThreadGoal>> {
+    pub async fn get_goal(&self, thread_id: &str) -> Result<Option<hakus_protocol::ThreadGoal>> {
         let thread_id = thread_id.to_string();
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || store.load_goal(&thread_id))
@@ -3899,8 +4092,7 @@ impl RuntimeThreadManager {
         self.goal_clear_barriers.lock().await.remove(thread_id);
         let thread = self.get_thread(thread_id).await?;
         let engine = self.ensure_engine_loaded(&thread).await?;
-        let token_budget = token_budget
-            .and_then(|value| u32::try_from(value.max(0)).ok());
+        let token_budget = token_budget.and_then(|value| u32::try_from(value.max(0)).ok());
         engine
             .send(Op::SetGoalObjective {
                 objective,
@@ -4003,7 +4195,8 @@ impl RuntimeThreadManager {
             ..goal
         };
         self.save_goal(updated.clone()).await?;
-        self.emit_goal_updated_event(thread_id, updated.clone()).await?;
+        self.emit_goal_updated_event(thread_id, updated.clone())
+            .await?;
         let snapshot = crate::tools::goal::GoalSnapshot::from_thread_goal(&updated);
         let prompt = crate::tools::goal::render_continuation_prompt(&snapshot, next_count as u32);
         let request = StartTurnRequest {
@@ -4015,7 +4208,10 @@ impl RuntimeThreadManager {
             thread_id,
             request,
             RuntimeTurnInputSource::GoalContinuation {
-                persisted_summary: format!("长程任务继续第 {next_count} 回合：{}", updated.objective),
+                persisted_summary: format!(
+                    "长程任务继续第 {next_count} 回合：{}",
+                    updated.objective
+                ),
             },
         )
         .await?;
@@ -4456,6 +4652,40 @@ impl RuntimeThreadManager {
             .store
             .append_event(thread_id, turn_id, item_id, event, payload)
             .await?;
+        let ledger = Arc::clone(&self.state_store);
+        let ledger_record = record.clone();
+        let ledger_result = tokio::task::spawn_blocking(move || {
+            ledger.append_ledger_event(&LedgerEventAppend {
+                event_id: format!("evt_{}_{}", ledger_record.thread_id, ledger_record.seq),
+                session_id: ledger_record.thread_id.clone(),
+                event_type: ledger_record.event.clone(),
+                workspace_id: None,
+                turn_id: ledger_record.turn_id.clone(),
+                correlation_id: ledger_record.turn_id.clone(),
+                parent_event_id: None,
+                actor: json!({ "kind": "runtime", "id": "rust" }),
+                visibility: "model_and_ui".to_string(),
+                payload: ledger_record.payload.clone(),
+                timestamp: ledger_record.timestamp.to_rfc3339(),
+            })
+        })
+        .await;
+        let ledger_error = match ledger_result {
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(error) => Some(format!("runtime ledger shadow worker failed: {error}")),
+        };
+        if let Some(error) = ledger_error {
+            // The JSONL log remains the compatibility source until the Phase-1
+            // cutover. A shadow-store failure must be visible in diagnostics,
+            // but must not discard an already durable runtime event.
+            tracing::error!(
+                thread_id = %record.thread_id,
+                seq = record.seq,
+                error = %error,
+                "failed to mirror runtime event into SQLite ledger"
+            );
+        }
         if let Err(e) = self.event_tx.send(record.clone()) {
             tracing::debug!(
                 "Runtime event broadcast failed (no receivers or channel full): {}",
@@ -4888,6 +5118,27 @@ impl RuntimeThreadManager {
                 config
                     .resolve_provider_identity(selected)
                     .or_else(|reason| {
+                        // Fall back only when the configured name cannot be
+                        // resolved because the live config no longer declares
+                        // it at all: a named custom provider whose table is
+                        // still present but unusable (missing
+                        // `kind = "openai-compatible"`, no `base_url`,
+                        // malformed URL) is a configuration error about a
+                        // provider the user explicitly configured. Silently
+                        // dispatching those turns to the catalog default would
+                        // bill and route to a provider the user did not choose,
+                        // so surface it instead.
+                        let declares_selected = !selected.trim().is_empty()
+                            && config
+                                .providers
+                                .as_ref()
+                                .and_then(|providers| {
+                                    providers.custom_provider_config(selected.trim())
+                                })
+                                .is_some();
+                        if declares_selected {
+                            return Err(reason);
+                        }
                         // GUI new-chat parity: a stale live-config provider
                         // pointer (e.g. a deleted custom route left behind by
                         // an interrupted settings edit) must not hard-fail
@@ -4917,10 +5168,7 @@ impl RuntimeThreadManager {
             .filter(|m| !m.trim().is_empty())
             .unwrap_or(default_model);
         let requested_workspace = req.workspace.unwrap_or_else(|| self.workspace.clone());
-        let environments = normalize_thread_environments(
-            &requested_workspace,
-            req.environments,
-        )?;
+        let environments = normalize_thread_environments(&requested_workspace, req.environments)?;
         let selected_environment_id = req
             .environment_id
             .as_deref()
@@ -4936,7 +5184,11 @@ impl RuntimeThreadManager {
             });
         let workspace = selected_environment_id
             .as_deref()
-            .and_then(|id| environments.iter().find(|environment| environment.environment_id == id))
+            .and_then(|id| {
+                environments
+                    .iter()
+                    .find(|environment| environment.environment_id == id)
+            })
             .map(|environment| environment.cwd.clone())
             .unwrap_or(requested_workspace);
         let requested_mode = req
@@ -5000,7 +5252,8 @@ impl RuntimeThreadManager {
         thread_hint: &ThreadRecord,
         requested_id: &str,
     ) -> Result<ThreadRecord> {
-        let (environment_id, workspace) = thread_environment_workspace(thread_hint, Some(requested_id))?;
+        let (environment_id, workspace) =
+            thread_environment_workspace(thread_hint, Some(requested_id))?;
         if thread_hint.environment_id.as_deref() == Some(environment_id.as_str())
             && thread_hint.workspace == workspace
         {
@@ -5019,7 +5272,10 @@ impl RuntimeThreadManager {
             if let Some(active_thread) = active.engines.get(&thread.id)
                 && active_thread.active_turn.is_some()
             {
-                bail!("Thread {} has an active turn; interrupt it before switching environments", thread.id);
+                bail!(
+                    "Thread {} has an active turn; interrupt it before switching environments",
+                    thread.id
+                );
             }
             let changed = thread.environment_id.as_deref() != Some(environment_id.as_str())
                 || thread.workspace != workspace;
@@ -5159,6 +5415,364 @@ impl RuntimeThreadManager {
         })
     }
 
+    /// Return the last durable runtime event sequence for diagnostics and
+    /// phase-gate metrics. The sequence is allocated by the store, so this is
+    /// a cheap read of the ledger cursor rather than a client-side counter.
+    pub async fn current_event_seq(&self) -> Result<u64> {
+        self.store.current_seq().await
+    }
+
+    /// Record a feature-plane extension result through the same ordered event
+    /// path as core turns. Callers may provide only a redacted payload; the
+    /// host helper applies a second redaction pass before this event is
+    /// broadcast and mirrored into the canonical SQLite ledger.
+    pub async fn record_extension_event(
+        &self,
+        thread_id: &str,
+        event: crate::plugins::extension_host::ExtensionEventPayload,
+    ) -> Result<RuntimeEventRecord> {
+        let payload = serde_json::to_value(event)
+            .context("failed to serialize extension event payload")?;
+        self.emit_event(thread_id, None, None, "extension_event", payload)
+            .await
+    }
+
+    /// Start an extension child under Runtime ownership. Failures are returned
+    /// as a redacted status and, when a thread is supplied, recorded as an
+    /// `extension_event` without failing the core turn path.
+    pub async fn start_managed_extension(
+        &self,
+        extension_selector: &str,
+        thread_id: Option<&str>,
+        event_type: &str,
+        payload: Value,
+    ) -> Result<ExtensionRuntimeStatus> {
+        let registry = self
+            .plugin_registry
+            .as_ref()
+            .map(|registry| registry.rediscover_for_workspace(&self.workspace))
+            .unwrap_or_else(|| {
+                crate::plugins::PluginDiscoveryContext::capture_pre_dotenv()
+                    .registry_for_workspace(&self.workspace)
+            });
+        let result = crate::plugins::extension_host::spawn_extension_with_registry(
+            &self.workspace,
+            registry.as_ref(),
+            extension_selector,
+            event_type,
+            payload,
+        );
+        let child = match result {
+            Ok(child) => child,
+            Err(error) => {
+                if let Some(thread_id) = thread_id {
+                    let event = crate::plugins::extension_host::ExtensionEventPayload::from_error(
+                        extension_selector,
+                        event_type,
+                        &error,
+                    );
+                    if let Err(record_error) = self.record_extension_event(thread_id, event).await {
+                        tracing::warn!(%record_error, "failed to record extension launch failure");
+                    }
+                }
+                let status = ExtensionRuntimeStatus {
+                    extension_id: extension_selector.to_string(),
+                    state: error.state,
+                    running: false,
+                    pid: None,
+                    error: Some(error.message),
+                };
+                self.extension_statuses
+                    .lock()
+                    .insert(extension_selector.to_string(), status.clone());
+                return Ok(status);
+            }
+        };
+        let pid = child.id();
+        if let Some(previous) = self
+            .extension_children
+            .lock()
+            .insert(
+                extension_selector.to_string(),
+                ManagedExtensionChild {
+                    child,
+                    thread_id: thread_id.map(ToString::to_string),
+                },
+            )
+        {
+            let mut child = previous.child;
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(thread_id) = thread_id {
+            let event = crate::plugins::extension_host::ExtensionEventPayload::new(
+                extension_selector,
+                event_type,
+                crate::plugins::extension_host::ExtensionHostState::Started,
+                json!({"status": "started"}),
+            );
+            if let Err(error) = self.record_extension_event(thread_id, event).await {
+                tracing::warn!(%error, "failed to record extension start");
+            }
+        }
+        let status = ExtensionRuntimeStatus {
+            extension_id: extension_selector.to_string(),
+            state: crate::plugins::extension_host::ExtensionHostState::Started,
+            running: true,
+            pid: Some(pid),
+            error: None,
+        };
+        self.extension_statuses
+            .lock()
+            .insert(extension_selector.to_string(), status.clone());
+        Ok(status)
+    }
+
+    /// Poll a Runtime-owned extension. An exited child is removed and its
+    /// response or crash is recorded against the originating thread.
+    pub async fn managed_extension_status(
+        &self,
+        extension_selector: &str,
+    ) -> Result<ExtensionRuntimeStatus> {
+        let finished;
+        {
+            let mut children = self.extension_children.lock();
+            let Some(managed) = children.get_mut(extension_selector) else {
+                if let Some(status) = self.extension_statuses.lock().get(extension_selector).cloned() {
+                    return Ok(status);
+                }
+                return Ok(ExtensionRuntimeStatus {
+                    extension_id: extension_selector.to_string(),
+                    state: crate::plugins::extension_host::ExtensionHostState::Unavailable,
+                    running: false,
+                    pid: None,
+                    error: None,
+                });
+            };
+            let pid = managed.child.id();
+            if managed.child.try_wait()?.is_none() {
+                let status = ExtensionRuntimeStatus {
+                    extension_id: extension_selector.to_string(),
+                    state: crate::plugins::extension_host::ExtensionHostState::Started,
+                    running: true,
+                    pid: Some(pid),
+                    error: None,
+                };
+                self.extension_statuses
+                    .lock()
+                    .insert(extension_selector.to_string(), status.clone());
+                return Ok(status);
+            }
+            finished = children.remove(extension_selector);
+        }
+
+        let Some(mut managed) = finished else {
+            unreachable!("extension child disappeared after exit check")
+        };
+        let (status, event) = match managed.child.read_response() {
+            Ok(response) => {
+                let payload = crate::plugins::extension_host::ExtensionEventPayload::from_response(&response);
+                (
+                    ExtensionRuntimeStatus {
+                        extension_id: extension_selector.to_string(),
+                        state: payload.state.clone(),
+                        running: false,
+                        pid: None,
+                        error: (!response.ok).then(|| "Extension reported failure".to_string()),
+                    },
+                    payload,
+                )
+            }
+            Err(error) => {
+                let payload = crate::plugins::extension_host::ExtensionEventPayload::from_error(
+                    extension_selector,
+                    "extension.exit",
+                    &error,
+                );
+                (
+                    ExtensionRuntimeStatus {
+                        extension_id: extension_selector.to_string(),
+                        state: error.state.clone(),
+                        running: false,
+                        pid: None,
+                        error: Some(error.message),
+                    },
+                    payload,
+                )
+            }
+        };
+        if let Some(thread_id) = managed.thread_id.as_deref() {
+            if let Err(record_error) = self.record_extension_event(thread_id, event).await {
+                tracing::warn!(%record_error, "failed to record extension exit");
+            }
+        }
+        let _ = managed.child.wait();
+        self.extension_statuses
+            .lock()
+            .insert(extension_selector.to_string(), status.clone());
+        Ok(status)
+    }
+
+    /// Stop a Runtime-owned extension and return its final redacted status.
+    pub async fn stop_managed_extension(
+        &self,
+        extension_selector: &str,
+    ) -> Result<ExtensionRuntimeStatus> {
+        let managed = self.extension_children.lock().remove(extension_selector);
+        let Some(mut managed) = managed else {
+            let status = ExtensionRuntimeStatus {
+                extension_id: extension_selector.to_string(),
+                state: crate::plugins::extension_host::ExtensionHostState::Unavailable,
+                running: false,
+                pid: None,
+                error: None,
+            };
+            self.extension_statuses
+                .lock()
+                .insert(extension_selector.to_string(), status.clone());
+            return Ok(status);
+        };
+        let pid = managed.child.id();
+        managed.child.kill().context("failed to stop extension")?;
+        managed.child.wait().context("failed to reap extension")?;
+        if let Some(thread_id) = managed.thread_id.as_deref() {
+            let event = crate::plugins::extension_host::ExtensionEventPayload::new(
+                extension_selector,
+                "extension.stop",
+                crate::plugins::extension_host::ExtensionHostState::Unavailable,
+                json!({"status": "stopped"}),
+            );
+            if let Err(error) = self.record_extension_event(thread_id, event).await {
+                tracing::warn!(%error, "failed to record extension stop");
+            }
+        }
+        let status = ExtensionRuntimeStatus {
+            extension_id: extension_selector.to_string(),
+            state: crate::plugins::extension_host::ExtensionHostState::Unavailable,
+            running: false,
+            pid: Some(pid),
+            error: None,
+        };
+        self.extension_statuses
+            .lock()
+            .insert(extension_selector.to_string(), status.clone());
+        Ok(status)
+    }
+
+    /// Read the SQLite canonical ledger for one session. Runtime event JSONL
+    /// remains available for compatibility, but new clients can use this API
+    /// to replay the durable state boundary directly.
+    pub async fn canonical_ledger_events(
+        &self,
+        session_id: &str,
+        after_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<LedgerEventRecord>> {
+        let state_store = Arc::clone(&self.state_store);
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            state_store.list_ledger_events(&session_id, after_seq, limit.clamp(1, 5000))
+        })
+        .await
+        .context("canonical ledger read worker failed")?
+    }
+
+    /// Verify a session's canonical event sequence and JSON integrity.
+    pub async fn verify_canonical_ledger(&self, session_id: &str) -> Result<LedgerVerification> {
+        let state_store = Arc::clone(&self.state_store);
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || state_store.verify_ledger(&session_id))
+            .await
+            .context("canonical ledger verify worker failed")?
+    }
+
+    /// Import a legacy Python JSONL event log without mutating the source.
+    /// The state layer binds imported IDs to the source checksum and makes
+    /// retries idempotent.
+    pub async fn import_legacy_ledger(
+        &self,
+        session_id: &str,
+        source_path: PathBuf,
+    ) -> Result<LedgerImportSummary> {
+        let state_store = Arc::clone(&self.state_store);
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            state_store.import_legacy_jsonl(&session_id, &source_path)
+        })
+        .await
+        .context("legacy ledger import worker failed")?
+    }
+
+    /// Import the Python session projection and optional checkpoint bundle
+    /// through the same blocking state boundary used by ledger migration.
+    pub async fn import_legacy_session_db(
+        &self,
+        target_session_id: &str,
+        source_path: PathBuf,
+        source_session_id: &str,
+        checkpoint_path: Option<PathBuf>,
+    ) -> Result<LegacySessionImportSummary> {
+        let state_store = Arc::clone(&self.state_store);
+        let target_session_id = target_session_id.to_string();
+        let source_session_id = source_session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            state_store.import_legacy_session_db(
+                &target_session_id,
+                &source_path,
+                &source_session_id,
+                checkpoint_path.as_deref(),
+            )
+        })
+        .await
+        .context("legacy session import worker failed")?
+    }
+
+    /// Return aggregate canonical-ledger counters for diagnostics.
+    pub async fn canonical_ledger_stats(&self) -> Result<LedgerStats> {
+        let state_store = Arc::clone(&self.state_store);
+        tokio::task::spawn_blocking(move || state_store.ledger_stats())
+            .await
+            .context("canonical ledger stats worker failed")?
+    }
+
+    /// Persisted count of canonical events imported from Python compat
+    /// sources (Phase 0 migration metric). Reads through the state store so
+    /// the number survives restarts.
+    pub async fn compat_imported_event_count(&self) -> Result<u64> {
+        let state_store = Arc::clone(&self.state_store);
+        tokio::task::spawn_blocking(move || state_store.compat_imported_event_count())
+            .await
+            .context("compat imported event count worker failed")?
+    }
+
+    /// Verify every canonical ledger session and summarize the result.
+    ///
+    /// Diagnostics read this to answer "is the canonical log trustworthy right
+    /// now" without pulling the log back over the wire.
+    pub async fn verify_all_ledgers(&self) -> Result<hakus_state::LedgerIntegrityReport> {
+        let state_store = Arc::clone(&self.state_store);
+        tokio::task::spawn_blocking(move || state_store.verify_all_ledgers())
+            .await
+            .context("canonical ledger integrity worker failed")?
+    }
+
+    /// Scan for legacy Python session stores a migration could import.
+    ///
+    /// Read-only: nothing is imported and no source is touched, so a caller can
+    /// present this summary and let a person choose. The search roots are the
+    /// caller's, because only the caller knows where a previous install kept its
+    /// data; the runtime contributes its own home so the common case needs no
+    /// configuration.
+    pub async fn discover_legacy_session_stores(
+        &self,
+        roots: Vec<PathBuf>,
+    ) -> Result<hakus_state::LegacyDiscovery> {
+        let state_store = Arc::clone(&self.state_store);
+        tokio::task::spawn_blocking(move || state_store.discover_legacy_session_stores(&roots))
+            .await
+            .context("legacy session discovery worker failed")
+    }
+
     pub async fn get_thread(&self, id: &str) -> Result<ThreadRecord> {
         self.flush_recovery_receipts_for_thread(id).await?;
         self.store
@@ -5241,7 +5855,14 @@ impl RuntimeThreadManager {
         thread.updated_at = Utc::now();
         self.store.save_thread(&thread)?;
         drop(_thread_mutation);
-        self.emit_event(id, None, None, "thread.history_cleared", json!({ "deleted_items": deleted })).await?;
+        self.emit_event(
+            id,
+            None,
+            None,
+            "thread.history_cleared",
+            json!({ "deleted_items": deleted }),
+        )
+        .await?;
         Ok(deleted)
     }
 
@@ -5298,7 +5919,14 @@ impl RuntimeThreadManager {
         thread.updated_at = Utc::now();
         self.store.save_thread(&thread)?;
         drop(_thread_mutation);
-        self.emit_event(thread_id, None, None, "thread.item_deleted", json!({ "item_id": item_id })).await?;
+        self.emit_event(
+            thread_id,
+            None,
+            None,
+            "thread.item_deleted",
+            json!({ "item_id": item_id }),
+        )
+        .await?;
         Ok(true)
     }
 
@@ -5328,7 +5956,11 @@ impl RuntimeThreadManager {
         };
         let mut deleted = 0usize;
         for (turn_index, turn) in turns.iter().enumerate().skip(target_turn) {
-            let start = if turn_index == target_turn { target_item } else { 0 };
+            let start = if turn_index == target_turn {
+                target_item
+            } else {
+                0
+            };
             for item in turn_items[turn_index].iter().skip(start) {
                 self.store.remove_item(&item.id)?;
                 deleted = deleted.saturating_add(1);
@@ -5350,7 +5982,14 @@ impl RuntimeThreadManager {
         thread.updated_at = Utc::now();
         self.store.save_thread(&thread)?;
         drop(_thread_mutation);
-        self.emit_event(thread_id, None, None, "thread.rewound", json!({ "item_id": item_id, "deleted_items": deleted })).await?;
+        self.emit_event(
+            thread_id,
+            None,
+            None,
+            "thread.rewound",
+            json!({ "item_id": item_id, "deleted_items": deleted }),
+        )
+        .await?;
         Ok(deleted)
     }
 
@@ -7491,6 +8130,94 @@ impl RuntimeThreadManager {
         Ok(RuntimeEventReplay { base_seq, batches })
     }
 
+    /// Replay the SQLite ledger as Runtime event records for new clients.
+    /// JSONL remains available through `replay_events` for old clients, while
+    /// this path makes the canonical state store the read authority during a
+    /// live SSE handoff as well as during desktop hydration.
+    ///
+    /// `tail_limit` mirrors `replay_events`' tail semantics: keep only the
+    /// newest `limit` events after the cursor and advance `base_seq` past the
+    /// newest omitted one, so the window is never presented as complete when it
+    /// is not. Without a limit the window is the oldest
+    /// [`CANONICAL_REPLAY_LIMIT`] events after the cursor, and `base_seq`
+    /// advances past any omitted older history, matching
+    /// `publish_tail_event_replay`.
+    pub(crate) async fn replay_canonical_events(
+        &self,
+        thread_id: &str,
+        since_seq: Option<u64>,
+        tail_limit: Option<usize>,
+    ) -> Result<RuntimeEventReplay> {
+        let (base_tx, base_rx) = oneshot::channel();
+        let (batch_tx, batches) = mpsc::channel(2);
+        let state_store = Arc::clone(&self.state_store);
+        let thread_id = thread_id.to_string();
+        let requested = since_seq.unwrap_or(0);
+        tokio::task::spawn_blocking(move || {
+            let result = canonical_replay_read(
+                &state_store,
+                &thread_id,
+                requested,
+                tail_limit,
+            );
+            match result {
+                Ok((base_seq, events)) => {
+                    let _ = base_tx.send(Ok(base_seq));
+                    if !events.is_empty() {
+                        let mapped = events
+                            .into_iter()
+                            .map(|event| {
+                                let timestamp = DateTime::parse_from_rfc3339(&event.timestamp)
+                                    .map(|value| value.with_timezone(&Utc))
+                                    .unwrap_or_else(|_| Utc::now());
+                                let item_id = event
+                                    .payload
+                                    .get("item")
+                                    .and_then(|item| item.get("id"))
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                                    .or_else(|| {
+                                        event
+                                            .payload
+                                            .get("item_id")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_string)
+                                    });
+                                RuntimeEventRecord {
+                                    // Canonical replay must report the same
+                                    // envelope version as every other runtime
+                                    // path. A client doing feature detection on
+                                    // `schema_version` would otherwise see a
+                                    // downgrade on the new read route and take a
+                                    // compatibility branch.
+                                    schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                                    seq: event.seq,
+                                    timestamp,
+                                    thread_id: event.session_id,
+                                    turn_id: event.turn_id,
+                                    item_id,
+                                    event: event.event_type,
+                                    payload: event.payload,
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let _ = batch_tx.blocking_send(Ok(mapped));
+                    }
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    let _ = base_tx.send(Err(message.clone()));
+                    let _ = batch_tx.blocking_send(Err(message));
+                }
+            }
+        });
+        let base_seq = base_rx
+            .await
+            .context("canonical Runtime replay worker ended before initialization")?
+            .map_err(anyhow::Error::msg)?;
+        Ok(RuntimeEventReplay { base_seq, batches })
+    }
+
     async fn ensure_engine_loaded(&self, thread_hint: &ThreadRecord) -> Result<EngineHandle> {
         {
             let mut active = self.active.lock().await;
@@ -7807,6 +8534,12 @@ impl RuntimeThreadManager {
         self.ensure_engine_loaded(&thread).await
     }
 
+    /// Rebuild the provider conversation from durable turn records.
+    ///
+    /// User items replay the exact blocks the engine composed and recorded
+    /// ([`USER_ITEM_PROVIDER_BLOCKS_KEY`]); items written before that receipt
+    /// existed fall back to their text. Assistant, reasoning, and tool content
+    /// is rebuilt from the item store.
     fn reconstruct_messages_from_turns(&self, turns: &[TurnRecord]) -> Result<Vec<Message>> {
         let mut messages = Vec::new();
         for turn in turns {
@@ -7855,6 +8588,21 @@ impl RuntimeThreadManager {
                 match item.kind {
                     TurnItemKind::UserMessage => {
                         flush_assistant(&mut assistant_blocks, &mut messages);
+                        // The model's input for this item is the exact block
+                        // list the engine composed, carried on the item because
+                        // `<turn_meta>` is not reproducible: it embeds the local
+                        // date, the workspace, the observed working set, and a
+                        // git snapshot the engine emits only when it changes.
+                        // Replaying the recorded bytes is the only way a
+                        // reloaded thread can rebuild the same prefix the
+                        // provider saw. Items recorded before this receipt
+                        // existed fall back to their text alone.
+                        if let Some(blocks) = recorded_provider_blocks(item.metadata.as_ref()) {
+                            if !blocks.is_empty() {
+                                user_blocks.extend(blocks);
+                            }
+                            continue;
+                        }
                         let text = item.detail.unwrap_or(item.summary);
                         if !text.trim().is_empty() {
                             user_blocks.push(ContentBlock::Text {
@@ -7997,7 +8745,12 @@ impl RuntimeThreadManager {
                 return Ok(());
             }
         }
-        let Some(objective) = snapshot.objective.as_deref().map(str::trim).filter(|value| !value.is_empty()) else {
+        let Some(objective) = snapshot
+            .objective
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
             if self.remove_goal(thread_id).await? {
                 self.emit_goal_cleared_event(thread_id).await?;
             }
@@ -8057,6 +8810,13 @@ impl RuntimeThreadManager {
         let mut engine_turn_id: Option<String> = None;
         let mut pending_event: Option<EngineEvent> = None;
         let mut event_channel_closed = false;
+        // User turn items of this turn in composition order, and how many of
+        // them the engine has already reported composed blocks for. A durable
+        // thread must not reload a user turn the model never saw rebuilt from
+        // text alone, so the receipt is attached to the exact item the engine
+        // composed.
+        let mut composed_user_item_ids = self.ordered_user_item_ids(&turn_id).unwrap_or_default();
+        let mut composed_user_items_seen = 0usize;
 
         loop {
             let event = if let Some(event) = pending_event.take() {
@@ -8178,7 +8938,8 @@ impl RuntimeThreadManager {
                     }
                 }
                 EngineEvent::GoalUpdated { snapshot } => {
-                    self.persist_engine_goal_snapshot(&thread_id, &snapshot).await?;
+                    self.persist_engine_goal_snapshot(&thread_id, &snapshot)
+                        .await?;
                 }
                 EngineEvent::MessageStarted { .. } => {
                     let item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
@@ -8992,6 +9753,69 @@ impl RuntimeThreadManager {
                     }
                     drop(projection);
                 }
+                EngineEvent::UserMessageComposed { blocks, .. } => {
+                    let ordinal = composed_user_items_seen;
+                    composed_user_items_seen = composed_user_items_seen.saturating_add(1);
+                    // A steer accepted while this turn was running attached
+                    // its item after the list was captured, so re-read before
+                    // treating a receipt as unattachable.
+                    let item_id = match composed_user_item_ids.get(ordinal).cloned() {
+                        Some(item_id) => Some(item_id),
+                        None => match self.ordered_user_item_ids(&turn_id) {
+                            Ok(ids) => {
+                                composed_user_item_ids = ids;
+                                composed_user_item_ids.get(ordinal).cloned()
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    thread_id = %thread_id,
+                                    turn_id = %turn_id,
+                                    error = %err,
+                                    "failed to list user turn items for a composition receipt"
+                                );
+                                None
+                            }
+                        },
+                    };
+                    let Some(item_id) = item_id else {
+                        tracing::warn!(
+                            thread_id = %thread_id,
+                            turn_id = %turn_id,
+                            "engine composed user blocks with no durable user item to attach them to"
+                        );
+                        continue;
+                    };
+                    match self.record_composed_user_blocks(&turn_id, &item_id, blocks) {
+                        Ok(item) => {
+                            if let Err(err) = self
+                                .emit_event(
+                                    &thread_id,
+                                    Some(&turn_id),
+                                    Some(&item.id),
+                                    "item.completed",
+                                    json!({ "item": item }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to persist composed user item receipt: {err}"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            // The turn still runs; it just cannot be replayed
+                            // byte-exactly from durable state. Keep the
+                            // divergence visible instead of failing the turn.
+                            tracing::error!(
+                                thread_id = %thread_id,
+                                turn_id = %turn_id,
+                                item_id = %item_id,
+                                error = %err,
+                                "failed to record composed user turn blocks"
+                            );
+                        }
+                    }
+                }
                 EngineEvent::Status { message } => {
                     let item = TurnItemRecord {
                         schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
@@ -9259,6 +10083,72 @@ impl RuntimeThreadManager {
             self.store.save_turn(&turn)?;
         }
         Ok(())
+    }
+
+    /// The user turn items of a turn, in the order the turn attached them.
+    ///
+    /// This is the order the model sees them in: `enqueue_turn` attaches the
+    /// submitted prompt, and every accepted steer appends after it. The engine
+    /// emits [`EngineEvent::UserMessageComposed`] in that same order, so the
+    /// nth receipt belongs to the nth id here.
+    fn ordered_user_item_ids(&self, turn_id: &str) -> Result<Vec<String>> {
+        let _turn_mutation = self.store.turn_mutation.lock();
+        let turn = self.store.load_turn(turn_id)?;
+        let stored = self.store.list_items_for_turn(turn_id)?;
+        let mut user_items: Vec<(String, Option<DateTime<Utc>>)> = stored
+            .into_iter()
+            .filter(|item| item.kind == TurnItemKind::UserMessage)
+            .map(|item| (item.id, item.started_at))
+            .collect();
+        // Items written by older runtimes predate `turn.item_ids`, so keep a
+        // stable chronological fallback: without it a receipt could be
+        // attached to the wrong item instead of being recorded at all.
+        user_items.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+        let mut ordered: Vec<String> = turn
+            .item_ids
+            .iter()
+            .filter(|id| user_items.iter().any(|(candidate, _)| candidate == *id))
+            .cloned()
+            .collect();
+        for (id, _) in user_items {
+            if !ordered.iter().any(|candidate| candidate == &id) {
+                ordered.push(id);
+            }
+        }
+        Ok(ordered)
+    }
+
+    /// Record the exact provider bytes the engine composed for one user turn
+    /// item.
+    ///
+    /// The engine owns prompt composition — `<turn_meta>` embeds the local
+    /// date, the workspace, the observed working set, and a git snapshot
+    /// emitted only when it changes — so the durable record cannot reproduce
+    /// those bytes by rebuilding them. Recording the receipt is what lets a
+    /// reloaded thread reconstruct the model input the provider received.
+    fn record_composed_user_blocks(
+        &self,
+        turn_id: &str,
+        item_id: &str,
+        blocks: Vec<ContentBlock>,
+    ) -> Result<TurnItemRecord> {
+        let item = {
+            let _turn_mutation = self.store.turn_mutation.lock();
+            let mut item = self.store.load_item(item_id)?;
+            let mut metadata = match item.metadata.take() {
+                Some(Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+            metadata.insert(
+                USER_ITEM_PROVIDER_BLOCKS_KEY.to_string(),
+                serde_json::to_value(&blocks).context("serializing user item provider blocks")?,
+            );
+            item.metadata = Some(Value::Object(metadata));
+            self.store.save_item(&item)?;
+            item
+        };
+        self.attach_item_to_turn(turn_id, item_id)?;
+        Ok(item)
     }
 
     async fn is_interrupt_requested(&self, thread_id: &str, turn_id: &str) -> Result<bool> {

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use hakus_config::{
-    HAKUS_APP_DIR, CONFIG_FILE_NAME, LEGACY_APP_DIR, hakus_home, default_config_path,
+    CONFIG_FILE_NAME, HAKUS_APP_DIR, LEGACY_APP_DIR, default_config_path, hakus_home,
 };
 use hakus_secrets::FileKeyringStore;
 use hakus_state::StateStore;
@@ -76,10 +76,7 @@ fn whitespace_override_uses_home_before_userprofile_and_allows_legacy_fallback()
 
     let _env = ProcessEnv::install(tmp.path(), &home, &userprofile, &OsString::from(" \t "));
 
-    assert_eq!(
-        hakus_home().expect("config home"),
-        home.join(HAKUS_APP_DIR)
-    );
+    assert_eq!(hakus_home().expect("config home"), home.join(HAKUS_APP_DIR));
     assert_eq!(
         default_config_path().expect("config path"),
         legacy.join(CONFIG_FILE_NAME)

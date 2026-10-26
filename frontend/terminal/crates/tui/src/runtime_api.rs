@@ -1,4 +1,4 @@
-//! Runtime HTTP/SSE API for local Hakus automation.
+﻿//! Runtime HTTP/SSE API for local Hakus automation.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::Infallible;
@@ -6,7 +6,7 @@ use std::fs;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::stream;
@@ -27,7 +27,8 @@ use hakus_protocol::agent_mail::{
 };
 use hakus_protocol::runtime::{
     DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
+    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExecutionPlane,
+    RuntimeExperimentalCapabilities, RuntimeFeatureGates,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -53,6 +54,7 @@ use crate::fleet::manager::{
     FleetManager, FleetStatusSnapshot, FleetWorkerInspection, FleetWorkerRuntimeProjection,
     ManagedFleetRunDescriptor,
 };
+use crate::fleet::ssh_secret::SshPasswordVault;
 use crate::fleet::profile::canonical_public_role_name;
 use crate::fleet::task_spec::FleetTaskSpecDocument;
 use crate::fleet::worker_runtime::fleet_write_roots;
@@ -100,6 +102,11 @@ use self::sessions::{
 };
 #[cfg(test)]
 use self::sessions::{messages_from_thread_detail, session_to_detail};
+/// Re-exported for the durable transcript rebuild's cross-check: export and
+/// save-as-session persist whatever this projection returns, so the projection
+/// and the per-turn rebuild must agree about the engine-composed user blocks.
+#[cfg(test)]
+pub(crate) use self::sessions::messages_from_thread_detail as thread_detail_messages;
 #[cfg(test)]
 use self::workspace::collect_workspace_status;
 use self::workspace::{collect_workspace_git_metadata, workspace_status};
@@ -172,6 +179,9 @@ pub struct RuntimeApiState {
     /// Executable used by Runtime API-owned Fleet manager loops. Stored on
     /// state so tests and embedded callers can provide a hermetic worker.
     fleet_hakus_binary: String,
+    /// Runtime-lifetime, memory-only SSH password handoff. The vault never
+    /// writes credentials to the Fleet ledger or any diagnostic surface.
+    ssh_password_vault: Arc<SshPasswordVault>,
     /// Shared McpPool reused for explicit live MCP discovery. Passive API
     /// calls do not initialize this pool so dashboards cannot accidentally
     /// become a second stdio-process owner. The outer mutex guards only the
@@ -181,6 +191,9 @@ pub struct RuntimeApiState {
     mcp_global_config: Arc<Mutex<McpGlobalConfig>>,
     wechat: Arc<Mutex<WechatRuntimeState>>,
     started_at: Instant,
+    started_at_unix_ms: u64,
+    execution_plane: RuntimeExecutionPlane,
+    feature_gates: RuntimeFeatureGates,
     #[cfg(test)]
     compat_stream_test_hook: Option<tokio::sync::mpsc::UnboundedSender<CompatStreamTestPoint>>,
 }
@@ -342,6 +355,9 @@ struct HealthResponse {
     status: &'static str,
     service: &'static str,
     mode: &'static str,
+    execution_plane: RuntimeExecutionPlane,
+    feature_gates: RuntimeFeatureGates,
+    uptime_seconds: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -426,6 +442,119 @@ struct SkillsResponse {
     directories: Vec<PathBuf>,
     warnings: Vec<String>,
     skills: Vec<SkillEntry>,
+}
+
+/// Declared capability inventory of a plugin manifest. These are the
+/// permission-relevant requests the manifest makes; the policy boundary still
+/// gates every actual side effect.
+#[derive(Debug, Serialize)]
+struct PluginCapabilityInventory {
+    filesystem_roots: Vec<String>,
+    network_hosts: Vec<String>,
+    lifecycle_mutation: bool,
+}
+
+/// Protocol-bound feature descriptor returned without install paths or
+/// executable resolution details. The manifest validator guarantees the
+/// checksum shape and supported platform values before this is serialized.
+#[derive(Debug, Serialize)]
+struct PluginExtensionDescriptor {
+    id: String,
+    version: String,
+    protocol: String,
+    entrypoint: String,
+    capabilities: Vec<String>,
+    permissions: Vec<String>,
+    supported_platforms: Vec<String>,
+    checksum: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginDiagnosticEntry {
+    level: &'static str,
+    code: String,
+    message: String,
+}
+
+/// One installed extension in the desktop permission surface. Redacted by
+/// construction: identity, trust state, capability requests, and hashes only —
+/// install locations and file paths are deliberately omitted.
+#[derive(Debug, Serialize)]
+struct PluginEntry {
+    id: String,
+    name: String,
+    version: String,
+    scope: &'static str,
+    origin: &'static str,
+    enabled: bool,
+    /// "trusted" | "not-reviewed" | "content-changed" | "capabilities-changed"
+    trust_status: &'static str,
+    applicable: bool,
+    /// Whether the content-addressed staged copy exists; an unstaged plugin
+    /// can never become active regardless of the enablement bit.
+    staged: bool,
+    capabilities: PluginCapabilityInventory,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extension: Option<PluginExtensionDescriptor>,
+    content_hash: String,
+    capability_hash: String,
+    state_generation: u64,
+    skill_count: usize,
+    diagnostics: Vec<PluginDiagnosticEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginsResponse {
+    plugins: Vec<PluginEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetPluginEnabledRequest {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartExtensionRequest {
+    #[serde(default)]
+    thread_id: Option<String>,
+    event_type: String,
+    #[serde(default)]
+    payload: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginMutationResponse {
+    id: String,
+    name: String,
+    enabled: bool,
+    trust_status: &'static str,
+    state_generation: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallPluginRequest {
+    /// Local bundle path, `path:<dir>`, `github:owner/repo`, or an archive URL.
+    source: String,
+    /// Optional content hash observed during review. When present, the
+    /// installer refuses to publish if the copied bundle differs.
+    #[serde(default)]
+    expected_content_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct UpdatePluginRequest {}
+
+#[derive(Debug, Serialize)]
+struct PluginMutationReceiptResponse {
+    name: String,
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installed_content_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -588,8 +717,137 @@ struct RuntimeInfoResponse {
     transports: Vec<&'static str>,
     capabilities: RuntimeCapabilities,
     experimental: RuntimeExperimentalCapabilities,
+    execution_plane: RuntimeExecutionPlane,
+    feature_gates: RuntimeFeatureGates,
+    process_started_at_unix_ms: u64,
     // Backward-compatible alias kept for existing clients.
     version: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeCapabilitiesResponse {
+    runtime_api_version: &'static str,
+    event_schema_version: u32,
+    capabilities: RuntimeCapabilities,
+    execution_plane: RuntimeExecutionPlane,
+    feature_gates: RuntimeFeatureGates,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeDiagnosticsResponse {
+    service: &'static str,
+    runtime_api_version: &'static str,
+    execution_plane: RuntimeExecutionPlane,
+    feature_gates: RuntimeFeatureGates,
+    process_started_at_unix_ms: u64,
+    uptime_seconds: u64,
+    event_count: u64,
+    canonical_ledger_event_count: u64,
+    canonical_ledger_session_count: u64,
+    /// Whether every canonical ledger session verified as contiguous, with the
+    /// failing sessions named when it did not.
+    canonical_ledger_integrity: hakus_state::LedgerIntegrityReport,
+    provider_activity: Vec<String>,
+}
+
+/// Process memory sample in MiB. Both fields are null on platforms without
+/// a sampler; on Windows they come from GetProcessMemoryInfo.
+#[derive(Debug, Serialize)]
+struct MemorySample {
+    working_set_mb: Option<f64>,
+    peak_working_set_mb: Option<f64>,
+}
+
+/// Gap between the legacy JSONL event cursor and the canonical SQLite ledger.
+/// A nonzero `shadow_write_lag` is the exact divergence the canonical-ledger
+/// refactor exists to prevent, so the bundle surfaces it as a number.
+#[derive(Debug, Serialize)]
+struct ProjectionLag {
+    jsonl_event_seq: u64,
+    canonical_event_count: u64,
+    shadow_write_lag: u64,
+}
+
+/// Release migration diagnostics (Phase 8): the quotable evidence that the
+/// default coding path has no Python compat turn and that imported legacy
+/// data landed in a healthy canonical ledger. Every field is read from live
+/// runtime state — none is asserted unconditionally — so a release that
+/// flips `HAKUS_PYTHON_COMPAT_PATH` or drifts from the ledger cannot report
+/// a clean migration.
+#[derive(Debug, Serialize)]
+struct MigrationDiagnostics {
+    /// Whether the Python compat turn path was enabled at startup. The
+    /// migration gate requires `false`.
+    python_compat_flag: bool,
+    /// Legacy events imported into the canonical ledger so far.
+    compat_imported_event_count: u64,
+    /// Legacy JSONL cursor minus canonical events; nonzero means a shadow
+    /// write diverged from the ledger.
+    shadow_write_lag: u64,
+    /// Every verified ledger session was contiguous.
+    canonical_ledger_healthy: bool,
+    canonical_ledger_sessions_verified: u64,
+    canonical_ledger_events_verified: u64,
+}
+
+/// Everything a migration or support report needs, in one redacted payload:
+/// diagnostics, the metrics counters, a process memory sample, and the
+/// JSONL→ledger projection lag. No credential, prompt, or message content is
+/// included by construction — every field is a counter, a version, a flag,
+/// or a path-free identifier.
+#[derive(Debug, Serialize)]
+struct RuntimeDiagnosticsBundleResponse {
+    generated_at_unix_ms: u64,
+    service: &'static str,
+    runtime_api_version: &'static str,
+    execution_plane: RuntimeExecutionPlane,
+    feature_gates: RuntimeFeatureGates,
+    process_started_at_unix_ms: u64,
+    uptime_seconds: u64,
+    event_count: u64,
+    canonical_ledger_event_count: u64,
+    canonical_ledger_session_count: u64,
+    canonical_ledger_integrity: hakus_state::LedgerIntegrityReport,
+    provider_activity: Vec<String>,
+    compat_imported_event_count: u64,
+    memory: MemorySample,
+    projection: ProjectionLag,
+    migration: MigrationDiagnostics,
+}
+
+/// Current and peak process working set in MiB (Windows).
+#[cfg(windows)]
+fn process_memory_sample() -> MemorySample {
+    use windows::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        // GetCurrentProcess returns a pseudo-handle: it must not be closed.
+        let mut pmc = PROCESS_MEMORY_COUNTERS::default();
+        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let ok = GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb);
+        if ok.is_ok() {
+            MemorySample {
+                working_set_mb: Some(pmc.WorkingSetSize as f64 / 1_048_576.0),
+                peak_working_set_mb: Some(pmc.PeakWorkingSetSize as f64 / 1_048_576.0),
+            }
+        } else {
+            MemorySample {
+                working_set_mb: None,
+                peak_working_set_mb: None,
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn process_memory_sample() -> MemorySample {
+    MemorySample {
+        working_set_mb: None,
+        peak_working_set_mb: None,
+    }
 }
 
 fn default_runtime_capabilities() -> RuntimeCapabilities {
@@ -613,6 +871,32 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         skill_lifecycle: true,
         agent_mail: true,
     }
+}
+
+fn env_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
+
+fn runtime_feature_gates() -> RuntimeFeatureGates {
+    RuntimeFeatureGates {
+        rust_default_path: env_flag("HAKUS_RUST_DEFAULT_PATH", true),
+        python_compat_path: env_flag("HAKUS_PYTHON_COMPAT_PATH", false),
+        legacy_agentcore: env_flag("HAKUS_LEGACY_AGENTCORE", false),
+    }
+}
+
+fn process_started_at_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 fn runtime_api_sub_agent_manager(workspace: &FsPath, workers: usize) -> SharedSubAgentManager {
@@ -832,9 +1116,65 @@ struct ThreadEventLogStats {
     current_turn: u64,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct CanonicalLedgerQuery {
+    #[serde(default)]
+    since_seq: Option<u64>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct CanonicalLedgerResponse {
+    session_id: String,
+    after_seq: u64,
+    events: Vec<hakus_state::LedgerEventRecord>,
+    verification: hakus_state::LedgerVerification,
+    /// Number of canonical events in the session beyond the returned window.
+    ///
+    /// The store read is bounded, and it returns the *oldest* events after the
+    /// cursor, so a caller that ignores this can mistake a prefix for the whole
+    /// transcript. `verification.last_seq` still reports the true tail.
+    omitted_events: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyLedgerImportRequest {
+    source_path: PathBuf,
+}
+
+/// Where to look for a previous install's Python session store.
+///
+/// Omitted means "the places a Python sidecar actually used": the runtime's own
+/// home, the Python sidecar's default home, and the current directory. A caller
+/// that knows better — a portable install, a backup drive — passes explicit
+/// roots and gets exactly those.
+#[derive(Debug, Default, Deserialize)]
+struct LegacyDiscoveryRequest {
+    #[serde(default)]
+    roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacySessionImportRequest {
+    source_path: PathBuf,
+    source_session_id: String,
+    checkpoint_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Serialize)]
 struct RuntimeMetricsResponse {
     uptime_seconds: u64,
+    process_started_at_unix_ms: u64,
+    event_count: u64,
+    canonical_ledger_event_count: u64,
+    canonical_ledger_session_count: u64,
+    /// Canonical events imported from Python compat sources, persisted in
+    /// the state database (Phase 0 migration metric). Zero until an import
+    /// has happened.
+    compat_imported_event_count: u64,
+    execution_plane: RuntimeExecutionPlane,
+    feature_gates: RuntimeFeatureGates,
     total_turns: u32,
     total_errors: u32,
     active_websockets: u32,
@@ -1003,6 +1343,12 @@ struct AutomationRunsQuery {
 struct ThreadEventsQuery {
     since_seq: Option<u64>,
     replay_limit: Option<usize>,
+    /// Which durable log to replay. Omitted means the canonical SQLite ledger,
+    /// which is the read authority; `jsonl` selects the legacy per-thread event
+    /// file, which the runtime keeps mirroring so an older client can still
+    /// replay. Passing `canonical` explicitly is still accepted.
+    #[serde(default)]
+    source: Option<String>,
 }
 
 const DEFAULT_FLEET_EVENT_REPLAY_LIMIT: usize = 250;
@@ -1047,6 +1393,14 @@ struct ManagedFleetWorkflowRequest {
 struct FleetEventsQuery {
     after: Option<String>,
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionSshPasswordRequest {
+    /// This field is accepted only at the authenticated secure-input
+    /// boundary and is never serialized, logged, or persisted.
+    password: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1184,6 +1538,7 @@ pub async fn run_http_server(
         mobile_enabled: options.mobile,
         web,
         fleet_hakus_binary: configured_hakus_binary(),
+        ssh_password_vault: Arc::new(SshPasswordVault::new()),
         mcp_pool: Arc::new(Mutex::new(None)),
         mcp_global_config: Arc::new(Mutex::new(mcp_global_config)),
         wechat: Arc::new(Mutex::new(WechatRuntimeState {
@@ -1195,6 +1550,9 @@ pub async fn run_http_server(
             users: wechat_settings.users,
         })),
         started_at: Instant::now(),
+        started_at_unix_ms: process_started_at_unix_ms(),
+        execution_plane: RuntimeExecutionPlane::Rust,
+        feature_gates: runtime_feature_gates(),
         #[cfg(test)]
         compat_stream_test_hook: None,
     };
@@ -1397,6 +1755,8 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/workspace/diff", get(workspace::workspace_diff))
         .route("/v1/workspace/stage", post(workspace::stage_path))
         .route("/v1/workspace/discard", post(workspace::discard_path))
+        .route("/v1/workspace/apply-hunk", post(workspace::apply_hunk))
+        .route("/v1/workspace/worktree", post(workspace::add_worktree))
         .route(
             "/v1/projects",
             get(projects::list_projects).post(projects::create_project),
@@ -1417,6 +1777,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(list_fleet_run_workers),
         )
         .route("/v1/fleet/runs/{run_id}/start", post(start_fleet_run))
+        .route(
+            "/v1/fleet/runs/{run_id}/workers/{worker_id}/ssh-password",
+            post(provision_fleet_ssh_password),
+        )
         .route("/v1/fleet/runs/{run_id}/events", get(stream_fleet_events))
         .route(
             "/v1/fleet/runs/{run_id}/events/replay",
@@ -1458,6 +1822,26 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/event-log",
             get(get_thread_event_log).delete(clear_thread_event_log),
+        )
+        .route(
+            "/v1/threads/{id}/ledger",
+            get(get_canonical_ledger),
+        )
+        .route(
+            "/v1/threads/{id}/ledger/verify",
+            get(verify_canonical_ledger),
+        )
+        .route(
+            "/v1/threads/{id}/ledger/import-legacy",
+            post(import_legacy_ledger),
+        )
+        .route(
+            "/v1/threads/{id}/state/import-legacy",
+            post(import_legacy_session_state),
+        )
+        .route(
+            "/v1/migrations/legacy-sessions",
+            post(discover_legacy_sessions),
         )
         .route("/v1/threads/{id}/messages", delete(clear_thread_messages))
         .route("/v1/threads/{id}/messages/{message_id}", delete(delete_thread_message))
@@ -1549,6 +1933,21 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/skills/{name}/update", post(update_skill_api))
         .route("/v1/skills/{name}/trust", post(trust_skill_api))
         .route("/v1/skills/{name}/audit", get(audit_skill_api))
+        .route("/v1/plugins", get(list_plugins))
+        .route(
+            "/v1/plugins/{name}/enable",
+            post(set_plugin_enabled),
+        )
+        .route(
+            "/v1/plugins/{name}/disable",
+            post(set_plugin_enabled),
+        )
+        .route("/v1/plugins/install", post(install_plugin_api))
+        .route("/v1/plugins/{name}/update", post(update_plugin_api))
+        .route("/v1/plugins/{name}", delete(uninstall_plugin_api))
+        .route("/v1/extensions/{name}/start", post(start_extension))
+        .route("/v1/extensions/{name}/stop", post(stop_extension))
+        .route("/v1/extensions/{name}", get(extension_status))
         .route("/v1/apps/mcp/tools", get(list_mcp_tools))
         .route(
             "/v1/automations",
@@ -1617,6 +2016,12 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/wechat/send", post(wechat_send))
         .route("/v1/wechat/poll", post(wechat_poll))
         .route("/v1/metrics", get(get_metrics))
+        .route("/v1/diagnostics", get(get_diagnostics))
+        .route("/v1/diagnostics/bundle", get(get_diagnostics_bundle))
+        .route(
+            "/v1/diagnostics/ledger/{session_id}",
+            get(get_canonical_ledger),
+        )
         .route("/v1/logs", get(get_runtime_logs).delete(clear_runtime_logs))
         .route("/v1/logs/files", get(list_runtime_log_files))
         .route(
@@ -1640,9 +2045,11 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(web::exchange_bootstrap),
         )
         .route("/health", get(health))
+        .route("/v1/health", get(health))
         .route("/mobile", get(mobile_page))
         .route("/mobile/", get(mobile_page))
         .route("/v1/runtime/info", get(runtime_info))
+        .route("/v1/capabilities", get(runtime_capabilities))
         .merge(api_routes)
         .layer(cors_layer(&state.cors_origins));
 
@@ -1732,11 +2139,14 @@ fn detect_lan_ip() -> Option<String> {
     Some(addr.ip().to_string())
 }
 
-async fn health() -> Json<HealthResponse> {
+async fn health(State(state): State<RuntimeApiState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         service: "hakus-runtime-api",
         mode: "local",
+        execution_plane: state.execution_plane,
+        feature_gates: state.feature_gates.clone(),
+        uptime_seconds: state.started_at.elapsed().as_secs(),
     })
 }
 
@@ -2517,8 +2927,32 @@ async fn get_metrics(
         .saturating_add(errors.tool_denied_by_policy)
         .saturating_add(errors.tool_timeout)
         .saturating_add(errors.network_error);
+    let ledger_stats = state
+        .runtime_threads
+        .canonical_ledger_stats()
+        .await
+        .unwrap_or(hakus_state::LedgerStats {
+            event_count: 0,
+            session_count: 0,
+        });
+    let compat_imported_event_count = state
+        .runtime_threads
+        .compat_imported_event_count()
+        .await
+        .unwrap_or_default();
     Json(RuntimeMetricsResponse {
         uptime_seconds: state.started_at.elapsed().as_secs(),
+        process_started_at_unix_ms: state.started_at_unix_ms,
+        event_count: state
+            .runtime_threads
+            .current_event_seq()
+            .await
+            .unwrap_or_default(),
+        canonical_ledger_event_count: ledger_stats.event_count,
+        canonical_ledger_session_count: ledger_stats.session_count,
+        compat_imported_event_count,
+        execution_plane: state.execution_plane,
+        feature_gates: state.feature_gates.clone(),
         total_turns: counters.turns,
         total_errors,
         active_websockets: 0,
@@ -2533,6 +2967,114 @@ async fn get_metrics(
         counters,
         errors,
         turn_wall: hakus_telemetry::session_counters().turn_wall(),
+    })
+}
+
+async fn get_diagnostics(
+    State(state): State<RuntimeApiState>,
+) -> Json<RuntimeDiagnosticsResponse> {
+    let event_count = state
+        .runtime_threads
+        .current_event_seq()
+        .await
+        .unwrap_or_default();
+    let ledger_stats = state
+        .runtime_threads
+        .canonical_ledger_stats()
+        .await
+        .unwrap_or(hakus_state::LedgerStats {
+            event_count: 0,
+            session_count: 0,
+        });
+    // Integrity is reported, not assumed: a store with a broken sequence is
+    // exactly what diagnostics exists to surface, and a verification failure
+    // must not turn the whole endpoint into an error.
+    let canonical_ledger_integrity = state
+        .runtime_threads
+        .verify_all_ledgers()
+        .await
+        .unwrap_or_default();
+    Json(RuntimeDiagnosticsResponse {
+        service: "hakus-runtime-api",
+        runtime_api_version: RUNTIME_API_VERSION,
+        execution_plane: state.execution_plane,
+        feature_gates: state.feature_gates.clone(),
+        process_started_at_unix_ms: state.started_at_unix_ms,
+        uptime_seconds: state.started_at.elapsed().as_secs(),
+        event_count,
+        canonical_ledger_event_count: ledger_stats.event_count,
+        canonical_ledger_session_count: ledger_stats.session_count,
+        canonical_ledger_integrity,
+        provider_activity: hakus_telemetry::session_counters().providers(),
+    })
+}
+
+/// One-shot redacted bundle for migration and support reports: diagnostics
+/// plus metrics counters, a process memory sample, and the JSONL→ledger
+/// projection lag. Field-level redaction is by construction — see
+/// `RuntimeDiagnosticsBundleResponse`.
+async fn get_diagnostics_bundle(
+    State(state): State<RuntimeApiState>,
+) -> Json<RuntimeDiagnosticsBundleResponse> {
+    let event_count = state
+        .runtime_threads
+        .current_event_seq()
+        .await
+        .unwrap_or_default();
+    let ledger_stats = state
+        .runtime_threads
+        .canonical_ledger_stats()
+        .await
+        .unwrap_or(hakus_state::LedgerStats {
+            event_count: 0,
+            session_count: 0,
+        });
+    let canonical_ledger_integrity = state
+        .runtime_threads
+        .verify_all_ledgers()
+        .await
+        .unwrap_or_default();
+    let compat_imported_event_count = state
+        .runtime_threads
+        .compat_imported_event_count()
+        .await
+        .unwrap_or_default();
+    let projection = ProjectionLag {
+        jsonl_event_seq: event_count,
+        canonical_event_count: ledger_stats.event_count,
+        shadow_write_lag: event_count.saturating_sub(ledger_stats.event_count),
+    };
+    let shadow_write_lag = event_count.saturating_sub(ledger_stats.event_count);
+    let canonical_ledger_healthy = canonical_ledger_integrity.is_healthy();
+    let canonical_ledger_sessions_verified = canonical_ledger_integrity.sessions_verified;
+    let canonical_ledger_events_verified = canonical_ledger_integrity.events_verified;
+    Json(RuntimeDiagnosticsBundleResponse {
+        generated_at_unix_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default(),
+        service: "hakus-runtime-api",
+        runtime_api_version: RUNTIME_API_VERSION,
+        execution_plane: state.execution_plane,
+        feature_gates: state.feature_gates.clone(),
+        process_started_at_unix_ms: state.started_at_unix_ms,
+        uptime_seconds: state.started_at.elapsed().as_secs(),
+        event_count,
+        canonical_ledger_event_count: ledger_stats.event_count,
+        canonical_ledger_session_count: ledger_stats.session_count,
+        canonical_ledger_integrity,
+        provider_activity: hakus_telemetry::session_counters().providers(),
+        compat_imported_event_count,
+        memory: process_memory_sample(),
+        projection,
+        migration: MigrationDiagnostics {
+            python_compat_flag: state.feature_gates.python_compat_path,
+            compat_imported_event_count,
+            shadow_write_lag,
+            canonical_ledger_healthy,
+            canonical_ledger_sessions_verified,
+            canonical_ledger_events_verified,
+        },
     })
 }
 
@@ -3432,8 +3974,9 @@ async fn start_fleet_run(
     let workspace = state.workspace.clone();
     let hakus_binary = state.fleet_hakus_binary.clone();
     let execution_run_id = run_id.clone();
+    let ssh_password_vault = state.ssh_password_vault.clone();
     tokio::spawn(async move {
-        let mut executor = FleetExecutor::new(&workspace);
+        let mut executor = FleetExecutor::new(&workspace).with_ssh_password_vault(ssh_password_vault);
         if let Err(error) = manager
             .run_to_completion(
                 &execution_run_id,
@@ -3464,6 +4007,41 @@ async fn start_fleet_run(
             "worker_ids": report.worker_ids,
         })),
     ))
+}
+
+async fn provision_fleet_ssh_password(
+    State(state): State<RuntimeApiState>,
+    Path((run_id, worker_id)): Path<(String, String)>,
+    Json(request): Json<ProvisionSshPasswordRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let password = request.password;
+    if password.is_empty() || password.len() > 4096 || password.chars().any(char::is_control) {
+        return Err(ApiError::bad_request(
+            "password must be non-empty, printable, and no longer than 4096 bytes",
+        ));
+    }
+    let manager = open_fleet_manager(&state)?;
+    let run_id = FleetRunId::from(run_id);
+    let approval_id = manager
+        .request_ssh_password(&run_id, &worker_id)
+        .map_err(|err| ApiError::bad_request(format!("SSH password approval unavailable: {err}")))?;
+    state
+        .ssh_password_vault
+        .provision(&worker_id, &password)
+        .map_err(|err| ApiError::internal(format!("Failed to provision SSH password broker: {err}")))?;
+    manager
+        .ledger_record_approval_decided(&approval_id, &run_id, &worker_id)
+        .map_err(|err| ApiError::internal(format!("Failed to record SSH approval decision: {err}")))?;
+    manager
+        .resolve_ssh_password(&run_id)
+        .map_err(|err| ApiError::internal(format!("Failed to resume Fleet run: {err}")))?;
+    Ok(Json(json!({
+        "action": "provision_ssh_password",
+        "run_id": run_id.0,
+        "worker_id": worker_id,
+        "approval_id": approval_id,
+        "execution": "resumed",
+    })))
 }
 
 async fn replay_fleet_events(
@@ -3744,8 +4322,9 @@ async fn restart_fleet_worker(
     let max_workers = report.max_workers;
     let workspace = state.workspace.clone();
     let hakus_binary = state.fleet_hakus_binary.clone();
+    let ssh_password_vault = state.ssh_password_vault.clone();
     tokio::spawn(async move {
-        let mut executor = FleetExecutor::new(&workspace);
+        let mut executor = FleetExecutor::new(&workspace).with_ssh_password_vault(ssh_password_vault);
         if let Err(err) = manager
             .run_to_completion(
                 &run_id,
@@ -4275,6 +4854,282 @@ async fn list_skills(
         warnings: registry.warnings().to_vec(),
         skills,
     }))
+}
+
+/// Read-only installed-extension inventory for the desktop permission
+/// surface (Phase 7: "extension permissions are visible"). Redaction is by
+/// construction — no install paths, no skill bodies, no secrets; only
+/// identity, trust state, and the manifest's declared capability requests.
+async fn list_plugins(State(state): State<RuntimeApiState>) -> Json<PluginsResponse> {
+    let registry = state.plugin_discovery.registry_for_workspace(&state.workspace);
+    let plugins = registry
+        .list()
+        .iter()
+        .map(|plugin| PluginEntry {
+            id: plugin.id.0.clone(),
+            name: plugin.name().to_string(),
+            version: plugin.manifest.plugin.version.clone(),
+            scope: plugin.scope.as_str(),
+            origin: plugin.origin.as_str(),
+            enabled: plugin.enabled,
+            trust_status: plugin.trust_status.as_str(),
+            applicable: plugin.applicable,
+            staged: plugin.staged_root.is_some(),
+            capabilities: PluginCapabilityInventory {
+                filesystem_roots: plugin.manifest.capabilities.filesystem_roots.clone(),
+                network_hosts: plugin.manifest.capabilities.network_hosts.clone(),
+                lifecycle_mutation: plugin.manifest.capabilities.lifecycle_mutation,
+            },
+            extension: plugin.manifest.extension.as_ref().map(|extension| {
+                PluginExtensionDescriptor {
+                    id: extension.id.clone(),
+                    version: extension.version.clone(),
+                    protocol: extension.protocol.clone(),
+                    entrypoint: extension.entrypoint.clone(),
+                    capabilities: extension.capabilities.clone(),
+                    permissions: extension.permissions.clone(),
+                    supported_platforms: extension.supported_platforms.clone(),
+                    checksum: extension.checksum.clone(),
+                }
+            }),
+            content_hash: plugin.content_hash.clone(),
+            capability_hash: plugin.capability_hash.clone(),
+            state_generation: plugin.state_generation,
+            skill_count: plugin.skill_snapshots.len(),
+            diagnostics: plugin
+                .diagnostics
+                .iter()
+                .map(|diagnostic| PluginDiagnosticEntry {
+                    level: match diagnostic.level {
+                        crate::plugins::types::PluginDiagnosticLevel::Warning => "warning",
+                        crate::plugins::types::PluginDiagnosticLevel::Error => "error",
+                    },
+                    code: diagnostic.code.to_string(),
+                    message: diagnostic.message.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    Json(PluginsResponse { plugins })
+}
+
+fn plugin_receipt_to_response(
+    receipt: &crate::plugins::mutation::PluginMutationReceipt,
+) -> PluginMutationReceiptResponse {
+    use crate::plugins::mutation::PluginMutationOutcome;
+
+    let outcome = match receipt.outcome {
+        PluginMutationOutcome::Installed => "installed",
+        PluginMutationOutcome::Updated => "updated",
+        PluginMutationOutcome::NoChange => "no_change",
+        PluginMutationOutcome::Uninstalled => "uninstalled",
+        PluginMutationOutcome::NeedsApproval(_) => "needs_approval",
+        PluginMutationOutcome::NetworkDenied(_) => "network_denied",
+    };
+    PluginMutationReceiptResponse {
+        name: receipt.name.clone(),
+        outcome,
+        // Deliberately omit `path`: Runtime API responses must not disclose
+        // the user's home or workspace layout. Hashes are the stable review
+        // handles needed by a desktop client.
+        content_hash: receipt.content_hash.clone(),
+        installed_content_hash: receipt.installed_content_hash.clone(),
+    }
+}
+
+fn plugin_policy_error_message(
+    outcome: &crate::plugins::mutation::PluginMutationOutcome,
+) -> Option<String> {
+    match outcome {
+        crate::plugins::mutation::PluginMutationOutcome::NeedsApproval(host) => Some(format!(
+            "network access to '{host}' requires explicit approval; approve the host in your network policy before installing or updating this plugin"
+        )),
+        crate::plugins::mutation::PluginMutationOutcome::NetworkDenied(host) => Some(format!(
+            "network access to '{host}' was denied by the active network policy"
+        )),
+        _ => None,
+    }
+}
+
+fn plugin_mutation_failure(operation: &str, error: anyhow::Error) -> ApiError {
+    // Installer diagnostics can contain canonical source or destination paths.
+    // Return a stable, path-free API error so a remote desktop client cannot
+    // learn the user's filesystem; detailed diagnostics remain in the caller's
+    // local command context.
+    let not_found = error
+        .to_string()
+        .to_ascii_lowercase()
+        .contains("was not found");
+    if not_found {
+        ApiError::not_found(format!("plugin {operation} target was not found"))
+    } else {
+        ApiError::bad_request(format!("plugin {operation} was rejected"))
+    }
+}
+
+async fn install_plugin_api(
+    State(state): State<RuntimeApiState>,
+    Json(req): Json<InstallPluginRequest>,
+) -> Result<(StatusCode, Json<PluginMutationReceiptResponse>), ApiError> {
+    use crate::plugins::mutation::{PluginMutationContext, PluginMutationRequest};
+
+    let source = crate::plugins::install::PluginInstallSource::parse(&req.source)
+        .map_err(|err| ApiError::bad_request(format!("invalid plugin install source: {err}")))?;
+    let request = match req.expected_content_hash {
+        Some(expected_content_hash) => PluginMutationRequest::InstallExact {
+            source,
+            expected_content_hash,
+        },
+        None => PluginMutationRequest::Install { source },
+    };
+    let (network, max_size, _, _) = mutation_context_settings(&state);
+    let mut registry = state.plugin_discovery.registry_for_workspace(&state.workspace);
+    let receipt = crate::plugins::mutation::execute(
+        request,
+        &PluginMutationContext {
+            network: &network,
+            max_size,
+        },
+        Arc::make_mut(&mut registry),
+    )
+    .await
+    .map_err(|err| plugin_mutation_failure("install", err))?;
+    if let Some(message) = plugin_policy_error_message(&receipt.outcome) {
+        return Err(ApiError::forbidden(message));
+    }
+    let status = if matches!(
+        receipt.outcome,
+        crate::plugins::mutation::PluginMutationOutcome::Installed
+    ) {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(plugin_receipt_to_response(&receipt))))
+}
+
+async fn update_plugin_api(
+    State(state): State<RuntimeApiState>,
+    Path(name): Path<String>,
+    _req: Option<Json<UpdatePluginRequest>>,
+) -> Result<Json<PluginMutationReceiptResponse>, ApiError> {
+    use crate::plugins::mutation::{PluginMutationContext, PluginMutationRequest};
+
+    let (network, max_size, _, _) = mutation_context_settings(&state);
+    let mut registry = state.plugin_discovery.registry_for_workspace(&state.workspace);
+    let receipt = crate::plugins::mutation::execute(
+        PluginMutationRequest::Update { selector: name },
+        &PluginMutationContext {
+            network: &network,
+            max_size,
+        },
+        Arc::make_mut(&mut registry),
+    )
+    .await
+    .map_err(|err| plugin_mutation_failure("update", err))?;
+    if let Some(message) = plugin_policy_error_message(&receipt.outcome) {
+        return Err(ApiError::forbidden(message));
+    }
+    Ok(Json(plugin_receipt_to_response(&receipt)))
+}
+
+async fn uninstall_plugin_api(
+    State(state): State<RuntimeApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<PluginMutationReceiptResponse>, ApiError> {
+    use crate::plugins::mutation::{PluginMutationContext, PluginMutationRequest};
+
+    let mut registry = state.plugin_discovery.registry_for_workspace(&state.workspace);
+    let receipt = crate::plugins::mutation::execute(
+        PluginMutationRequest::Uninstall { selector: name },
+        &PluginMutationContext {
+            network: &crate::network_policy::NetworkPolicy::default(),
+            max_size: 0,
+        },
+        Arc::make_mut(&mut registry),
+    )
+    .await
+    .map_err(|err| plugin_mutation_failure("uninstall", err))?;
+    Ok(Json(plugin_receipt_to_response(&receipt)))
+}
+
+/// Enable or disable an installed extension over the Runtime API. The
+/// registry enforces the policy itself: enablement requires an existing trust
+/// receipt, a verified staged snapshot, host applicability, and at least one
+/// supported declarative component — an untrusted bundle cannot be switched
+/// on from here. **Trust granting is deliberately not exposed** over the API;
+/// capability review stays a command-layer human decision.
+async fn set_plugin_enabled(
+    State(state): State<RuntimeApiState>,
+    Path(name): Path<String>,
+    Json(req): Json<SetPluginEnabledRequest>,
+) -> Result<Json<PluginMutationResponse>, ApiError> {
+    let mut registry = state.plugin_discovery.registry_for_workspace(&state.workspace);
+    let mutation = Arc::make_mut(&mut registry);
+    let result = if req.enabled {
+        mutation.enable(&name)
+    } else {
+        mutation.disable(&name)
+    };
+    result.map_err(ApiError::bad_request)?;
+    let plugin = mutation
+        .get(&name)
+        .ok_or_else(|| ApiError::not_found(format!("plugin '{name}' not found")))?;
+    Ok(Json(PluginMutationResponse {
+        id: plugin.id.0.clone(),
+        name: plugin.name().to_string(),
+        enabled: plugin.enabled,
+        trust_status: plugin.trust_status.as_str(),
+        state_generation: plugin.state_generation,
+    }))
+}
+
+/// Start a reviewed extension through the Runtime-owned host. The desktop
+/// receives only a redacted lifecycle projection; process handles stay inside
+/// `RuntimeThreadManager`.
+async fn start_extension(
+    State(state): State<RuntimeApiState>,
+    Path(name): Path<String>,
+    Json(req): Json<StartExtensionRequest>,
+) -> Result<Json<crate::runtime_threads::ExtensionRuntimeStatus>, ApiError> {
+    if req.event_type.trim().is_empty() {
+        return Err(ApiError::bad_request("extension event_type cannot be empty"));
+    }
+    let status = state
+        .runtime_threads
+        .start_managed_extension(
+            &name,
+            req.thread_id.as_deref(),
+            &req.event_type,
+            req.payload,
+        )
+        .await
+        .map_err(|error| ApiError::internal(format!("extension start failed: {error}")))?;
+    Ok(Json(status))
+}
+
+async fn stop_extension(
+    State(state): State<RuntimeApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<crate::runtime_threads::ExtensionRuntimeStatus>, ApiError> {
+    let status = state
+        .runtime_threads
+        .stop_managed_extension(&name)
+        .await
+        .map_err(|error| ApiError::internal(format!("extension stop failed: {error}")))?;
+    Ok(Json(status))
+}
+
+async fn extension_status(
+    State(state): State<RuntimeApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<crate::runtime_threads::ExtensionRuntimeStatus>, ApiError> {
+    let status = state
+        .runtime_threads
+        .managed_extension_status(&name)
+        .await
+        .map_err(|error| ApiError::internal(format!("extension status failed: {error}")))?;
+    Ok(Json(status))
 }
 
 async fn set_skill_enabled(
@@ -4810,7 +5665,22 @@ async fn runtime_info(
         transports: vec!["http", "sse"],
         capabilities: default_runtime_capabilities(),
         experimental: RuntimeExperimentalCapabilities::default(),
+        execution_plane: state.execution_plane,
+        feature_gates: state.feature_gates.clone(),
+        process_started_at_unix_ms: state.started_at_unix_ms,
         version,
+    })
+}
+
+async fn runtime_capabilities(
+    State(state): State<RuntimeApiState>,
+) -> Json<RuntimeCapabilitiesResponse> {
+    Json(RuntimeCapabilitiesResponse {
+        runtime_api_version: RUNTIME_API_VERSION,
+        event_schema_version: RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
+        capabilities: default_runtime_capabilities(),
+        execution_plane: state.execution_plane,
+        feature_gates: state.feature_gates.clone(),
     })
 }
 
@@ -5620,6 +6490,163 @@ async fn get_thread_event_log(
         },
         events: mapped,
     }))
+}
+
+/// Read the SQLite canonical ledger for a thread using a durable per-session
+/// cursor. This is the migration-safe replay endpoint for new desktop clients.
+async fn get_canonical_ledger(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Query(query): Query<CanonicalLedgerQuery>,
+) -> Result<Json<CanonicalLedgerResponse>, ApiError> {
+    state
+        .runtime_threads
+        .get_thread_detail(&id)
+        .await
+        .map_err(map_thread_err)?;
+    let after_seq = query.since_seq.unwrap_or(0);
+    let events = state
+        .runtime_threads
+        .canonical_ledger_events(&id, after_seq, query.limit.unwrap_or(500))
+        .await
+        .map_err(|error| ApiError::internal(format!("Failed to read canonical ledger: {error}")))?;
+    let verification = state
+        .runtime_threads
+        .verify_canonical_ledger(&id)
+        .await
+        .map_err(|error| ApiError::internal(format!("Failed to verify canonical ledger: {error}")))?;
+    // Events this session holds beyond the window we are about to return. The
+    // read returns the oldest events after `after_seq`, so anything past the
+    // window sits between the returned events and the verified tail.
+    let returned = events.len() as u64;
+    let omitted_events = verification
+        .event_count
+        .saturating_sub(after_seq.min(verification.event_count))
+        .saturating_sub(returned);
+    Ok(Json(CanonicalLedgerResponse {
+        session_id: id,
+        after_seq,
+        events,
+        verification,
+        omitted_events,
+    }))
+}
+
+async fn verify_canonical_ledger(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<hakus_state::LedgerVerification>, ApiError> {
+    state
+        .runtime_threads
+        .get_thread_detail(&id)
+        .await
+        .map_err(map_thread_err)?;
+    let verification = state
+        .runtime_threads
+        .verify_canonical_ledger(&id)
+        .await
+        .map_err(|error| ApiError::internal(format!("Failed to verify canonical ledger: {error}")))?;
+    Ok(Json(verification))
+}
+
+async fn import_legacy_ledger(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<LegacyLedgerImportRequest>,
+) -> Result<Json<hakus_state::LedgerImportSummary>, ApiError> {
+    state
+        .runtime_threads
+        .get_thread_detail(&id)
+        .await
+        .map_err(map_thread_err)?;
+    if request.source_path.as_os_str().is_empty() {
+        return Err(ApiError::bad_request(
+            "source_path must not be empty".to_string(),
+        ));
+    }
+    let summary = state
+        .runtime_threads
+        .import_legacy_ledger(&id, request.source_path)
+        .await
+        .map_err(|error| ApiError::internal(format!("Failed to import legacy ledger: {error}")))?;
+    Ok(Json(summary))
+}
+
+/// Discover the legacy Python session stores a migration could import.
+///
+/// Read-only and side-effect free: the response is the summary a migration
+/// surface shows *before* anything is imported. Importing is a separate,
+/// explicit action (`/state/import-legacy`), so a person can see what exists and
+/// choose, rather than discovering the consequence after the fact.
+async fn discover_legacy_sessions(
+    State(state): State<RuntimeApiState>,
+    Json(request): Json<LegacyDiscoveryRequest>,
+) -> Result<Json<hakus_state::LegacyDiscovery>, ApiError> {
+    let roots = if request.roots.is_empty() {
+        default_legacy_search_roots()
+    } else {
+        for root in &request.roots {
+            if root.as_os_str().is_empty() {
+                return Err(ApiError::bad_request(
+                    "roots must not contain an empty path".to_string(),
+                ));
+            }
+        }
+        request.roots
+    };
+    let discovery = state
+        .runtime_threads
+        .discover_legacy_session_stores(roots)
+        .await
+        .map_err(|error| ApiError::internal(format!("Failed to discover legacy sessions: {error}")))?;
+    Ok(Json(discovery))
+}
+
+/// Where a previous Python-sidecar install kept its session store.
+///
+/// The runtime's own home comes first so a portable install finds its own data,
+/// then the sidecar's documented default (`~/.hakus`), then the working
+/// directory. Duplicates are harmless: discovery canonicalizes and reports each
+/// store once.
+fn default_legacy_search_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(home) = hakus_config::hakus_home() {
+        roots.push(home);
+    }
+    if let Some(user) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let default_home = PathBuf::from(user).join(".hakus");
+        if !roots.contains(&default_home) {
+            roots.push(default_home);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    roots
+}
+
+async fn import_legacy_session_state(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<LegacySessionImportRequest>,
+) -> Result<Json<hakus_state::LegacySessionImportSummary>, ApiError> {    if request.source_path.as_os_str().is_empty()
+        || request.source_session_id.trim().is_empty()
+    {
+        return Err(ApiError::bad_request(
+            "source_path and source_session_id are required".to_string(),
+        ));
+    }
+    let summary = state
+        .runtime_threads
+        .import_legacy_session_db(
+            &id,
+            request.source_path,
+            &request.source_session_id,
+            request.checkpoint_path,
+        )
+        .await
+        .map_err(|error| ApiError::internal(format!("Failed to import legacy session state: {error}")))?;
+    Ok(Json(summary))
 }
 
 async fn clear_thread_event_log(
@@ -6486,19 +7513,35 @@ async fn stream_thread_events(
     // is loaded is then present in both places (and deduped below) or queued
     // live, never in an uncovered handoff window.
     let live = state.runtime_threads.subscribe_events();
-    if query
-        .replay_limit
-        .is_some_and(|limit| limit > MAX_RUNTIME_EVENT_REPLAY_TAIL)
+    // The canonical SQLite ledger is the read authority. JSONL stays served for
+    // a client that explicitly asks for it during the migration window, but a
+    // request that does not name a source now reads the ledger.
+    let legacy_source = query.source.as_deref() == Some("jsonl");
+    if legacy_source
+        && query
+            .replay_limit
+            .is_some_and(|limit| limit > MAX_RUNTIME_EVENT_REPLAY_TAIL)
     {
+        // This bound caps how much of the legacy event *file* a replay reads, so
+        // it applies only to the source that reads that file. The ledger bounds
+        // its own window (`CANONICAL_REPLAY_LIMIT`) and is not file-bound.
         return Err(ApiError::bad_request(format!(
             "replay_limit cannot exceed {MAX_RUNTIME_EVENT_REPLAY_TAIL}"
         )));
     }
-    let replay = state
-        .runtime_threads
-        .replay_events(&id, query.since_seq, query.replay_limit)
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let replay = if legacy_source {
+        state
+            .runtime_threads
+            .replay_events(&id, query.since_seq, query.replay_limit)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    } else {
+        state
+            .runtime_threads
+            .replay_canonical_events(&id, query.since_seq, query.replay_limit)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    };
 
     let stream = replay_live_thread_events(
         state.runtime_threads.clone(),
@@ -8119,14 +9162,11 @@ async fn delete_custom_provider(
     use crate::config_persistence;
     {
         let config = state.config.read();
-        let entry = config
+        config
             .providers
             .as_ref()
             .and_then(|providers| providers.custom_provider_config(&id))
             .ok_or_else(|| ApiError::not_found(format!("Custom provider '{id}' was not found")))?;
-        if !entry.is_openai_compatible_custom() {
-            return Err(ApiError::bad_request(format!("Provider '{id}' is not a custom provider")));
-        }
     }
     // Unload threads pinned to this route and clear their bindings BEFORE the
     // table is removed — otherwise the reload preflight rejects the whole
@@ -8247,6 +9287,25 @@ async fn update_provider(
     Json(req): Json<ProviderUpdateRequest>,
 ) -> Result<Json<ProviderUpdateResponse>, ApiError> {
     use crate::config_persistence;
+
+    // Older desktop builds could create a named custom provider without the
+    // now-required route kind. Repair that legacy shape before resolving the
+    // route, otherwise the validation below rejects every later edit.
+    let legacy_custom_provider = {
+        let config = state.config.read();
+        config
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.custom_provider_config(&id))
+            .is_some_and(|entry| !entry.is_openai_compatible_custom())
+    };
+    if legacy_custom_provider {
+        config_persistence::ensure_custom_provider_kind(state.config_path.as_deref(), &id)
+            .map_err(|error| ApiError::internal(format!("Failed to repair provider kind: {error}")))?;
+        let repaired = Config::load(state.config_path.clone(), state.config_profile.as_deref())
+            .map_err(|error| ApiError::internal(format!("Failed to reload provider config: {error}")))?;
+        *state.config.write() = repaired;
+    }
 
     let (provider_route, identity, route) = {
         let config = state.config.read();
